@@ -47,41 +47,48 @@
       await pyodide.loadPackage(["micropip"]);
       const micropip = pyodide.pyimport("micropip");
       // Load pure-Python document parsing libraries in WASM
-      await micropip.install(['python-docx', 'openpyxl']);
+      await micropip.install(['python-docx', 'openpyxl', 'pypdf']);
       
       // Execute Python logic for document extraction inside WASM
       await pyodide.runPythonAsync(`
         import io
         import docx
         import openpyxl
+        from pypdf import PdfReader 
 
         doc_pages = []
 
         def parse_document(file_bytes, filename):
-            global doc_pages
-            doc_pages = []
-            bio = io.BytesIO(file_bytes.to_py())
+        global doc_pages
+        doc_pages = []
+        bio = io.BytesIO(file_bytes.to_py())
+        fname = filename.lower()
 
-            if filename.endswith('.docx'):
-                doc = docx.Document(bio)
-                doc_pages = [p.text for p in doc.paragraphs if p.text.strip()]
-            elif filename.endswith('.xlsx'):
-                wb = openpyxl.load_workbook(bio)
-                for sheet in wb.sheetnames:
-                    ws = wb[sheet]
-                    sheet_data = []
-                    for row in ws.iter_rows(values_only=True):
-                        sheet_data.append(" | ".join([str(cell) for cell in row if cell is not None]))
-                    doc_pages.append(f"--- Sheet: {sheet} ---\\n" + "\\n".join(sheet_data))
-            else:
-                doc_pages = ["Unsupported preview format in pure WASM fallback demo."]
-            
-            return len(doc_pages)
+        if fname.endswith('.docx'):
+            doc = docx.Document(bio)
+            doc_pages = [p.text for p in doc.paragraphs if p.text.strip()]
+        elif fname.endswith('.xlsx'):
+            wb = openpyxl.load_workbook(bio)
+            for sheet in wb.sheetnames:
+                ws = wb[sheet]
+                sheet_data = []
+                for row in ws.iter_rows(values_only=True):
+                    sheet_data.append(" | ".join([str(cell) for cell in row if cell is not None]))
+                doc_pages.append(f"--- Sheet: {sheet} ---\\n" + "\\n".join(sheet_data))
+        elif fname.endswith('.pdf'):
+            reader = PdfReader(bio)
+            for i, page in enumerate(reader.pages):
+                text = page.extract_text() or ""
+                doc_pages.append(f"--- Page {i+1} ---\\n" + text)
+        else:
+            doc_pages = [f"Error: Format '{filename}' is not supported."]
+        
+        return len(doc_pages)
 
-        def get_page(index):
-            if 0 <= index < len(doc_pages):
-                return doc_pages[index]
-            return ""
+    def get_page(index):
+        if 0 <= index < len(doc_pages):
+            return doc_pages[index]
+        return ""
       `);
 
       document.getElementById('status-text').innerText = "WASM Runtime Ready.";
