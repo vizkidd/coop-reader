@@ -227,7 +227,7 @@ def get_page(index):
       } else if (data.type === 'SYNC') {
         state = data.state;
         if (cachedFileBytes) {
-          processAndRenderFileLocally(cachedFileBytes, cachedFilename, false);
+          processAndRenderFileLocally(cachedFileBytes.slice(0), cachedFilename, false);
         }
       } else if (data.type === 'FILE_TRANSFER') {
         cachedFilename = data.filename;
@@ -242,17 +242,17 @@ def get_page(index):
       if (!file) return;
 
       const arrayBuffer = await file.arrayBuffer();
-      cachedFileBytes = arrayBuffer;
+      cachedFileBytes = arrayBuffer.slice(0);
       cachedFilename = file.name;
 
       await processAndRenderFileLocally(arrayBuffer, file.name, true);
-      broadcast({ type: 'FILE_TRANSFER', filename: file.name, buffer: arrayBuffer.slice(0) });
+      broadcast({ type: 'FILE_TRANSFER', filename: file.name, buffer: cachedFileBytes.slice(0) });
     });
 
     async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
       if (!arrayBuffer) return;
       cachedFilename = filename;
-      cachedFileBytes = arrayBuffer;
+      cachedFileBytes = arrayBuffer.slice(0); // Maintain a clean master copy
       state.fileType = filename.toLowerCase().endsWith('.pdf') ? 'pdf' : 'other';
 
       if (resetPage) {
@@ -263,7 +263,8 @@ def get_page(index):
         document.getElementById('pdf-canvas').style.display = 'block';
         document.getElementById('text-content').style.display = 'none';
         
-        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        // Pass a cloned slice so PDF.js doesn't detach our cached master buffer
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer.slice(0) });
         pdfDoc = await loadingTask.promise;
         state.totalPages = pdfDoc.numPages;
       } else {
@@ -271,7 +272,7 @@ def get_page(index):
         document.getElementById('text-content').style.display = 'block';
 
         const parseDoc = pyodide.globals.get('parse_document');
-        state.totalPages = parseDoc(new Uint8Array(arrayBuffer), filename);
+        state.totalPages = parseDoc(new Uint8Array(arrayBuffer.slice(0)), filename);
       }
 
       await renderCurrentPage();
