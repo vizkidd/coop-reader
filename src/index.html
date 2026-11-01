@@ -11,12 +11,13 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <style>
     body { font-family: sans-serif; margin: 20px; background: #f4f4f9; }
-    #toolbar { padding: 10px; background: #fff; border-bottom: 1px solid #ccc; margin-bottom: 10px; }
-    #viewer-container { background: #fff; border: 1px solid #ccc; padding: 20px; min-height: 500px; text-align: center; overflow: auto; }
+    #toolbar { padding: 10px; background: #fff; border-bottom: 1px solid #ccc; margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    #viewer-container { background: #fff; border: 1px solid #ccc; padding: 20px; min-height: 500px; text-align: center; overflow: auto; position: relative; }
     canvas { max-width: 100%; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
     #text-content { text-align: left; white-space: pre-wrap; line-height: 1.5; }
     .status { font-weight: bold; color: #007bb6; }
-    #room-code-display { margin-top: 5px; font-size: 1.1em; color: #333; }
+    #room-code-display { margin-top: 5px; font-size: 1.1em; color: #333; display: flex; gap: 10px; align-items: center; }
+    button { cursor: pointer; padding: 5px 10px; }
   </style>
 </head>
 <body>
@@ -24,19 +25,30 @@
   <h2>WASM Local Collaborative Document Reader</h2>
   
   <div id="toolbar">
-    <label>Session Control: </label>
-    <button onclick="startHost()">Create Session (Host)</button>
-    <input type="text" id="join-code" placeholder="Enter Host Code">
-    <button onclick="joinSession()">Join Session</button>
-    <br/><br/>
-    <input type="file" id="file-input" disabled />
-    <button onclick="prevPage()">Previous</button>
-    <button onclick="nextPage()">Next</button>
-    <span>Page: <span id="page-num">0</span> / <span id="page-count">0</span></span>
+    <div>
+      <label>Session: </label>
+      <button onclick="startHost()">Create Session (Host)</button>
+      <input type="text" id="join-code" placeholder="Enter Host Code">
+      <button onclick="joinSession()">Join Session</button>
+    </div>
+    <div>
+      <input type="file" id="file-input" disabled />
+    </div>
+    <div>
+      <button onclick="prevPage()">Previous</button>
+      <span>Page: <span id="page-num">0</span> / <span id="page-count">0</span></span>
+      <button onclick="nextPage()">Next</button>
+    </div>
+    <div>
+      <button onclick="zoomIn()">Zoom +</button>
+      <button onclick="zoomOut()">Zoom -</button>
+      <button onclick="toggleFullscreen()">Fullscreen</button>
+    </div>
   </div>
 
   <p>Status: <span id="status-text" class="status">Initializing WASM environment...</span></p>
   <div id="room-code-display"></div>
+  <div id="peer-list" style="font-size: 0.9em; color: #555; margin-top: 5px;"></div>
 
   <div id="viewer-container">
     <canvas id="pdf-canvas" style="display:none;"></canvas>
@@ -46,13 +58,14 @@
   <script>
     let pyodide;
     let peer = null;
+    let myPeerId = null;
     let connections = [];
     let state = { currentPage: 1, totalPages: 1, fileType: '' };
     let cachedFileBytes = null;
     let cachedFilename = "";
     let pdfDoc = null;
+    let currentZoom = 1.5;
 
-    // Configure PDF.js worker
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
     // 1. Initialize Pyodide WASM Runtime
@@ -128,24 +141,29 @@ def get_page(index):
     function startHost() {
       peer = new Peer(); 
       peer.on('open', (id) => {
-        document.getElementById('room-code-display').innerHTML = `<strong>Host Code:</strong> ${id}`;
+        myPeerId = id;
+        document.getElementById('room-code-display').innerHTML = `
+          <strong>Host Code:</strong> <span id="code-val">${id}</span>
+          <button onclick="copyHostCode()">Copy Code</button>
+        `;
         document.getElementById('status-text').innerText = "Host active. Waiting for peers...";
       });
 
       peer.on('connection', (conn) => {
         connections.push(conn);
-        document.getElementById('status-text').innerText = `Peer connected! Active connections: ${connections.length}`;
+        updatePeerListUI();
         
         conn.on('open', () => {
           if (cachedFileBytes) {
-            conn.send({ type: 'FILE_TRANSFER', filename: cachedFilename, buffer: cachedFileBytes });
+            conn.send({ type: 'FILE_TRANSFER', filename: cachedFilename, buffer: cachedFileBytes.slice(0) });
           }
           conn.send({ type: 'SYNC', state: state });
         });
 
         conn.on('data', (data) => handleNetworkMessage(data));
         conn.on('close', () => {
-          document.getElementById('status-text').innerText = "A peer disconnected.";
+          connections = connections.filter(c => c !== conn);
+          updatePeerListUI();
         });
       });
     }
@@ -154,22 +172,51 @@ def get_page(index):
       const code = document.getElementById('join-code').value.trim();
       if (!code) return alert("Please enter a valid host code!");
       
+      if (code === myPeerId) {
+        alert("You cannot join your own session as a guest!");
+        return;
+      }
+      
       peer = new Peer();
       peer.on('open', () => {
         const conn = peer.connect(code);
         connections.push(conn);
+        updatePeerListUI();
         
         conn.on('open', () => {
           document.getElementById('status-text').innerText = "Successfully connected to host session!";
         });
         
         conn.on('data', (data) => handleNetworkMessage(data));
+        conn.on('close', () => {
+          connections = connections.filter(c => c !== conn);
+          updatePeerListUI();
+        });
       });
+    }
+
+    function copyHostCode() {
+      const codeVal = document.getElementById('code-val').innerText;
+      navigator.clipboard.writeText(codeVal).then(() => {
+        alert("Host code copied to clipboard!");
+      });
+    }
+
+    function updatePeerListUI() {
+      const activePeers = connections.map(c => c.peer).join(', ');
+      document.getElementById('peer-list').innerText = `Connected Peers (${connections.length}): ${activePeers || 'None'}`;
+      document.getElementById('status-text').innerText = `Active connections: ${connections.length}`;
     }
 
     function broadcast(data) {
       connections.forEach(conn => {
-        if (conn && conn.open) conn.send(data);
+        if (conn && conn.open) {
+          let packet = data;
+          if (data.buffer && data.buffer instanceof ArrayBuffer) {
+            packet = { ...data, buffer: data.buffer.slice(0) };
+          }
+          conn.send(packet);
+        }
       });
     }
 
@@ -179,7 +226,9 @@ def get_page(index):
         renderCurrentPage();
       } else if (data.type === 'SYNC') {
         state = data.state;
-        processAndRenderFileLocally(cachedFileBytes, cachedFilename, false);
+        if (cachedFileBytes) {
+          processAndRenderFileLocally(cachedFileBytes, cachedFilename, false);
+        }
       } else if (data.type === 'FILE_TRANSFER') {
         cachedFilename = data.filename;
         cachedFileBytes = data.buffer;
@@ -197,7 +246,7 @@ def get_page(index):
       cachedFilename = file.name;
 
       await processAndRenderFileLocally(arrayBuffer, file.name, true);
-      broadcast({ type: 'FILE_TRANSFER', filename: file.name, buffer: arrayBuffer });
+      broadcast({ type: 'FILE_TRANSFER', filename: file.name, buffer: arrayBuffer.slice(0) });
     });
 
     async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
@@ -235,7 +284,7 @@ def get_page(index):
 
       if (state.fileType === 'pdf' && pdfDoc) {
         const page = await pdfDoc.getPage(state.currentPage);
-        const viewport = page.getViewport({ scale: 1.5 });
+        const viewport = page.getViewport({ scale: currentZoom });
         const canvas = document.getElementById('pdf-canvas');
         const context = canvas.getContext('2d');
         canvas.height = viewport.height;
@@ -262,6 +311,30 @@ def get_page(index):
         state.currentPage++;
         renderCurrentPage();
         broadcast({ type: 'PAGE_CHANGE', page: state.currentPage });
+      }
+    }
+
+    // 4. Viewport Controls
+    function zoomIn() {
+      currentZoom += 0.25;
+      renderCurrentPage();
+    }
+
+    function zoomOut() {
+      if (currentZoom > 0.5) {
+        currentZoom -= 0.25;
+        renderCurrentPage();
+      }
+    }
+
+    function toggleFullscreen() {
+      const container = document.getElementById('viewer-container');
+      if (!document.fullscreenElement) {
+        container.requestFullscreen().catch(err => {
+          alert(`Error attempting to enable fullscreen: ${err.message}`);
+        });
+      } else {
+        document.exitFullscreen();
       }
     }
   </script>
