@@ -1,0 +1,12 @@
+{
+  "name": "coop-reader",
+  "version": "1.0.0",
+  "description": "WASM Collaborative Document Reader",
+  "scripts": {
+    "dev": "npx http-server ./src -p 3000 -c-1",
+    "build": "mkdir -p dist && cp -r src/* dist/"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>P2P WASM Multi-Format Document Reader</title>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <style>
+    body { font-family: sans-serif; margin: 20px; background: #f4f4f9; }
+    #toolbar { padding: 10px; background: #fff; border-bottom: 1px solid #ccc; margin-bottom: 10px; }
+    #viewer-container { background: #fff; border: 1px solid #ccc; padding: 20px; min-height: 400px; white-space: pre-wrap; }
+    .status { font-weight: bold; color: #007bb6; }
+  </style>
+</head>
+<body>
+
+  <h2>WASM Local Collaborative Document Reader</h2>
+  
+  <div id="toolbar">
+    <label>Role: </label>
+    <button onclick="startHost()">Create Session (Host)</button>
+    <input type="text" id="join-code" placeholder="Enter Host Code">
+    <button onclick="joinSession()">Join Session</button>
+    <br/><br/>
+    <input type="file" id="file-input" disabled />
+    <button onclick="prevPage()">Previous</button>
+    <button onclick="nextPage()">Next</button>
+    <span>Page: <span id="page-num">0</span> / <span id="page-count">0</span></span>
+  </div>
+
+  <p>Status: <span id="status-text" class="status">Initializing Python WASM environment...</span></p>
+  <div id="room-code-display"></div>
+
+  <div id="viewer-container">
+    <div id="content">Load a file to start reading...</div>
+  </div>
+
+  <script>
+    let pyodide;
+    let peer = null;
+    let connections = [];
+    let state = { currentPage: 1, totalPages: 1 };
+
+    // 1. Initialize Pyodide WASM Runtime
+    async function initPyodide() {
+      pyodide = await loadPyodide();
+      await pyodide.loadPackage(["micropip"]);
+      const micropip = pyodide.pyimport("micropip");
+      // Load pure-Python document parsing libraries in WASM
+      await micropip.install(['python-docx', 'openpyxl']);
+      
+      // Execute Python logic for document extraction inside WASM
+      await pyodide.runPythonAsync(`
+        import io
+        import docx
+        import openpyxl
+
+        doc_pages = []
+
+        def parse_document(file_bytes, filename):
+            global doc_pages
+            doc_pages = []
+            bio = io.BytesIO(file_bytes.to_py())
+
+            if filename.endswith('.docx'):
+                doc = docx.Document(bio)
+                doc_pages = [p.text for p in doc.paragraphs if p.text.strip()]
+            elif filename.endswith('.xlsx'):
+                wb = openpyxl.load_workbook(bio)
+                for sheet in wb.sheetnames:
+                    ws = wb[sheet]
+                    sheet_data = []
+                    for row in ws.iter_rows(values_only=True):
+                        sheet_data.append(" | ".join([str(cell) for cell in row if cell is not None]))
+                    doc_pages.append(f"--- Sheet: {sheet} ---\\n" + "\\n".join(sheet_data))
+            else:
+                doc_pages = ["Unsupported preview format in pure WASM fallback demo."]
+            
+            return len(doc_pages)
+
+        def get_page(index):
+            if 0 <= index < len(doc_pages):
+                return doc_pages[index]
+            return ""
+      `);
+
+      document.getElementById('status-text').innerText = "WASM Runtime Ready.";
+      document.getElementById('file-input').disabled = false;
+    }
+
+    initPyodide();
+
+    // 2. Peer-to-Peer Signaling & Synchronization API
+    function startHost() {
+      peer = new Peer(); 
+      peer.on('open', (id) => {
+        document.getElementById('room-code-display').innerHTML = `<strong>Share Host Code:</strong> ${id}`;
+        document.getElementById('status-text').innerText = "Host active. Waiting for peers...";
+      });
+
+      peer.on('connection', (conn) => {
+        connections.push(conn);
+        conn.on('data', (data) => handleNetworkMessage(data));
+        conn.on('open', () => {
+          // Send initial state to newly joined client
+          conn.send({ type: 'SYNC', state: state });
+        });
+      });
+    }
+
+    function joinSession() {
+      const code = document.getElementById('join-code').value.trim();
+      if (!code) return alert("Enter host code!");
+      
+      peer = new Peer();
+      peer.on('open', () => {
+        const conn = peer.connect(code);
+        connections.push(conn);
+        conn.on('open', () => {
+          document.getElementById('status-text').innerText = "Connected to host session!";
+        });
+        conn.on('data', (data) => handleNetworkMessage(data));
+      });
+    }
+
+    function broadcast(data) {
+      connections.forEach(conn => conn.send(data));
+    }
+
+    function handleNetworkMessage(data) {
+      if (data.type === 'PAGE_CHANGE') {
+        state.currentPage = data.page;
+        renderPage();
+      } else if (data.type === 'SYNC') {
+        state = data.state;
+        renderPage();
+      }
+    }
+
+    // 3. Document Parsing Handler (Host System)
+    document.getElementById('file-input').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const arrayBuffer = await file.arrayBuffer();
+      const uint8Array = new Uint8Array(arrayBuffer);
+
+      // Pass byte data into Python WASM environment without uploading to external server
+      const parseDoc = pyodide.globals.get('parse_document');
+      const pageCount = parseDoc(uint8Array, file.name);
+
+      state.totalPages = pageCount;
+      state.currentPage = 1;
+
+      renderPage();
+      broadcast({ type: 'SYNC', state: state });
+    });
+
+    function renderPage() {
+      document.getElementById('page-num').innerText = state.currentPage;
+      document.getElementById('page-count').innerText = state.totalPages;
+      
+      const getPage = pyodide.globals.get('get_page');
+      const content = getPage(state.currentPage - 1);
+      document.getElementById('content').innerText = content || "No document loaded or page empty.";
+    }
+
+    function prevPage() {
+      if (state.currentPage > 1) {
+        state.currentPage--;
+        renderPage();
+        broadcast({ type: 'PAGE_CHANGE', page: state.currentPage });
+      }
+    }
+
+    function nextPage() {
+      if (state.currentPage < state.totalPages) {
+        state.currentPage++;
+        renderPage();
+        broadcast({ type: 'PAGE_CHANGE', page: state.currentPage });
+      }
+    }
+  </script>
+</body>
+</html>
