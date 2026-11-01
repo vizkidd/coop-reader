@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>P2P WASM Collaborative Document Reader</title>
   <!-- Pyodide WASM Runtime -->
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
@@ -10,47 +11,197 @@
   <!-- PDF.js for Visual PDF Canvas Rendering -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <style>
-    body { font-family: sans-serif; margin: 20px; background: #f4f4f9; }
-    #toolbar { padding: 10px; background: #fff; border-bottom: 1px solid #ccc; margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-    #viewer-container { background: #fff; border: 1px solid #ccc; padding: 20px; min-height: 500px; text-align: center; overflow: auto; position: relative; }
-    canvas { max-width: 100%; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-    #text-content { text-align: left; white-space: pre-wrap; line-height: 1.5; }
-    .status { font-weight: bold; color: #007bb6; }
-    #room-code-display { margin-top: 5px; font-size: 1.1em; color: #333; display: flex; gap: 10px; align-items: center; }
-    button { cursor: pointer; padding: 5px 10px; }
+    :root {
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --bg-color: #f8fafc;
+      --card-bg: #ffffff;
+      --text-main: #1e293b;
+      --text-muted: #64748b;
+      --border-color: #e2e8f0;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body { 
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+      background: var(--bg-color); 
+      color: var(--text-main);
+      padding: 1rem; 
+      line-height: 1.5;
+    }
+
+    h2 { font-size: 1.5rem; margin-bottom: 1rem; font-weight: 700; color: var(--text-main); }
+
+    #toolbar { 
+      background: var(--card-bg); 
+      border: 1px solid var(--border-color); 
+      border-radius: 10px;
+      padding: 1rem; 
+      margin-bottom: 1rem; 
+      display: flex; 
+      flex-wrap: wrap; 
+      gap: 12px; 
+      align-items: center; 
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    input[type="text"], input[type="number"] {
+      padding: 6px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-size: 0.9rem;
+      outline: none;
+    }
+    input[type="text"]:focus, input[type="number"]:focus { border-color: var(--primary); }
+
+    button { 
+      cursor: pointer; 
+      padding: 6px 12px; 
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-weight: 500;
+      font-size: 0.9rem;
+      transition: background 0.2s;
+    }
+    button:hover { background: var(--primary-hover); }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+
+    #status-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+    }
+
+    .status { font-weight: 600; color: var(--primary); }
+    #peer-list { font-size: 0.85rem; color: var(--text-muted); }
+
+    #room-code-display { 
+      margin-bottom: 1rem; 
+      font-size: 0.95rem; 
+      background: #eff6ff; 
+      border: 1px solid #bfdbfe;
+      padding: 8px 12px;
+      border-radius: 6px;
+      display: inline-flex;
+      gap: 10px; 
+      align-items: center; 
+    }
+
+    #viewer-container { 
+      background: var(--card-bg); 
+      border: 1px solid var(--border-color); 
+      border-radius: 12px;
+      padding: 1.5rem; 
+      min-height: 60vh; 
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      overflow: auto; 
+      position: relative; 
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+    }
+
+    canvas { 
+      max-width: 100%; 
+      height: auto !important;
+      box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); 
+      border-radius: 4px;
+    }
+
+    #text-content { 
+      width: 100%;
+      text-align: left; 
+      white-space: pre-wrap; 
+      line-height: 1.6; 
+      font-size: 1rem;
+    }
+
+    /* Remote Multi-User Cursors */
+    .remote-cursor {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      background: #ef4444;
+      border: 2px solid white;
+      border-radius: 50%;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      transition: left 0.05s linear, top 0.05s linear;
+      z-index: 1000;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    .remote-cursor::after {
+      content: attr(data-peer);
+      position: absolute;
+      left: 18px;
+      top: -4px;
+      background: rgba(15, 23, 42, 0.85);
+      color: white;
+      padding: 2px 6px;
+      font-size: 10px;
+      font-weight: 600;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 768px) {
+      #toolbar { flex-direction: column; align-items: stretch; }
+      .toolbar-group { justify-content: space-between; }
+    }
   </style>
 </head>
 <body>
 
-  <h2>WASM Local Collaborative Document Reader</h2>
+  <h2>Collaborative Document Reader</h2>
   
   <div id="toolbar">
-    <div>
-      <label>Session: </label>
-      <button onclick="startHost()">Create Session (Host)</button>
+    <div class="toolbar-group">
+      <button onclick="startHost()">Create Session</button>
       <input type="text" id="join-code" placeholder="Enter Host Code">
-      <button onclick="joinSession()">Join Session</button>
+      <button onclick="joinSession()">Join</button>
     </div>
-    <div>
+    <div class="toolbar-group">
       <input type="file" id="file-input" disabled />
     </div>
-    <div>
-      <button onclick="prevPage()">Previous</button>
-      <span>Page: <span id="page-num">0</span> / <span id="page-count">0</span></span>
+    <div class="toolbar-group">
+      <button onclick="prevPage()">Prev</button>
+      <span>Page <span id="page-num">0</span> of <span id="page-count">0</span></span>
+      <input type="number" id="goto-page" min="1" style="width: 60px;" placeholder="Go to" />
+      <button onclick="jumpToPage()">Go</button>
       <button onclick="nextPage()">Next</button>
     </div>
-    <div>
+    <div class="toolbar-group">
       <button onclick="zoomIn()">Zoom +</button>
       <button onclick="zoomOut()">Zoom -</button>
       <button onclick="toggleFullscreen()">Fullscreen</button>
     </div>
   </div>
 
-  <p>Status: <span id="status-text" class="status">Initializing WASM environment...</span></p>
-  <div id="room-code-display"></div>
-  <div id="peer-list" style="font-size: 0.9em; color: #555; margin-top: 5px;"></div>
+  <div id="room-code-display" style="display:none;"></div>
 
-  <div id="viewer-container">
+  <div id="status-bar">
+    <div>Status: <span id="status-text" class="status">Initializing WASM environment...</span></div>
+    <div id="peer-list">Connected Peers (0): None</div>
+  </div>
+
+  <div id="viewer-container" id="cursor-space">
     <canvas id="pdf-canvas" style="display:none;"></canvas>
     <div id="text-content">Load a file or connect to a session to start reading...</div>
   </div>
@@ -64,11 +215,12 @@
     let cachedFileBytes = null;
     let cachedFilename = "";
     let pdfDoc = null;
-    let currentZoom = 1.5;
+    let currentZoom = 1.25;
+    let remoteCursors = {};
+    let lastMouseMove = 0;
 
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-    // 1. Initialize Pyodide WASM Runtime
     async function initPyodide() {
       pyodide = await loadPyodide();
       await pyodide.loadPackage(["micropip"]);
@@ -131,22 +283,37 @@ def get_page(index):
     return ""
       `);
 
-      document.getElementById('status-text').innerText = "WASM Runtime Ready. Create or Join a Session.";
+      document.getElementById('status-text').innerText = "Ready. Create or Join a Session.";
       document.getElementById('file-input').disabled = false;
     }
 
     initPyodide();
 
-    // 2. Peer-to-Peer Signaling & Synchronization
+    // Setup Mouse Tracking for Multi-User Cursors
+    const viewerContainer = document.getElementById('viewer-container');
+    viewerContainer.addEventListener('mousemove', (e) => {
+      const now = Date.now();
+      if (now - lastMouseMove < 50) return; // Throttle to 20fps
+      lastMouseMove = now;
+
+      const rect = viewerContainer.getBoundingClientRect();
+      const x = (e.clientX - rect.left + viewerContainer.scrollLeft) / viewerContainer.scrollWidth;
+      const y = (e.clientY - rect.top + viewerContainer.scrollTop) / viewerContainer.scrollHeight;
+
+      broadcast({ type: 'CURSOR_MOVE', x, y, peerId: myPeerId || (peer ? peer.id : 'Host') });
+    });
+
     function startHost() {
       peer = new Peer(); 
       peer.on('open', (id) => {
         myPeerId = id;
-        document.getElementById('room-code-display').innerHTML = `
+        const codeDisplay = document.getElementById('room-code-display');
+        codeDisplay.style.display = 'inline-flex';
+        codeDisplay.innerHTML = `
           <strong>Host Code:</strong> <span id="code-val">${id}</span>
-          <button onclick="copyHostCode()">Copy Code</button>
+          <button onclick="copyHostCode()" style="padding: 2px 8px; font-size: 0.8rem;">Copy</button>
         `;
-        document.getElementById('status-text').innerText = "Host active. Waiting for peers...";
+        document.getElementById('status-text').innerText = "Hosting active. Waiting for peers...";
       });
 
       peer.on('connection', (conn) => {
@@ -163,6 +330,7 @@ def get_page(index):
         conn.on('data', (data) => handleNetworkMessage(data));
         conn.on('close', () => {
           connections = connections.filter(c => c !== conn);
+          removeRemoteCursor(conn.peer);
           updatePeerListUI();
         });
       });
@@ -171,25 +339,23 @@ def get_page(index):
     function joinSession() {
       const code = document.getElementById('join-code').value.trim();
       if (!code) return alert("Please enter a valid host code!");
-      
-      if (code === myPeerId) {
-        alert("You cannot join your own session as a guest!");
-        return;
-      }
+      if (code === myPeerId) return alert("You cannot join your own session!");
       
       peer = new Peer();
-      peer.on('open', () => {
+      peer.on('open', (id) => {
+        myPeerId = id;
         const conn = peer.connect(code);
         connections.push(conn);
         updatePeerListUI();
         
         conn.on('open', () => {
-          document.getElementById('status-text').innerText = "Successfully connected to host session!";
+          document.getElementById('status-text').innerText = "Connected to host session successfully!";
         });
         
         conn.on('data', (data) => handleNetworkMessage(data));
         conn.on('close', () => {
           connections = connections.filter(c => c !== conn);
+          removeRemoteCursor(conn.peer);
           updatePeerListUI();
         });
       });
@@ -203,9 +369,9 @@ def get_page(index):
     }
 
     function updatePeerListUI() {
-      const activePeers = connections.map(c => c.peer).join(', ');
+      const activePeers = connections.map(c => c.peer.substring(0, 6) + '...').join(', ');
       document.getElementById('peer-list').innerText = `Connected Peers (${connections.length}): ${activePeers || 'None'}`;
-      document.getElementById('status-text').innerText = `Active connections: ${connections.length}`;
+      document.getElementById('status-text').innerText = `Session Active — Peers connected: ${connections.length}`;
     }
 
     function broadcast(data) {
@@ -227,16 +393,39 @@ def get_page(index):
       } else if (data.type === 'SYNC') {
         state = data.state;
         if (cachedFileBytes) {
-          processAndRenderFileLocally(cachedFileBytes.slice(0), cachedFilename, false);
+          renderCurrentPage();
         }
       } else if (data.type === 'FILE_TRANSFER') {
         cachedFilename = data.filename;
         cachedFileBytes = data.buffer;
         processAndRenderFileLocally(data.buffer, data.filename, true);
+      } else if (data.type === 'CURSOR_MOVE') {
+        updateRemoteCursor(data.peerId, data.x, data.y);
       }
     }
 
-    // 3. Document Handling & Rendering
+    function updateRemoteCursor(peerId, xNorm, yNorm) {
+      let cursorEl = remoteCursors[peerId];
+      if (!cursorEl) {
+        cursorEl = document.createElement('div');
+        cursorEl.className = 'remote-cursor';
+        cursorEl.setAttribute('data-peer', peerId.substring(0, 6));
+        viewerContainer.appendChild(cursorEl);
+        remoteCursors[peerId] = cursorEl;
+      }
+      const x = xNorm * viewerContainer.scrollWidth;
+      const y = yNorm * viewerContainer.scrollHeight;
+      cursorEl.style.left = `${x}px`;
+      cursorEl.style.top = `${y}px`;
+    }
+
+    function removeRemoteCursor(peerId) {
+      if (remoteCursors[peerId]) {
+        remoteCursors[peerId].remove();
+        delete remoteCursors[peerId];
+      }
+    }
+
     document.getElementById('file-input').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
@@ -252,7 +441,7 @@ def get_page(index):
     async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
       if (!arrayBuffer) return;
       cachedFilename = filename;
-      cachedFileBytes = arrayBuffer.slice(0); // Maintain a clean master copy
+      cachedFileBytes = arrayBuffer.slice(0);
       state.fileType = filename.toLowerCase().endsWith('.pdf') ? 'pdf' : 'other';
 
       if (resetPage) {
@@ -263,7 +452,6 @@ def get_page(index):
         document.getElementById('pdf-canvas').style.display = 'block';
         document.getElementById('text-content').style.display = 'none';
         
-        // Pass a cloned slice so PDF.js doesn't detach our cached master buffer
         const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer.slice(0) });
         pdfDoc = await loadingTask.promise;
         state.totalPages = pdfDoc.numPages;
@@ -282,6 +470,7 @@ def get_page(index):
     async function renderCurrentPage() {
       document.getElementById('page-num').innerText = state.currentPage;
       document.getElementById('page-count').innerText = state.totalPages;
+      document.getElementById('goto-page').value = state.currentPage;
 
       if (state.fileType === 'pdf' && pdfDoc) {
         const page = await pdfDoc.getPage(state.currentPage);
@@ -315,7 +504,18 @@ def get_page(index):
       }
     }
 
-    // 4. Viewport Controls
+    function jumpToPage() {
+      const pageInput = document.getElementById('goto-page');
+      const targetPage = parseInt(pageInput.value);
+      if (targetPage >= 1 && targetPage <= state.totalPages) {
+        state.currentPage = targetPage;
+        renderCurrentPage();
+        broadcast({ type: 'PAGE_CHANGE', page: state.currentPage });
+      } else {
+        alert(`Please enter a valid page number between 1 and ${state.totalPages}`);
+      }
+    }
+
     function zoomIn() {
       currentZoom += 0.25;
       renderCurrentPage();
