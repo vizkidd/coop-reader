@@ -131,6 +131,7 @@
       overflow: auto; 
       position: relative; 
       box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+      touch-action: pan-y;
     }
 
     canvas { 
@@ -206,6 +207,12 @@
       <button onclick="zoomOut()">Zoom -</button>
       <button onclick="toggleFullscreen()">Fullscreen</button>
     </div>
+    <div class="toolbar-group">
+      <label style="font-size: 0.85rem; display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none;">
+        <input type="checkbox" id="gestures-toggle" checked />
+        Gestures & Keys
+      </label>
+    </div>
   </div>
 
   <div id="room-code-display" style="display:none;"></div>
@@ -233,6 +240,13 @@
     let currentZoom = 1.25;
     let remoteCursors = {};
     let lastMouseMove = 0;
+
+    // Gesture tracking variables
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let mouseDragStartX = 0;
+    let mouseDragStartY = 0;
+    let isMouseDown = false;
 
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
@@ -301,14 +315,91 @@ def get_page(index):
       document.getElementById('status-text').innerText = "Ready. Create or Join a Session.";
       document.getElementById('file-input').disabled = false;
 
-      // Check URL for auto-join session ID after initialization
       checkForAutoJoin();
     }
 
     initPyodide();
 
+    // 4. Touch, Mouse Swipe & Keyboard Gestures Implementation
+    const viewerContainer = document.getElementById('viewer-container');
+
+    // Touch Swipe Handlers
+    viewerContainer.addEventListener('touchstart', (e) => {
+      if (!document.getElementById('gestures-toggle').checked) return;
+      if (e.touches.length === 1) {
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+      }
+    }, { passive: true });
+
+    viewerContainer.addEventListener('touchend', (e) => {
+      if (!document.getElementById('gestures-toggle').checked) return;
+      if (e.changedTouches.length === 1) {
+        const touchEndX = e.changedTouches[0].clientX;
+        const touchEndY = e.changedTouches[0].clientY;
+        handleSwipeGesture(touchStartX, touchStartY, touchEndX, touchEndY);
+      }
+    }, { passive: true });
+
+    // Mouse Drag Swipe Handlers
+    viewerContainer.addEventListener('mousedown', (e) => {
+      if (!document.getElementById('gestures-toggle').checked) return;
+      if (e.button === 0) { // Left click
+        isMouseDown = true;
+        mouseDragStartX = e.clientX;
+        mouseDragStartY = e.clientY;
+      }
+    });
+
+    viewerContainer.addEventListener('mouseup', (e) => {
+      if (!document.getElementById('gestures-toggle').checked || !isMouseDown) return;
+      isMouseDown = false;
+      handleSwipeGesture(mouseDragStartX, mouseDragStartY, e.clientX, e.clientY);
+    });
+
+    function handleSwipeGesture(startX, startY, endX, endY) {
+      const diffX = endX - startX;
+      const diffY = endY - startY;
+      const threshold = 65; // minimum pixel distance for swipe
+
+      if (Math.abs(diffX) > threshold && Math.abs(diffX) > Math.abs(diffY)) {
+        if (diffX < 0) {
+          nextPage(); // Swipe Left -> Next Page
+        } else {
+          prevPage(); // Swipe Right -> Previous Page
+        }
+      }
+    }
+
+    // Keyboard Navigation Handler
+    window.addEventListener('keydown', (e) => {
+      if (!document.getElementById('gestures-toggle').checked) return;
+      // Do not trigger if user is typing in an input field
+      if (['INPUT', 'TEXTAREA', 'BUTTON'].includes(document.activeElement.tagName)) return;
+
+      if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') {
+        e.preventDefault();
+        nextPage();
+      } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+        e.preventDefault();
+        prevPage();
+      }
+    });
+
+    // Cursor Tracking
+    viewerContainer.addEventListener('mousemove', (e) => {
+      const now = Date.now();
+      if (now - lastMouseMove < 50) return;
+      lastMouseMove = now;
+
+      const rect = viewerContainer.getBoundingClientRect();
+      const x = (e.clientX - rect.left + viewerContainer.scrollLeft) / viewerContainer.scrollWidth;
+      const y = (e.clientY - rect.top + viewerContainer.scrollTop) / viewerContainer.scrollHeight;
+
+      broadcast({ type: 'CURSOR_MOVE', x, y, peerId: myPeerId || (peer ? peer.id : 'Host') });
+    });
+
     function checkForAutoJoin() {
-      // Handle path parsed from 404.html redirect query parameter (?p=/sessionId) or direct pathname
       const urlParams = new URLSearchParams(window.location.search);
       let sessionId = null;
 
@@ -317,7 +408,6 @@ def get_page(index):
         if (pVal) sessionId = pVal;
       } else {
         const pathSegments = window.location.pathname.split('/').filter(Boolean);
-        // If URL is vizkidd.github.io/coop-reader/<session-id>
         if (pathSegments.length > 1 && pathSegments[0] === 'coop-reader') {
           sessionId = pathSegments[1];
         }
@@ -325,7 +415,6 @@ def get_page(index):
 
       if (sessionId) {
         document.getElementById('join-code').value = sessionId;
-        // Small delay to ensure runtime is fully settled
         setTimeout(() => joinSession(sessionId), 500);
       }
     }
@@ -345,19 +434,6 @@ def get_page(index):
       const statusText = document.getElementById('status-text');
       statusText.className = 'status';
     }
-
-    const viewerContainer = document.getElementById('viewer-container');
-    viewerContainer.addEventListener('mousemove', (e) => {
-      const now = Date.now();
-      if (now - lastMouseMove < 50) return;
-      lastMouseMove = now;
-
-      const rect = viewerContainer.getBoundingClientRect();
-      const x = (e.clientX - rect.left + viewerContainer.scrollLeft) / viewerContainer.scrollWidth;
-      const y = (e.clientY - rect.top + viewerContainer.scrollTop) / viewerContainer.scrollHeight;
-
-      broadcast({ type: 'CURSOR_MOVE', x, y, peerId: myPeerId || (peer ? peer.id : 'Host') });
-    });
 
     function startHost() {
       hideError();
@@ -418,7 +494,6 @@ def get_page(index):
       peer.on('open', () => {
         const conn = peer.connect(code, { reliable: true });
         
-        // Timeout check if peer doesn't respond within 7 seconds
         const connectionTimeout = setTimeout(() => {
           if (!conn.open) {
             showError(`Error: Session "${code}" timed out or does not exist.`);
@@ -609,7 +684,7 @@ def get_page(index):
     function zoomOut() {
       if (currentZoom > 0.5) {
         currentZoom -= 0.25;
-        renderOpenCurrentPage();
+        renderCurrentPage();
       }
     }
 
