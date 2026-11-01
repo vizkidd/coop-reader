@@ -149,6 +149,14 @@
       font-size: 1rem;
     }
 
+    #image-view {
+      max-width: 100%;
+      height: auto;
+      box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
+      border-radius: 4px;
+      display: none;
+    }
+
     .remote-cursor {
       position: absolute;
       width: 14px;
@@ -184,7 +192,7 @@
 </head>
 <body>
 
-  <h2>Collaborative Document Reader</h2>
+  <h2>Collaborative Document & Image Reader</h2>
   
   <div id="toolbar">
     <div class="toolbar-group">
@@ -193,7 +201,7 @@
       <button onclick="joinSession()">Join</button>
     </div>
     <div class="toolbar-group">
-      <input type="file" id="file-input" disabled />
+      <input type="file" id="file-input" accept=".pdf,.docx,.xlsx,.epub,.azw3,.mobi,.png,.jpg,.jpeg,.gif,.webp" disabled />
     </div>
     <div class="toolbar-group">
       <button onclick="prevPage()">Prev</button>
@@ -205,6 +213,8 @@
     <div class="toolbar-group">
       <button onclick="zoomIn()">Zoom +</button>
       <button onclick="zoomOut()">Zoom -</button>
+      <button onclick="fitToWidth()">Fit Width</button>
+      <button onclick="fitToHeight()">Fit Height</button>
       <button onclick="toggleFullscreen()">Fullscreen</button>
     </div>
     <div class="toolbar-group">
@@ -219,13 +229,14 @@
   <div id="error-banner"></div>
 
   <div id="status-bar">
-    <div>Status: <span id="status-text" class="status">Initializing WASM environment...</span></div>
+    <div>Status: <span id="status-text" class="status">Initializing WASM sandbox...</span></div>
     <div id="peer-list">Connected Peers (0): None</div>
   </div>
 
   <div id="viewer-container">
     <canvas id="pdf-canvas" style="display:none;"></canvas>
-    <div id="text-content">Load a file or connect to a session to start reading...</div>
+    <img id="image-view" alt="Loaded Image" />
+    <div id="text-content">Load a file or connect to a session to start reading securely in WASM sandbox...</div>
   </div>
 
   <script>
@@ -241,7 +252,6 @@
     let remoteCursors = {};
     let lastMouseMove = 0;
 
-    // Gesture tracking variables
     let touchStartX = 0;
     let touchStartY = 0;
     let mouseDragStartX = 0;
@@ -312,7 +322,7 @@ def get_page(index):
     return ""
       `);
 
-      document.getElementById('status-text').innerText = "Ready. Create or Join a Session.";
+      document.getElementById('status-text').innerText = "WASM Sandbox Ready. Create or Join Session.";
       document.getElementById('file-input').disabled = false;
 
       checkForAutoJoin();
@@ -320,10 +330,8 @@ def get_page(index):
 
     initPyodide();
 
-    // 4. Touch, Mouse Swipe & Keyboard Gestures Implementation
     const viewerContainer = document.getElementById('viewer-container');
 
-    // Touch Swipe Handlers
     viewerContainer.addEventListener('touchstart', (e) => {
       if (!document.getElementById('gestures-toggle').checked) return;
       if (e.touches.length === 1) {
@@ -341,10 +349,9 @@ def get_page(index):
       }
     }, { passive: true });
 
-    // Mouse Drag Swipe Handlers
     viewerContainer.addEventListener('mousedown', (e) => {
       if (!document.getElementById('gestures-toggle').checked) return;
-      if (e.button === 0) { // Left click
+      if (e.button === 0) {
         isMouseDown = true;
         mouseDragStartX = e.clientX;
         mouseDragStartY = e.clientY;
@@ -360,21 +367,19 @@ def get_page(index):
     function handleSwipeGesture(startX, startY, endX, endY) {
       const diffX = endX - startX;
       const diffY = endY - startY;
-      const threshold = 65; // minimum pixel distance for swipe
+      const threshold = 65;
 
       if (Math.abs(diffX) > threshold && Math.abs(diffX) > Math.abs(diffY)) {
         if (diffX < 0) {
-          nextPage(); // Swipe Left -> Next Page
+          nextPage();
         } else {
-          prevPage(); // Swipe Right -> Previous Page
+          prevPage();
         }
       }
     }
 
-    // Keyboard Navigation Handler
     window.addEventListener('keydown', (e) => {
       if (!document.getElementById('gestures-toggle').checked) return;
-      // Do not trigger if user is typing in an input field
       if (['INPUT', 'TEXTAREA', 'BUTTON'].includes(document.activeElement.tagName)) return;
 
       if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') {
@@ -386,7 +391,6 @@ def get_page(index):
       }
     });
 
-    // Cursor Tracking
     viewerContainer.addEventListener('mousemove', (e) => {
       const now = Date.now();
       if (now - lastMouseMove < 50) return;
@@ -558,6 +562,7 @@ def get_page(index):
       } else if (data.type === 'FILE_TRANSFER') {
         cachedFilename = data.filename;
         cachedFileBytes = data.buffer;
+        // File downloaded securely into local WASM / browser sandbox of peer
         processAndRenderFileLocally(data.buffer, data.filename, true);
       } else if (data.type === 'CURSOR_MOVE') {
         updateRemoteCursor(data.peerId, data.x, data.y);
@@ -594,7 +599,9 @@ def get_page(index):
       cachedFileBytes = arrayBuffer.slice(0);
       cachedFilename = file.name;
 
+      // Process locally in sandbox
       await processAndRenderFileLocally(arrayBuffer, file.name, true);
+      // Securely transfer file bytes to peers' local sandboxes via P2P
       broadcast({ type: 'FILE_TRANSFER', filename: file.name, buffer: cachedFileBytes.slice(0) });
     });
 
@@ -602,7 +609,15 @@ def get_page(index):
       if (!arrayBuffer) return;
       cachedFilename = filename;
       cachedFileBytes = arrayBuffer.slice(0);
-      state.fileType = filename.toLowerCase().endsWith('.pdf') ? 'pdf' : 'other';
+      const fname = filename.toLowerCase();
+
+      if (fname.endsWith('.pdf')) {
+        state.fileType = 'pdf';
+      } else if (fname.match(/\.(png|jpg|jpeg|gif|webp)$/)) {
+        state.fileType = 'image';
+      } else {
+        state.fileType = 'other';
+      }
 
       if (resetPage) {
         state.currentPage = 1;
@@ -610,13 +625,24 @@ def get_page(index):
 
       if (state.fileType === 'pdf') {
         document.getElementById('pdf-canvas').style.display = 'block';
+        document.getElementById('image-view').style.display = 'none';
         document.getElementById('text-content').style.display = 'none';
         
         const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer.slice(0) });
         pdfDoc = await loadingTask.promise;
         state.totalPages = pdfDoc.numPages;
+      } else if (state.fileType === 'image') {
+        document.getElementById('pdf-canvas').style.display = 'none';
+        document.getElementById('text-content').style.display = 'none';
+        document.getElementById('image-view').style.display = 'block';
+
+        const blob = new Blob([arrayBuffer.slice(0)]);
+        const url = URL.createObjectURL(blob);
+        document.getElementById('image-view').src = url;
+        state.totalPages = 1;
       } else {
         document.getElementById('pdf-canvas').style.display = 'none';
+        document.getElementById('image-view').style.display = 'none';
         document.getElementById('text-content').style.display = 'block';
 
         const parseDoc = pyodide.globals.get('parse_document');
@@ -641,6 +667,8 @@ def get_page(index):
         canvas.width = viewport.width;
 
         await page.render({ canvasContext: context, viewport: viewport }).promise;
+      } else if (state.fileType === 'image') {
+        // Image view handles its own display
       } else {
         const getPage = pyodide.globals.get('get_page');
         const content = getPage(state.currentPage - 1);
@@ -685,6 +713,34 @@ def get_page(index):
       if (currentZoom > 0.5) {
         currentZoom -= 0.25;
         renderCurrentPage();
+      }
+    }
+
+    async function fitToWidth() {
+      if (state.fileType === 'pdf' && pdfDoc) {
+        const page = await pdfDoc.getPage(state.currentPage);
+        const unscaledViewport = page.getViewport({ scale: 1.0 });
+        const containerWidth = viewerContainer.clientWidth - 40; // account for padding
+        currentZoom = containerWidth / unscaledViewport.width;
+        renderCurrentPage();
+      } else if (state.fileType === 'image') {
+        const img = document.getElementById('image-view');
+        img.style.width = '100%';
+        img.style.height = 'auto';
+      }
+    }
+
+    async function fitToHeight() {
+      if (state.fileType === 'pdf' && pdfDoc) {
+        const page = await pdfDoc.getPage(state.currentPage);
+        const unscaledViewport = page.getViewport({ scale: 1.0 });
+        const containerHeight = viewerContainer.clientHeight - 40; // account for padding
+        currentZoom = containerHeight / unscaledViewport.height;
+        renderCurrentPage();
+      } else if (state.fileType === 'image') {
+        const img = document.getElementById('image-view');
+        img.style.height = '100%';
+        img.style.width = 'auto';
       }
     }
 
