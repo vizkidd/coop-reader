@@ -2,14 +2,15 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>P2P WASM Multi-Format Document Reader</title>
+  <title>P2P WASM Collaborative Document Reader</title>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <style>
     body { font-family: sans-serif; margin: 20px; background: #f4f4f9; }
     #toolbar { padding: 10px; background: #fff; border-bottom: 1px solid #ccc; margin-bottom: 10px; }
-    #viewer-container { background: #fff; border: 1px solid #ccc; padding: 20px; min-height: 400px; white-space: pre-wrap; }
+    #viewer-container { background: #fff; border: 1px solid #ccc; padding: 20px; min-height: 400px; white-space: pre-wrap; line-height: 1.5; }
     .status { font-weight: bold; color: #007bb6; }
+    #room-code-display { margin-top: 5px; font-size: 1.1em; color: #333; }
   </style>
 </head>
 <body>
@@ -17,7 +18,7 @@
   <h2>WASM Local Collaborative Document Reader</h2>
   
   <div id="toolbar">
-    <label>Role: </label>
+    <label>Session Control: </label>
     <button onclick="startHost()">Create Session (Host)</button>
     <input type="text" id="join-code" placeholder="Enter Host Code">
     <button onclick="joinSession()">Join Session</button>
@@ -32,7 +33,7 @@
   <div id="room-code-display"></div>
 
   <div id="viewer-container">
-    <div id="content">Load a file to start reading...</div>
+    <div id="content">Load a file or connect to a session to start reading...</div>
   </div>
 
   <script>
@@ -40,142 +41,187 @@
     let peer = null;
     let connections = [];
     let state = { currentPage: 1, totalPages: 1 };
+    let cachedFileBytes = null;
+    let cachedFilename = "";
 
     // 1. Initialize Pyodide WASM Runtime
     async function initPyodide() {
       pyodide = await loadPyodide();
       await pyodide.loadPackage(["micropip"]);
       const micropip = pyodide.pyimport("micropip");
-      // Load pure-Python document parsing libraries in WASM
       await micropip.install(['python-docx', 'openpyxl', 'pypdf']);
       
-      // Execute Python logic for document extraction inside WASM
       await pyodide.runPythonAsync(`
-        import io
-        import docx
-        import openpyxl
-        from pypdf import PdfReader 
+import io
+import zipfile
+import re
+import docx
+import openpyxl
+from pypdf import PdfReader
 
-        doc_pages = []
+doc_pages = []
 
-        def parse_document(file_bytes, filename):
-            global doc_pages
-            doc_pages = []
-            bio = io.BytesIO(file_bytes.to_py())
-            fname = filename.lower()
+def parse_document(file_bytes_js, filename):
+    global doc_pages
+    doc_pages = []
+    file_bytes = file_bytes_js.to_py().tobytes()
+    bio = io.BytesIO(file_bytes)
+    fname = filename.lower()
 
-            if fname.endswith('.docx'):
-                doc = docx.Document(bio)
-                doc_pages = [p.text for p in doc.paragraphs if p.text.strip()]
-            elif fname.endswith('.xlsx'):
-                wb = openpyxl.load_workbook(bio)
-                for sheet in wb.sheetnames:
-                    ws = wb[sheet]
-                    sheet_data = []
-                    for row in ws.iter_rows(values_only=True):
-                        sheet_data.append(" | ".join([str(cell) for cell in row if cell is not None]))
-                    doc_pages.append(f"--- Sheet: {sheet} ---\\n" + "\\n".join(sheet_data))
-            elif fname.endswith('.pdf'):
-                reader = PdfReader(bio)
-                for i, page in enumerate(reader.pages):
-                    text = page.extract_text() or ""
-                    doc_pages.append(f"--- Page {i+1} ---\\n" + text)
+    if fname.endswith('.docx'):
+        doc = docx.Document(bio)
+        doc_pages = [p.text for p in doc.paragraphs if p.text.strip()]
+    elif fname.endswith('.xlsx'):
+        wb = openpyxl.load_workbook(bio)
+        for sheet in wb.sheetnames:
+            ws = wb[sheet]
+            sheet_data = []
+            for row in ws.iter_rows(values_only=True):
+                sheet_data.append(" | ".join([str(cell) for cell in row if cell is not None]))
+            doc_pages.append(f"--- Sheet: {sheet} ---\\n" + "\\n".join(sheet_data))
+    elif fname.endswith('.pdf'):
+        reader = PdfReader(bio)
+        for i, page in enumerate(reader.pages):
+            text = page.extract_text() or ""
+            doc_pages.append(f"--- Page {i+1} ---\\n" + text)
+    elif fname.endswith('.epub') or fname.endswith('.azw3') or fname.endswith('.mobi'):
+        try:
+            if zipfile.is_zipfile(bio):
+                with zipfile.ZipFile(bio) as z:
+                    for name in z.namelist():
+                        if name.endswith(('.html', '.xhtml', '.htm', '.txt')):
+                            with z.open(name) as f:
+                                content = f.read().decode('utf-8', errors='ignore')
+                                clean_text = re.sub('<[^<]+?>', '', content)
+                                if clean_text.strip():
+                                    doc_pages.append(f"--- {name} ---\\n" + clean_text.strip())
             else:
-                doc_pages = [f"Error: Format '{filename}' is not supported."]
-        
-            return len(doc_pages)
+                text = file_bytes.decode('utf-8', errors='ignore')
+                chunks = re.findall(r'[A-Za-z0-9\\s,.\\-\\(\\)]+', text)
+                filtered = [c.strip() for c in chunks if len(c.strip()) > 20]
+                doc_pages = filtered[:100] if filtered else ["Could not extract text from binary AZW3 container."]
+        except Exception as e:
+            doc_pages = [f"Error parsing eBook format: {str(e)}"]
+    else:
+        doc_pages = [f"Error: Format '{filename}' is not supported."]
+    
+    return len(doc_pages)
 
-        def get_page(index):
-            if 0 <= index < len(doc_pages):
-                return doc_pages[index]
-            return ""
+def get_page(index):
+    if 0 <= index < len(doc_pages):
+        return doc_pages[index]
+    return ""
       `);
 
-      document.getElementById('status-text').innerText = "WASM Runtime Ready.";
+      document.getElementById('status-text').innerText = "WASM Runtime Ready. Create or Join a Session.";
       document.getElementById('file-input').disabled = false;
     }
 
     initPyodide();
 
-    // 2. Peer-to-Peer Signaling & Synchronization API
+    // 2. Peer-to-Peer Signaling & Synchronization
     function startHost() {
       peer = new Peer(); 
       peer.on('open', (id) => {
-        document.getElementById('room-code-display').innerHTML = `<strong>Share Host Code:</strong> ${id}`;
+        document.getElementById('room-code-display').innerHTML = `<strong>Host Code:</strong> ${id}`;
         document.getElementById('status-text').innerText = "Host active. Waiting for peers...";
       });
 
       peer.on('connection', (conn) => {
         connections.push(conn);
-        conn.on('data', (data) => handleNetworkMessage(data));
+        document.getElementById('status-text').innerText = `Peer connected! Active connections: ${connections.length}`;
+        
         conn.on('open', () => {
-          // Send initial state to newly joined client
+          // Send current file and reader sync state to newly joined peer
+          if (cachedFileBytes) {
+            conn.send({ type: 'FILE_TRANSFER', filename: cachedFilename, buffer: cachedFileBytes });
+          }
           conn.send({ type: 'SYNC', state: state });
+        });
+
+        conn.on('data', (data) => handleNetworkMessage(data));
+        conn.on('close', () => {
+          document.getElementById('status-text').innerText = "A peer disconnected.";
         });
       });
     }
 
     function joinSession() {
       const code = document.getElementById('join-code').value.trim();
-      if (!code) return alert("Enter host code!");
+      if (!code) return alert("Please enter a valid host code!");
       
       peer = new Peer();
       peer.on('open', () => {
         const conn = peer.connect(code);
         connections.push(conn);
+        
         conn.on('open', () => {
-          document.getElementById('status-text').innerText = "Connected to host session!";
+          document.getElementById('status-text').innerText = "Successfully connected to host session!";
         });
+        
         conn.on('data', (data) => handleNetworkMessage(data));
       });
     }
 
     function broadcast(data) {
-      connections.forEach(conn => conn.send(data));
+      connections.forEach(conn => {
+        if (conn && conn.open) conn.send(data);
+      });
     }
 
     function handleNetworkMessage(data) {
       if (data.type === 'PAGE_CHANGE') {
         state.currentPage = data.page;
-        renderPage();
+        renderPageLocally();
       } else if (data.type === 'SYNC') {
         state = data.state;
-        renderPage();
+        renderPageLocally();
+      } else if (data.type === 'FILE_TRANSFER') {
+        cachedFilename = data.filename;
+        cachedFileBytes = data.buffer;
+        processAndRenderFileLocally(new Uint8Array(data.buffer), data.filename);
       }
     }
 
-    // 3. Document Parsing Handler (Host System)
+    // 3. Document Parsing & Local Control
     document.getElementById('file-input').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
 
       const arrayBuffer = await file.arrayBuffer();
-      const uint8Array = new Uint8Array(arrayBuffer);
+      cachedFileBytes = arrayBuffer;
+      cachedFilename = file.name;
 
-      // Pass byte data into Python WASM environment without uploading to external server
+      processAndRenderFileLocally(new Uint8Array(arrayBuffer), file.name);
+
+      // Broadcast file to all connected peers
+      broadcast({ type: 'FILE_TRANSFER', filename: file.name, buffer: arrayBuffer });
+    });
+
+    function processAndRenderFileLocally(uint8Array, filename) {
       const parseDoc = pyodide.globals.get('parse_document');
-      const pageCount = parseDoc(uint8Array, file.name);
+      const pageCount = parseDoc(uint8Array, filename);
 
       state.totalPages = pageCount;
       state.currentPage = 1;
 
-      renderPage();
+      renderPageLocally();
       broadcast({ type: 'SYNC', state: state });
-    });
+    }
 
-    function renderPage() {
+    function renderPageLocally() {
       document.getElementById('page-num').innerText = state.currentPage;
       document.getElementById('page-count').innerText = state.totalPages;
       
       const getPage = pyodide.globals.get('get_page');
       const content = getPage(state.currentPage - 1);
-      document.getElementById('content').innerText = content || "No document loaded or page empty.";
+      document.getElementById('content').innerText = content || "Document loaded or page empty.";
     }
 
     function prevPage() {
       if (state.currentPage > 1) {
         state.currentPage--;
-        renderPage();
+        renderPageLocally();
         broadcast({ type: 'PAGE_CHANGE', page: state.currentPage });
       }
     }
@@ -183,7 +229,7 @@
     function nextPage() {
       if (state.currentPage < state.totalPages) {
         state.currentPage++;
-        renderPage();
+        renderPageLocally();
         broadcast({ type: 'PAGE_CHANGE', page: state.currentPage });
       }
     }
