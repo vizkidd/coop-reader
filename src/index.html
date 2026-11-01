@@ -3,12 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <title>P2P WASM Collaborative Document Reader</title>
+  <!-- Pyodide WASM Runtime -->
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+  <!-- PeerJS for P2P Networking -->
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <!-- PDF.js for Visual PDF Canvas Rendering -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <style>
     body { font-family: sans-serif; margin: 20px; background: #f4f4f9; }
     #toolbar { padding: 10px; background: #fff; border-bottom: 1px solid #ccc; margin-bottom: 10px; }
-    #viewer-container { background: #fff; border: 1px solid #ccc; padding: 20px; min-height: 400px; white-space: pre-wrap; line-height: 1.5; }
+    #viewer-container { background: #fff; border: 1px solid #ccc; padding: 20px; min-height: 500px; text-align: center; overflow: auto; }
+    canvas { max-width: 100%; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+    #text-content { text-align: left; white-space: pre-wrap; line-height: 1.5; }
     .status { font-weight: bold; color: #007bb6; }
     #room-code-display { margin-top: 5px; font-size: 1.1em; color: #333; }
   </style>
@@ -29,27 +35,32 @@
     <span>Page: <span id="page-num">0</span> / <span id="page-count">0</span></span>
   </div>
 
-  <p>Status: <span id="status-text" class="status">Initializing Python WASM environment...</span></p>
+  <p>Status: <span id="status-text" class="status">Initializing WASM environment...</span></p>
   <div id="room-code-display"></div>
 
   <div id="viewer-container">
-    <div id="content">Load a file or connect to a session to start reading...</div>
+    <canvas id="pdf-canvas" style="display:none;"></canvas>
+    <div id="text-content">Load a file or connect to a session to start reading...</div>
   </div>
 
   <script>
     let pyodide;
     let peer = null;
     let connections = [];
-    let state = { currentPage: 1, totalPages: 1 };
+    let state = { currentPage: 1, totalPages: 1, fileType: '' };
     let cachedFileBytes = null;
     let cachedFilename = "";
+    let pdfDoc = null;
+
+    // Configure PDF.js worker
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
     // 1. Initialize Pyodide WASM Runtime
     async function initPyodide() {
       pyodide = await loadPyodide();
       await pyodide.loadPackage(["micropip"]);
       const micropip = pyodide.pyimport("micropip");
-      await micropip.install(['python-docx', 'openpyxl', 'pypdf']);
+      await micropip.install(['python-docx', 'openpyxl']);
       
       await pyodide.runPythonAsync(`
 import io
@@ -57,7 +68,6 @@ import zipfile
 import re
 import docx
 import openpyxl
-from pypdf import PdfReader
 
 doc_pages = []
 
@@ -79,11 +89,6 @@ def parse_document(file_bytes_js, filename):
             for row in ws.iter_rows(values_only=True):
                 sheet_data.append(" | ".join([str(cell) for cell in row if cell is not None]))
             doc_pages.append(f"--- Sheet: {sheet} ---\\n" + "\\n".join(sheet_data))
-    elif fname.endswith('.pdf'):
-        reader = PdfReader(bio)
-        for i, page in enumerate(reader.pages):
-            text = page.extract_text() or ""
-            doc_pages.append(f"--- Page {i+1} ---\\n" + text)
     elif fname.endswith('.epub') or fname.endswith('.azw3') or fname.endswith('.mobi'):
         try:
             if zipfile.is_zipfile(bio):
@@ -99,7 +104,7 @@ def parse_document(file_bytes_js, filename):
                 text = file_bytes.decode('utf-8', errors='ignore')
                 chunks = re.findall(r'[A-Za-z0-9\\s,.\\-\\(\\)]+', text)
                 filtered = [c.strip() for c in chunks if len(c.strip()) > 20]
-                doc_pages = filtered[:100] if filtered else ["Could not extract text from binary AZW3 container."]
+                doc_pages = filtered[:100] if filtered else ["Could not extract text from binary container."]
         except Exception as e:
             doc_pages = [f"Error parsing eBook format: {str(e)}"]
     else:
@@ -132,7 +137,6 @@ def get_page(index):
         document.getElementById('status-text').innerText = `Peer connected! Active connections: ${connections.length}`;
         
         conn.on('open', () => {
-          // Send current file and reader sync state to newly joined peer
           if (cachedFileBytes) {
             conn.send({ type: 'FILE_TRANSFER', filename: cachedFilename, buffer: cachedFileBytes });
           }
@@ -172,18 +176,18 @@ def get_page(index):
     function handleNetworkMessage(data) {
       if (data.type === 'PAGE_CHANGE') {
         state.currentPage = data.page;
-        renderPageLocally();
+        renderCurrentPage();
       } else if (data.type === 'SYNC') {
         state = data.state;
-        renderPageLocally();
+        processAndRenderFileLocally(cachedFileBytes, cachedFilename, false);
       } else if (data.type === 'FILE_TRANSFER') {
         cachedFilename = data.filename;
         cachedFileBytes = data.buffer;
-        processAndRenderFileLocally(new Uint8Array(data.buffer), data.filename);
+        processAndRenderFileLocally(data.buffer, data.filename, true);
       }
     }
 
-    // 3. Document Parsing & Local Control
+    // 3. Document Handling & Rendering
     document.getElementById('file-input').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
@@ -192,36 +196,63 @@ def get_page(index):
       cachedFileBytes = arrayBuffer;
       cachedFilename = file.name;
 
-      processAndRenderFileLocally(new Uint8Array(arrayBuffer), file.name);
-
-      // Broadcast file to all connected peers
+      await processAndRenderFileLocally(arrayBuffer, file.name, true);
       broadcast({ type: 'FILE_TRANSFER', filename: file.name, buffer: arrayBuffer });
     });
 
-    function processAndRenderFileLocally(uint8Array, filename) {
-      const parseDoc = pyodide.globals.get('parse_document');
-      const pageCount = parseDoc(uint8Array, filename);
+    async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
+      if (!arrayBuffer) return;
+      cachedFilename = filename;
+      cachedFileBytes = arrayBuffer;
+      state.fileType = filename.toLowerCase().endsWith('.pdf') ? 'pdf' : 'other';
 
-      state.totalPages = pageCount;
-      state.currentPage = 1;
+      if (resetPage) {
+        state.currentPage = 1;
+      }
 
-      renderPageLocally();
+      if (state.fileType === 'pdf') {
+        document.getElementById('pdf-canvas').style.display = 'block';
+        document.getElementById('text-content').style.display = 'none';
+        
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        pdfDoc = await loadingTask.promise;
+        state.totalPages = pdfDoc.numPages;
+      } else {
+        document.getElementById('pdf-canvas').style.display = 'none';
+        document.getElementById('text-content').style.display = 'block';
+
+        const parseDoc = pyodide.globals.get('parse_document');
+        state.totalPages = parseDoc(new Uint8Array(arrayBuffer), filename);
+      }
+
+      await renderCurrentPage();
       broadcast({ type: 'SYNC', state: state });
     }
 
-    function renderPageLocally() {
+    async function renderCurrentPage() {
       document.getElementById('page-num').innerText = state.currentPage;
       document.getElementById('page-count').innerText = state.totalPages;
-      
-      const getPage = pyodide.globals.get('get_page');
-      const content = getPage(state.currentPage - 1);
-      document.getElementById('content').innerText = content || "Document loaded or page empty.";
+
+      if (state.fileType === 'pdf' && pdfDoc) {
+        const page = await pdfDoc.getPage(state.currentPage);
+        const viewport = page.getViewport({ scale: 1.5 });
+        const canvas = document.getElementById('pdf-canvas');
+        const context = canvas.getContext('2d');
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        await page.render({ canvasContext: context, viewport: viewport }).promise;
+      } else {
+        const getPage = pyodide.globals.get('get_page');
+        const content = getPage(state.currentPage - 1);
+        document.getElementById('text-content').innerText = content || "Document loaded or page empty.";
+      }
     }
 
     function prevPage() {
       if (state.currentPage > 1) {
         state.currentPage--;
-        renderPageLocally();
+        renderCurrentPage();
         broadcast({ type: 'PAGE_CHANGE', page: state.currentPage });
       }
     }
@@ -229,7 +260,7 @@ def get_page(index):
     function nextPage() {
       if (state.currentPage < state.totalPages) {
         state.currentPage++;
-        renderPageLocally();
+        renderCurrentPage();
         broadcast({ type: 'PAGE_CHANGE', page: state.currentPage });
       }
     }
