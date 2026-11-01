@@ -19,6 +19,9 @@
       --text-main: #1e293b;
       --text-muted: #64748b;
       --border-color: #e2e8f0;
+      --error-bg: #ffeeef;
+      --error-border: #f5c6cb;
+      --error-text: #9f3a38;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -90,6 +93,7 @@
     }
 
     .status { font-weight: 600; color: var(--primary); }
+    .status-error { font-weight: 600; color: var(--error-text); }
     #peer-list { font-size: 0.85rem; color: var(--text-muted); }
 
     #room-code-display { 
@@ -102,6 +106,17 @@
       display: inline-flex;
       gap: 10px; 
       align-items: center; 
+    }
+
+    #error-banner {
+      display: none;
+      margin-bottom: 1rem;
+      background: var(--error-bg);
+      border: 1px solid var(--error-border);
+      color: var(--error-text);
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-weight: 500;
     }
 
     #viewer-container { 
@@ -133,7 +148,6 @@
       font-size: 1rem;
     }
 
-    /* Remote Multi-User Cursors */
     .remote-cursor {
       position: absolute;
       width: 14px;
@@ -195,13 +209,14 @@
   </div>
 
   <div id="room-code-display" style="display:none;"></div>
+  <div id="error-banner"></div>
 
   <div id="status-bar">
     <div>Status: <span id="status-text" class="status">Initializing WASM environment...</span></div>
     <div id="peer-list">Connected Peers (0): None</div>
   </div>
 
-  <div id="viewer-container" id="cursor-space">
+  <div id="viewer-container">
     <canvas id="pdf-canvas" style="display:none;"></canvas>
     <div id="text-content">Load a file or connect to a session to start reading...</div>
   </div>
@@ -285,15 +300,56 @@ def get_page(index):
 
       document.getElementById('status-text').innerText = "Ready. Create or Join a Session.";
       document.getElementById('file-input').disabled = false;
+
+      // Check URL for auto-join session ID after initialization
+      checkForAutoJoin();
     }
 
     initPyodide();
 
-    // Setup Mouse Tracking for Multi-User Cursors
+    function checkForAutoJoin() {
+      // Handle path parsed from 404.html redirect query parameter (?p=/sessionId) or direct pathname
+      const urlParams = new URLSearchParams(window.location.search);
+      let sessionId = null;
+
+      if (urlParams.has('p')) {
+        const pVal = urlParams.get('p').replace('/', '').trim();
+        if (pVal) sessionId = pVal;
+      } else {
+        const pathSegments = window.location.pathname.split('/').filter(Boolean);
+        // If URL is vizkidd.github.io/coop-reader/<session-id>
+        if (pathSegments.length > 1 && pathSegments[0] === 'coop-reader') {
+          sessionId = pathSegments[1];
+        }
+      }
+
+      if (sessionId) {
+        document.getElementById('join-code').value = sessionId;
+        // Small delay to ensure runtime is fully settled
+        setTimeout(() => joinSession(sessionId), 500);
+      }
+    }
+
+    function showError(msg) {
+      const banner = document.getElementById('error-banner');
+      banner.style.display = 'block';
+      banner.innerText = msg;
+      const statusText = document.getElementById('status-text');
+      statusText.className = 'status-error';
+      statusText.innerText = 'Connection Failed';
+    }
+
+    function hideError() {
+      const banner = document.getElementById('error-banner');
+      banner.style.display = 'none';
+      const statusText = document.getElementById('status-text');
+      statusText.className = 'status';
+    }
+
     const viewerContainer = document.getElementById('viewer-container');
     viewerContainer.addEventListener('mousemove', (e) => {
       const now = Date.now();
-      if (now - lastMouseMove < 50) return; // Throttle to 20fps
+      if (now - lastMouseMove < 50) return;
       lastMouseMove = now;
 
       const rect = viewerContainer.getBoundingClientRect();
@@ -304,6 +360,7 @@ def get_page(index):
     });
 
     function startHost() {
+      hideError();
       peer = new Peer(); 
       peer.on('open', (id) => {
         myPeerId = id;
@@ -314,6 +371,10 @@ def get_page(index):
           <button onclick="copyHostCode()" style="padding: 2px 8px; font-size: 0.8rem;">Copy</button>
         `;
         document.getElementById('status-text').innerText = "Hosting active. Waiting for peers...";
+      });
+
+      peer.on('error', (err) => {
+        showError(`PeerJS Error: ${err.type}`);
       });
 
       peer.on('connection', (conn) => {
@@ -336,19 +397,41 @@ def get_page(index):
       });
     }
 
-    function joinSession() {
-      const code = document.getElementById('join-code').value.trim();
+    function joinSession(targetCode) {
+      hideError();
+      const code = targetCode || document.getElementById('join-code').value.trim();
       if (!code) return alert("Please enter a valid host code!");
       if (code === myPeerId) return alert("You cannot join your own session!");
       
+      document.getElementById('status-text').innerText = `Connecting to session ${code}...`;
+
       peer = new Peer();
-      peer.on('open', (id) => {
-        myPeerId = id;
-        const conn = peer.connect(code);
+      
+      peer.on('error', (err) => {
+        if (err.type === 'peer-unavailable' || err.type === 'network') {
+          showError(`Error: Session "${code}" does not exist or is offline.`);
+        } else {
+          showError(`Connection Error: ${err.type}`);
+        }
+      });
+
+      peer.on('open', () => {
+        const conn = peer.connect(code, { reliable: true });
+        
+        // Timeout check if peer doesn't respond within 7 seconds
+        const connectionTimeout = setTimeout(() => {
+          if (!conn.open) {
+            showError(`Error: Session "${code}" timed out or does not exist.`);
+            try { conn.close(); } catch(e){}
+          }
+        }, 7000);
+
         connections.push(conn);
         updatePeerListUI();
         
         conn.on('open', () => {
+          clearTimeout(connectionTimeout);
+          hideError();
           document.getElementById('status-text').innerText = "Connected to host session successfully!";
         });
         
@@ -357,14 +440,16 @@ def get_page(index):
           connections = connections.filter(c => c !== conn);
           removeRemoteCursor(conn.peer);
           updatePeerListUI();
+          showError("Disconnected from host session.");
         });
       });
     }
 
     function copyHostCode() {
       const codeVal = document.getElementById('code-val').innerText;
-      navigator.clipboard.writeText(codeVal).then(() => {
-        alert("Host code copied to clipboard!");
+      const shareUrl = `${window.location.origin}${window.location.pathname.replace(/\/$/, '')}/${codeVal}`;
+      navigator.clipboard.writeText(shareUrl).then(() => {
+        alert("Direct join link copied to clipboard!");
       });
     }
 
@@ -524,7 +609,7 @@ def get_page(index):
     function zoomOut() {
       if (currentZoom > 0.5) {
         currentZoom -= 0.25;
-        renderCurrentPage();
+        renderOpenCurrentPage();
       }
     }
 

@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Redirecting...</title>
+  <script>
+    // Redirect all 404 requests to index.html with the pathname preserved in query string
+    var pathSegmentsToKeep = 1; // Keeps 'coop-reader'
+    var l = window.location;
+    var pathSegments = l.pathname.split('/').slice(1);
+    var redirectPath = '/' + pathSegments.slice(0, pathSegmentsToKeep).join('/') + '/?p=/' + pathSegments.slice(pathSegmentsToKeep).join('/');
+    l.replace(l.protocol + '//' + l.host + redirectPath + l.hash);
+  </script>
+</head>
+<body></body>
+</html>
