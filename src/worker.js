@@ -17,7 +17,6 @@ doc_pages = []
 
 def parse_document(file_bytes_js, filename):
     global doc_pages
-    # BUG FIX: Explicitly clear previous data and collect garbage before parsing
     doc_pages = []
     gc.collect()
     
@@ -93,7 +92,6 @@ self.onmessage = async (e) => {
         break;
 
       case 'preload':
-        // Architectural A: Pre-install packages in the background
         await ensurePyodide();
         await installPackage('python-docx');
         await installPackage('openpyxl');

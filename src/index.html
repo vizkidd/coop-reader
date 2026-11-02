@@ -300,11 +300,11 @@
 // ==================== CONFIG ====================
 const CONFIG = {
   chunkSize: 64*1024, maxBufferedAmount: 256*1024, maxChunks: 10000,
-  maxInFlightChunks: 128, // Architectural B: Window size for ACK
+  maxInFlightChunks: 128,
   transferTimeout: 120000, maxRenderDpr: 2, maxCanvasPixels: 4*1024*1024,
   heartbeatInterval: 5000, heartbeatTimeout: 30000, gestureThreshold: 65,
   reconnectDelay: 1200, statsInterval: 5000, signalingTimeout: 8000,
-  chatHistoryLimit: 100, workerTimeout: 300000, // Bug A: 5 minutes for heavy parsing
+  chatHistoryLimit: 100, workerTimeout: 300000,
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
@@ -459,7 +459,7 @@ async function testNetwork() {
   const res = { stun:[], turn:[], host:[], signaling:{ok:false,error:null,latency:null} };
   if (!window.RTCPeerConnection) { body.innerHTML = '<p class="bad">❌ WebRTC unavailable.</p>'; return; }
   try {
-    const pc = new RTCPeerConnection({ iceServers: CONFIG.iceServers });
+    const pc = new RTCPeerConnection({ iceServers: CONFIG.iceServers, iceCandidatePoolSize: 10 });
     pc.createDataChannel('diag');
     pc.onicecandidate = (e) => {
       if (!e.candidate) return;
@@ -521,7 +521,7 @@ function saveServerConfig() {
 function resetServerConfig() { localStorage.removeItem('coop-server-config'); closeModal('server-modal'); notify('Reset to default.','success'); }
 function peerOptions() {
   const saved = JSON.parse(localStorage.getItem('coop-server-config') || '{}');
-  const opts = { config: { iceServers: CONFIG.iceServers } };
+  const opts = { config: { iceServers: CONFIG.iceServers, iceCandidatePoolSize: 10 } };
   if (saved.host) opts.host = saved.host;
   if (saved.port) opts.port = saved.port;
   if (saved.path) opts.path = saved.path;
@@ -571,7 +571,6 @@ function workerCall(type, payload = {}, transfer = []) {
 async function initPyodide() {
   initWorker();
   await workerCall('init');
-  // Architectural A: Preload heavy packages in the background
   workerCall('preload').catch(err => console.warn('Package preload failed:', err));
   
   fileInput.disabled = false;
@@ -580,7 +579,6 @@ async function initPyodide() {
   tryRestoreFromOPFS();
 }
 
-// Architectural C: Worker Recycling
 function resetWorker() {
   if (pyodideWorker) {
     try { pyodideWorker.terminate(); } catch (_) {}
@@ -717,7 +715,15 @@ function attachConnectionHandlers(conn) {
     else notify(`Peer ${String(conn.peer).substring(0,6)}… disconnected`,'warning');
     updateDiagnosticsUI();
   });
-  conn.on('error', (err) => { console.warn('Connection error', conn.peer, err); notify(`Peer error: ${err.type||err.message||err}`,'error'); });
+  conn.on('error', (err) => {
+    console.warn('Connection error', conn.peer, err);
+    // Silence transient negotiation failures caused by iOS suspending tabs
+    if (err.type === 'negotiation-failed' || (err.message && String(err.message).includes('negotiation'))) {
+      try { conn.close(); } catch (_) {}
+      return;
+    }
+    notify(`Peer error: ${err.type||err.message||err}`,'error');
+  });
   const attachPc = () => {
     const pc = conn.peerConnection;
     if (!pc) { setTimeout(attachPc,150); return; }
@@ -784,7 +790,6 @@ function getMediaStreamForCall() {
   return null;
 }
 
-// Bug C: Bind cleanup to the underlying PeerConnection state
 function bindCallCleanup(call, peerId) {
   const pc = call.peerConnection;
   if (pc) {
@@ -819,7 +824,7 @@ function attachPeerMediaHandlers() {
     try { call.answer(answerStream); }
     catch(e) { try{call.answer(new MediaStream())}catch(e2){ try{call.close()}catch(_){} return; } }
     call._initiator = call.peer; call._outgoing = false;
-    bindCallCleanup(call, call.peer); // Bug C Fix
+    bindCallCleanup(call, call.peer);
     call.on('stream', (rs) => attachRemoteAudio(call.peer, rs));
     call.on('close', () => { audioCalls.delete(call.peer); removeRemoteAudio(call.peer); voicePeers.delete(call.peer); updateVoiceUI(); });
     call.on('error', (err) => console.warn('Incoming call error', call.peer, err));
@@ -846,7 +851,7 @@ async function startHost() {
   hideError();
   connectionGeneration++;
   cleanupVoice();
-  resetWorker(); // Clean slate
+  resetWorker();
   if (peer) { try{peer.destroy()}catch(_){} }
   connections = [];
   isHost = true; myPeerId = null;
@@ -892,6 +897,7 @@ async function startHost() {
       }
       return;
     }
+    if (err.type === 'negotiation-failed') return; // Handled by conn.on('error')
     if (err.type==='unavailable-id') { setTimeout(startHost,500); return; }
     showError(err);
   });
@@ -900,11 +906,24 @@ async function startHost() {
     setStatus('Signaling lost — reconnecting…','warning');
     setTimeout(() => { try{peer.reconnect()}catch(_){} }, CONFIG.reconnectDelay);
   });
+  
   peer.on('connection', (conn) => {
     if (connections.some(c => c.peer===conn.peer)) { try{conn.close()}catch(_){} return; }
     connections.push(conn);
     updatePeerListUI(); updateChatAvailability();
     conn._authenticated = !sessionAuth.required;
+    
+    // Cleanup unauthenticated peers that hang
+    let authTimeout = null;
+    if (sessionAuth.required) {
+      authTimeout = setTimeout(() => {
+        if (conn.open && !conn._authenticated) {
+          try { conn.close(); } catch (_) {}
+        }
+      }, 15000);
+      conn.on('close', () => { if (authTimeout) clearTimeout(authTimeout); });
+    }
+
     conn.on('open', () => {
       notify(`Peer ${String(conn.peer).substring(0,6)}… joined`,'success',3000);
       if (sessionAuth.required) { try{conn.send({type:'AUTH_REQUIRED', salt: sessionAuth.salt})}catch(_){} }
@@ -922,7 +941,7 @@ function joinSession(targetCode) {
   if (!window.RTCPeerConnection) { showError({type:'browser-incompatible'}); return; }
   connectionGeneration++;
   cleanupVoice();
-  resetWorker(); // Clean slate
+  resetWorker();
   if (peer) { try{peer.destroy()}catch(_){} }
   connections = [];
   isHost = false; myPeerId = null;
@@ -936,11 +955,10 @@ function joinSession(targetCode) {
     console.error('PeerJS error:', err);
     if (err.type === 'network') {
       setStatus('Signaling lost — reconnecting…', 'warning');
-      if (!peer.disconnected) {
-        try { peer.reconnect(); } catch (_) {}
-      }
+      if (!peer.disconnected) { try { peer.reconnect(); } catch (_) {} }
       return;
     }
+    if (err.type === 'negotiation-failed') return; // Handled by conn.on('error')
     showError(err);
   });
   
@@ -1175,7 +1193,7 @@ function startOutgoingCall(peerId) {
     const call = peer.call(peerId, stream);
     if (!call) return;
     call._initiator = myPeerId; call._outgoing = true;
-    bindCallCleanup(call, peerId); // Bug C Fix
+    bindCallCleanup(call, peerId);
     call.on('stream', (rs) => attachRemoteAudio(peerId, rs));
     call.on('close', () => { audioCalls.delete(peerId); removeRemoteAudio(peerId); voicePeers.delete(peerId); updateVoiceUI(); });
     call.on('error', (err) => {
@@ -1441,7 +1459,6 @@ async function handleNetworkMessage(conn, data) {
     if (!t) return;
     t.chunks[data.index] = toUint8(data.data);
     t.received++;
-    // Architectural B: Send ACK every 32 chunks
     if (t.received % 32 === 0 || t.received === t.totalChunks) {
       try { conn.send({ type:'FILE_ACK', received: t.received }); } catch (_) {}
     }
@@ -1499,7 +1516,6 @@ async function sendFileToConn(conn, filename, arrayBuffer) {
     conn.send({ type:'FILE_START', filename, totalSize, totalChunks });
     const dc = conn.dataChannel;
     for (let i=0; i<totalChunks; i++) {
-      // Architectural B: Windowing
       while ((i - conn._ackedChunks) > CONFIG.maxInFlightChunks) {
         await new Promise(r => setTimeout(r, 50));
         if (!conn.open) { outgoingTransfers.delete(conn.peer); return; }
@@ -1579,7 +1595,7 @@ async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
     } catch(err) {
       console.error(err);
       showError('Parse failed: ' + (err.message||err));
-      resetWorker(); // Architectural C
+      resetWorker();
       return;
     }
   }
