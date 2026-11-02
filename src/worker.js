@@ -1,5 +1,4 @@
 // worker.js — Pyodide document parser running off the main thread.
-// Protocol: main thread posts { id, type, ... } and awaits { id, type, ... } reply.
 
 let pyodidePromise = null;
 let pyodide = null;
@@ -12,13 +11,16 @@ async function ensurePyodide() {
     pyodide = await loadPyodide();
     await pyodide.loadPackage('micropip');
     await pyodide.runPythonAsync(`
-import io, zipfile, re
+import io, zipfile, re, gc
 
 doc_pages = []
 
 def parse_document(file_bytes_js, filename):
     global doc_pages
+    # BUG FIX: Explicitly clear previous data and collect garbage before parsing
     doc_pages = []
+    gc.collect()
+    
     if hasattr(file_bytes_js, 'to_py'):
         file_bytes = file_bytes_js.to_py().tobytes()
     elif hasattr(file_bytes_js, 'tobytes'):
@@ -88,6 +90,14 @@ self.onmessage = async (e) => {
       case 'init':
         await ensurePyodide();
         self.postMessage({ id, type: 'ready' });
+        break;
+
+      case 'preload':
+        // Architectural A: Pre-install packages in the background
+        await ensurePyodide();
+        await installPackage('python-docx');
+        await installPackage('openpyxl');
+        self.postMessage({ id, type: 'preloaded' });
         break;
 
       case 'install':

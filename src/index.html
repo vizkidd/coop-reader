@@ -300,10 +300,11 @@
 // ==================== CONFIG ====================
 const CONFIG = {
   chunkSize: 64*1024, maxBufferedAmount: 256*1024, maxChunks: 10000,
+  maxInFlightChunks: 128, // Architectural B: Window size for ACK
   transferTimeout: 120000, maxRenderDpr: 2, maxCanvasPixels: 4*1024*1024,
   heartbeatInterval: 5000, heartbeatTimeout: 30000, gestureThreshold: 65,
   reconnectDelay: 1200, statsInterval: 5000, signalingTimeout: 8000,
-  chatHistoryLimit: 100,
+  chatHistoryLimit: 100, workerTimeout: 300000, // Bug A: 5 minutes for heavy parsing
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
@@ -561,20 +562,35 @@ function workerCall(type, payload = {}, transfer = []) {
     setTimeout(() => {
       if (workerPending.has(id)) {
         workerPending.delete(id);
-        reject(new Error(`Worker call "${type}" timed out (60s)`));
+        reject(new Error(`Worker call "${type}" timed out (${CONFIG.workerTimeout/1000}s)`));
       }
-    }, 60000);
+    }, CONFIG.workerTimeout);
   });
 }
 
 async function initPyodide() {
   initWorker();
   await workerCall('init');
+  // Architectural A: Preload heavy packages in the background
+  workerCall('preload').catch(err => console.warn('Package preload failed:', err));
+  
   fileInput.disabled = false;
   setStatus('WASM sandbox ready.', 'success');
   checkForAutoJoin();
   tryRestoreFromOPFS();
 }
+
+// Architectural C: Worker Recycling
+function resetWorker() {
+  if (pyodideWorker) {
+    try { pyodideWorker.terminate(); } catch (_) {}
+    pyodideWorker = null;
+  }
+  for (const [, pending] of workerPending) pending.reject(new Error('Worker terminated'));
+  workerPending.clear();
+  initPyodide();
+}
+
 initPyodide().catch(err => {
   console.error(err);
   setStatus('WASM failed to initialize', 'error');
@@ -626,11 +642,9 @@ viewerContainer.addEventListener('mousemove', (e) => {
 });
 viewerContainer.addEventListener('mouseleave', () => {
   lastMouseClientX = null; lastMouseClientY = null;
-  // BUG FIX #1: don't broadcast 'local' — if we have no peer ID yet, no peers exist
   if (myPeerId) broadcast({ type: 'CURSOR_HIDE', peerId: myPeerId });
 });
 function broadcastCursor(force) {
-  // BUG FIX #1: guard against missing peer ID
   if (lastMouseClientX == null || !myPeerId) return;
   const now = Date.now();
   if (!force && now-lastCursorBroadcastTs < CURSOR_THROTTLE_MS) return;
@@ -770,12 +784,28 @@ function getMediaStreamForCall() {
   return null;
 }
 
+// Bug C: Bind cleanup to the underlying PeerConnection state
+function bindCallCleanup(call, peerId) {
+  const pc = call.peerConnection;
+  if (pc) {
+    pc.addEventListener('connectionstatechange', () => {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        if (audioCalls.get(peerId) === call) {
+          audioCalls.delete(peerId);
+          removeRemoteAudio(peerId);
+          voicePeers.delete(peerId);
+          updateVoiceUI();
+        }
+      }
+    });
+  }
+}
+
 function attachPeerMediaHandlers() {
   peer.on('call', (call) => {
     const existing = audioCalls.get(call.peer);
     if (existing) {
       const smallerId = myPeerId < call.peer ? myPeerId : call.peer;
-      // Defensive: if _initiator got lost on a stale call, keep the existing one.
       if (!existing._initiator) { try{call.close()}catch(_){} return; }
       if (existing._initiator === smallerId) { try{call.close()}catch(_){} return; }
       try{existing.close()}catch(_){} audioCalls.delete(call.peer);
@@ -789,6 +819,7 @@ function attachPeerMediaHandlers() {
     try { call.answer(answerStream); }
     catch(e) { try{call.answer(new MediaStream())}catch(e2){ try{call.close()}catch(_){} return; } }
     call._initiator = call.peer; call._outgoing = false;
+    bindCallCleanup(call, call.peer); // Bug C Fix
     call.on('stream', (rs) => attachRemoteAudio(call.peer, rs));
     call.on('close', () => { audioCalls.delete(call.peer); removeRemoteAudio(call.peer); voicePeers.delete(call.peer); updateVoiceUI(); });
     call.on('error', (err) => console.warn('Incoming call error', call.peer, err));
@@ -803,8 +834,10 @@ function sendInitialDataToConn(conn) {
   try { conn.send({ type:'CHAT_HISTORY', messages: chatMessages.slice(-CONFIG.chatHistoryLimit) }); } catch(_){}
   if (cachedFileBytes) sendFileToConn(conn, cachedFilename, cachedFileBytes);
   if (getMediaStreamForCall() && !audioCalls.has(conn.peer)) {
-    startOutgoingCall(conn.peer);
-    broadcast({ type:'VOICE_STATE', peerId: myPeerId, on: true });
+    if (!peer.disconnected) {
+      startOutgoingCall(conn.peer);
+      broadcast({ type:'VOICE_STATE', peerId: myPeerId, on: true });
+    }
   }
 }
 
@@ -813,6 +846,7 @@ async function startHost() {
   hideError();
   connectionGeneration++;
   cleanupVoice();
+  resetWorker(); // Clean slate
   if (peer) { try{peer.destroy()}catch(_){} }
   connections = [];
   isHost = true; myPeerId = null;
@@ -827,19 +861,41 @@ async function startHost() {
   setStatus('Creating session…','info');
   peer = new Peer(peerOptions());
   attachPeerMediaHandlers();
+  
+  let hasOpened = false;
   peer.on('open', (id) => {
     myPeerId = id;
-    setStatus(`Hosting — code: ${id}${sessionAuth.required?' 🔒':''}`,'success');
-    notify(`Session created${sessionAuth.required?' (password protected)':''}.`,'success');
-    const url = buildShareUrl(id);
-    navigator.clipboard?.writeText(url).then(() => notify('Link copied.','info',3000)).catch(()=>{});
+    if (!hasOpened) {
+      hasOpened = true;
+      setStatus(`Hosting — code: ${id}${sessionAuth.required?' 🔒':''}`,'success');
+      notify(`Session created${sessionAuth.required?' (password protected)':''}.`,'success');
+      const url = buildShareUrl(id);
+      navigator.clipboard?.writeText(url).then(() => notify('Link copied.','info',3000)).catch(()=>{});
+    } else {
+      setStatus(`Hosting — reconnected`, 'success');
+    }
     updateHostUI(); updateDiagnosticsUI();
+    
+    if (getMediaStreamForCall()) {
+      for (const conn of connections) {
+        if (conn.open && !audioCalls.has(conn.peer)) startOutgoingCall(conn.peer);
+      }
+    }
   });
+  
   peer.on('error', (err) => {
-    console.error(err);
+    console.error('PeerJS error:', err);
+    if (err.type === 'network') {
+      setStatus('Signaling lost — reconnecting…', 'warning');
+      if (!peer.disconnected) {
+        try { peer.reconnect(); } catch (_) {}
+      }
+      return;
+    }
     if (err.type==='unavailable-id') { setTimeout(startHost,500); return; }
     showError(err);
   });
+  
   peer.on('disconnected', () => {
     setStatus('Signaling lost — reconnecting…','warning');
     setTimeout(() => { try{peer.reconnect()}catch(_){} }, CONFIG.reconnectDelay);
@@ -866,6 +922,7 @@ function joinSession(targetCode) {
   if (!window.RTCPeerConnection) { showError({type:'browser-incompatible'}); return; }
   connectionGeneration++;
   cleanupVoice();
+  resetWorker(); // Clean slate
   if (peer) { try{peer.destroy()}catch(_){} }
   connections = [];
   isHost = false; myPeerId = null;
@@ -874,12 +931,37 @@ function joinSession(targetCode) {
   setStatus(`Connecting to ${code}…`,'info');
   peer = new Peer(peerOptions());
   attachPeerMediaHandlers();
-  peer.on('error', (err) => { console.error(err); showError(err); });
+  
+  peer.on('error', (err) => {
+    console.error('PeerJS error:', err);
+    if (err.type === 'network') {
+      setStatus('Signaling lost — reconnecting…', 'warning');
+      if (!peer.disconnected) {
+        try { peer.reconnect(); } catch (_) {}
+      }
+      return;
+    }
+    showError(err);
+  });
+  
   peer.on('disconnected', () => {
     setStatus('Signaling lost — reconnecting…','warning');
     setTimeout(() => { try{peer.reconnect()}catch(_){} }, CONFIG.reconnectDelay);
   });
+  
+  let hasJoined = false;
   peer.on('open', () => {
+    if (hasJoined) {
+      setStatus('Reconnected to signaling server', 'success');
+      if (getMediaStreamForCall()) {
+        for (const conn of connections) {
+          if (conn.open && !audioCalls.has(conn.peer)) startOutgoingCall(conn.peer);
+        }
+      }
+      return;
+    }
+    hasJoined = true;
+    
     const conn = peer.connect(code, { reliable: true });
     conn._authenticated = false;
     const timeout = setTimeout(() => {
@@ -1026,16 +1108,13 @@ function replaceChatHistory(messages) {
 // ==================== VOICE ====================
 document.getElementById('btn-voice').addEventListener('click', toggleVoice);
 async function toggleVoice() {
-  // BUG FIX #2: unlock AudioContext synchronously during the click gesture.
-  // iOS Safari requires this before any await; otherwise analysers
-  // created later (in callbacks) stay silently at RMS 0.
   tryUnlockAudio();
   if (localStream || listenOnly) await disableVoice();
   else await enableVoice();
 }
 async function enableVoice() {
   if (localStream || listenOnly) return;
-  tryUnlockAudio(); // BUG FIX #2: ensure context is running before async work
+  tryUnlockAudio();
   if (!navigator.mediaDevices?.getUserMedia) {
     if (confirm('Microphone unavailable. Join listen-only?')) { listenOnly=true; updateVoiceUI(); announceVoiceOn(); }
     return;
@@ -1089,19 +1168,18 @@ function cleanupVoice() {
   updateVoiceUI();
 }
 function startOutgoingCall(peerId) {
-  if (!peer || audioCalls.has(peerId)) return;
+  if (!peer || peer.disconnected || audioCalls.has(peerId)) return;
   const stream = getMediaStreamForCall();
   if (!stream) return;
   try {
     const call = peer.call(peerId, stream);
     if (!call) return;
     call._initiator = myPeerId; call._outgoing = true;
+    bindCallCleanup(call, peerId); // Bug C Fix
     call.on('stream', (rs) => attachRemoteAudio(peerId, rs));
     call.on('close', () => { audioCalls.delete(peerId); removeRemoteAudio(peerId); voicePeers.delete(peerId); updateVoiceUI(); });
     call.on('error', (err) => {
       console.warn('Outgoing call error', peerId, err);
-      // Ensure errored calls are removed from audioCalls (they may not
-      // emit 'close' after an error on some browsers).
       try { call.close(); } catch (_) {}
     });
     audioCalls.set(peerId, call); voicePeers.add(peerId);
@@ -1124,7 +1202,6 @@ function attachRemoteAudio(peerId, stream) {
   voicePeers.add(peerId);
   updateVoiceUI();
 }
-// BUG FIX: never stop remote media tracks — detach only
 function removeRemoteAudio(peerId) {
   const el = document.getElementById('audio-' + peerId);
   if (el) { el.srcObject = null; el.remove(); }
@@ -1160,7 +1237,6 @@ function initAudioContext() {
   if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
   return audioContext;
 }
-// BUG FIX #2: AudioContext must be unlocked during a user gesture on iOS Safari.
 let audioUnlocked = false;
 function tryUnlockAudio() {
   if (audioUnlocked) return;
@@ -1365,7 +1441,15 @@ async function handleNetworkMessage(conn, data) {
     if (!t) return;
     t.chunks[data.index] = toUint8(data.data);
     t.received++;
+    // Architectural B: Send ACK every 32 chunks
+    if (t.received % 32 === 0 || t.received === t.totalChunks) {
+      try { conn.send({ type:'FILE_ACK', received: t.received }); } catch (_) {}
+    }
     updateTransferProgress(t.filename, t.received, t.totalChunks);
+    return;
+  }
+  if (data.type==='FILE_ACK') {
+    conn._ackedChunks = data.received;
     return;
   }
   if (data.type==='FILE_END') {
@@ -1407,11 +1491,19 @@ async function sendFileToConn(conn, filename, arrayBuffer) {
   const totalSize = arrayBuffer.byteLength;
   const totalChunks = Math.ceil(totalSize / CONFIG.chunkSize);
   if (totalChunks > CONFIG.maxChunks) { notify(`File too large (${(totalSize/1e6).toFixed(1)} MB).`,'error',8000); return; }
+  
+  conn._ackedChunks = 0;
   outgoingTransfers.set(conn.peer, { sent:0, total: totalChunks, filename });
+  
   try {
     conn.send({ type:'FILE_START', filename, totalSize, totalChunks });
     const dc = conn.dataChannel;
     for (let i=0; i<totalChunks; i++) {
+      // Architectural B: Windowing
+      while ((i - conn._ackedChunks) > CONFIG.maxInFlightChunks) {
+        await new Promise(r => setTimeout(r, 50));
+        if (!conn.open) { outgoingTransfers.delete(conn.peer); return; }
+      }
       if (dc) {
         while (dc.bufferedAmount > CONFIG.maxBufferedAmount) {
           await new Promise(r => setTimeout(r, 20));
@@ -1487,6 +1579,7 @@ async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
     } catch(err) {
       console.error(err);
       showError('Parse failed: ' + (err.message||err));
+      resetWorker(); // Architectural C
       return;
     }
   }
