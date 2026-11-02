@@ -103,6 +103,12 @@
     #diagnostics .diag-actions{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
     #viewer-wrap{position:relative;margin:0 16px}
     #viewer-container{position:relative;margin:0;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-sm);min-height:55vh;display:flex;align-items:flex-start;overflow:auto;touch-action:pan-x pan-y;-webkit-overflow-scrolling:touch}
+    body.peer-mode .host-only{display:none !important}
+    .avatar{width:40px;height:40px;border-radius:50%;object-fit:cover;border:2px solid var(--border);background:var(--surface-alt);display:inline-flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0}
+    #activity-strip{position:fixed;top:calc(68px + env(safe-area-inset-top,0px));left:12px;display:flex;gap:8px;z-index:60;pointer-events:none}
+    .act{position:relative}.act .avatar{width:44px;height:44px;border-width:3px;box-shadow:var(--shadow-md)}
+    .act-speaking .avatar{border-color:var(--success)}.act-typing .avatar{border-color:var(--primary)}.act-interact .avatar{border-color:var(--warning)}
+    .act i{position:absolute;right:-4px;bottom:-4px;font-style:normal;font-size:14px}
     #cursor-layer{position:absolute;inset:0;pointer-events:none;overflow:hidden;border-radius:var(--radius);z-index:5}
     #pdf-canvas{display:none;max-width:none;flex-shrink:0;margin:0 auto;box-shadow:var(--shadow-md);border-radius:4px;background:#fff}
     #image-view{display:none;box-shadow:var(--shadow-md);border-radius:4px;height:auto;max-width:100%;margin:0 auto;flex-shrink:0}
@@ -159,6 +165,7 @@
   </div>
   <div class="app-actions">
     <button id="btn-download" class="icon-btn hidden" aria-label="Download file" title="Download file">⬇</button>
+    <button id="btn-peers" class="icon-btn host-only" aria-label="Peers" title="Peers" onclick="openPeers()">👥</button>
     <button id="btn-toc" class="icon-btn" aria-label="Contents" title="Contents" onclick="openToc()">📑</button>
     <button id="btn-chat" class="icon-btn" aria-label="Chat" title="Chat">💬<span id="chat-badge" class="badge hidden">0</span></button>
     <button id="btn-voice" class="icon-btn" aria-label="Toggle voice chat" title="Voice chat">🎤</button>
@@ -168,7 +175,7 @@
 </header>
 
 <div id="menu-panel" class="menu-panel">
-  <div class="menu-group">
+  <div class="menu-group host-only">
     <span class="menu-label">Session</span>
     <button onclick="startHost()">Create</button>
     <input type="password" id="host-password" placeholder="Host password (optional)" autocomplete="new-password" />
@@ -181,7 +188,7 @@
   </div>
   <div class="menu-group">
     <span class="menu-label">You</span>
-    <input type="text" id="display-name" placeholder="Your name" maxlength="24" />
+    <img id="my-avatar" class="avatar hidden" alt="" /><input type="text" id="display-name" placeholder="Your name" maxlength="24" /><button class="secondary" onclick="document.getElementById('avatar-input').click()">Photo</button><button class="secondary" onclick="clearAvatar()" aria-label="Remove photo">✕</button><input type="file" id="avatar-input" accept="image/*" hidden />
   </div>
   <div class="menu-group page-group-desktop">
     <span class="menu-label">Page</span>
@@ -212,16 +219,16 @@
     <span class="menu-label">Diagnostics</span>
     <button class="secondary" onclick="openDiagnostics()">Connection Info</button>
     <button class="secondary" onclick="testNetwork()">Test Network</button>
-    <button class="secondary" onclick="openServerConfig()">Signaling Server</button>
+    <button class="secondary host-only" onclick="openServerConfig()">Signaling Server</button>
   </div>
-  <div class="menu-group" id="download-perm-group" style="display:none;">
+  <div class="menu-group host-only" id="download-perm-group" style="display:none;">
     <span class="menu-label">Sharing</span>
     <label class="check-label">
       <input type="checkbox" id="download-perm-toggle" onchange="toggleDownloadPermission()" />
       Allow peers to download the file
     </label>
   </div>
-  <div class="menu-group" id="share-group" style="display:none;">
+  <div class="menu-group host-only" id="share-group" style="display:none;">
     <span class="menu-label">Share link</span>
     <label class="check-label"><input type="checkbox" id="share-include-pw" />Include password</label>
     <button class="secondary" onclick="copyShareLink()">Copy link</button>
@@ -229,7 +236,7 @@
   </div>
   <div class="menu-group">
     <label class="check-label"><input type="checkbox" id="gestures-toggle" checked />Gestures &amp; keys</label>
-    <button id="restore-btn" class="secondary hidden" onclick="restoreLastFile()">Restore last</button>
+    <button id="restore-btn" class="secondary hidden host-only" onclick="restoreLastFile()">Restore last</button>
   </div>
 </div>
 
@@ -287,8 +294,17 @@
   </form>
 </aside>
 
+<div id="activity-strip" aria-hidden="true"></div>
 <div id="toast-container" aria-live="polite"></div>
 <div id="audio-container" aria-hidden="true"></div>
+
+<div id="peers-modal" class="modal" onclick="if(event.target===this)closeModal('peers-modal')"><div class="modal-content"><h3>Peers</h3><div id="peers-list"></div>
+  <h3 style="margin-top:14px">Indicators &amp; permissions</h3>
+  <label class="check-label"><input type="checkbox" id="hs-speaking" onchange="updateHostSettings()" />Show who is speaking</label>
+  <label class="check-label"><input type="checkbox" id="hs-typing" onchange="updateHostSettings()" />Show who is typing</label>
+  <label class="check-label"><input type="checkbox" id="hs-interact" onchange="updateHostSettings()" />Show who is interacting</label>
+  <label class="check-label"><input type="checkbox" id="hs-uploads" onchange="updateHostSettings()" />Allow peers to share files</label>
+  <div class="modal-actions"><button class="secondary" onclick="closeModal('peers-modal')">Close</button></div></div></div>
 
 <div id="toc-modal" class="modal" onclick="if(event.target===this)closeModal('toc-modal')"><div class="modal-content"><h3>Contents</h3><div id="toc-list"></div><div class="modal-actions"><button class="secondary" onclick="closeModal('toc-modal')">Close</button></div></div></div>
 
@@ -317,7 +333,7 @@ const CONFIG = {
   chunkSize: 64*1024, maxBufferedAmount: 256*1024, maxChunks: 10000,
   maxInFlightChunks: 128,
   transferTimeout: 120000, maxRenderDpr: 2, maxCanvasPixels: 4*1024*1024,
-  heartbeatInterval: 5000, heartbeatTimeout: 90000, connectTimeout: 30000, gestureThreshold: 65,
+  heartbeatInterval: 5000, heartbeatTimeout: 60000, connectTimeout: 30000, gestureThreshold: 65,
   reconnectDelay: 1200, statsInterval: 5000, signalingTimeout: 8000,
   chatHistoryLimit: 100, workerTimeout: 300000,
   iceServers: [
@@ -761,6 +777,13 @@ function attachConnectionHandlers(conn) {
     pc.addEventListener('iceconnectionstatechange', () => {
       conn._iceState = pc.iceConnectionState;
       if (pc.iceConnectionState==='failed') notify('WebRTC connection failed — try TURN or another network.','error',8000);
+      clearTimeout(conn._dcTimer);
+      if (pc.iceConnectionState==='disconnected' || pc.iceConnectionState==='failed') {
+        conn._dcTimer = setTimeout(() => {
+          try { pc.restartIce && pc.restartIce(); } catch (_) {}
+          conn._dcTimer = setTimeout(() => { if (!['connected','completed'].includes(pc.iceConnectionState)) { try { conn.close(); } catch (_) {} } }, 10000);
+        }, 4000);
+      }
       updateDiagnosticsUI();
     });
     pc.addEventListener('connectionstatechange', () => { conn._pcState = pc.connectionState; updateDiagnosticsUI(); });
@@ -860,6 +883,9 @@ function attachPeerMediaHandlers() {
 
 // ==================== INITIAL DATA SYNC ====================
 function sendInitialDataToConn(conn) {
+  profiles[myPeerId] = myProfile();
+  try { conn.send({ type:'SETTINGS', s: hostSettings }); } catch(_){}
+  for (const [id, p] of Object.entries(profiles)) try { conn.send({ type:'PROFILE', peerId: id, ...p }); } catch(_){}
   try { conn.send({ type:'SYNC', state }); } catch(_){}
   try { conn.send({ type:'CHAT_HISTORY', messages: chatMessages.slice(-CONFIG.chatHistoryLimit) }); } catch(_){}
   if (cachedFileBytes) sendFileToConn(conn, cachedFilename, cachedFileBytes);
@@ -878,7 +904,7 @@ async function startHost() {
   cleanupVoice();
   if (peer) { try{peer.destroy()}catch(_){} }
   connections = [];
-  isHost = true; myPeerId = null;
+  isHost = true; myPeerId = null; document.body.classList.remove('peer-mode');
   lastJoinCode = null; clearTimeout(rejoinTimer); rejoinTimer = null; try { sessionStorage.removeItem('coop-session'); } catch (_) {}
   state.downloadAllowed = false;
   document.getElementById('download-perm-toggle').checked = false;
@@ -922,7 +948,8 @@ async function startHost() {
       }
       return;
     }
-    if (err.type === 'negotiation-failed' || (err.type === 'webrtc' && connections.some(c => c.open))) return; // media/conn errors handled elsewhere
+    if (err.type === 'peer-unavailable' && (isHost || connections.some(c => c.open))) { notify('A peer is unreachable (it may have left).','warning',3000); return; }
+    if (err.type === 'negotiation-failed' || (err.type === 'webrtc' && connections.some(c => c.open))) return;
     if (err.type==='unavailable-id') { setTimeout(startHost,500); return; }
     showError(err);
   });
@@ -979,7 +1006,7 @@ function joinSession(targetCode, isRetry) {
   cleanupVoice();
   if (peer) { try{peer.destroy()}catch(_){} }
   connections = [];
-  isHost = false; myPeerId = null;
+  isHost = false; myPeerId = null; document.body.classList.add('peer-mode');
   updateHostUI(); updateDownloadButton();
 
   setStatus(`Connecting to ${code}…`,'info');
@@ -993,7 +1020,8 @@ function joinSession(targetCode, isRetry) {
       if (!peer.disconnected) { try { peer.reconnect(); } catch (_) {} }
       return;
     }
-    if (err.type === 'negotiation-failed' || (err.type === 'webrtc' && connections.some(c => c.open))) return; // media/conn errors handled elsewhere
+    if (err.type === 'peer-unavailable' && (isHost || connections.some(c => c.open))) { notify('A peer is unreachable (it may have left).','warning',3000); return; }
+    if (err.type === 'negotiation-failed' || (err.type === 'webrtc' && connections.some(c => c.open))) return;
     showError(err);
   });
   
@@ -1026,6 +1054,7 @@ function joinSession(targetCode, isRetry) {
       clearTimeout(timeout); rejoinAttempts = 0;
       hideError();
       setStatus('Connected — awaiting session data…','info');
+      sendProfile(); reportPage();
       if (getMediaStreamForCall() && !audioCalls.has(conn.peer)) startOutgoingCall(conn.peer);
     });
     attachConnectionHandlers(conn);
@@ -1056,6 +1085,7 @@ function copyHostCode() {
 }
 
 function updatePeerListUI() {
+  refreshPeers();
   const n = connections.length;
   if (!isHost) return;
   setStatus(`Hosting — ${n} peer${n===1?'':'s'}`, n>0?'success':'info');
@@ -1222,6 +1252,7 @@ function cleanupVoice() {
 }
 function startOutgoingCall(peerId) {
   if (!peer || peer.disconnected || audioCalls.has(peerId)) return;
+  if (isHost && !connections.some(c => c.open && c.peer === peerId)) return;
   const stream = getMediaStreamForCall();
   if (!stream) return;
   try {
@@ -1340,7 +1371,7 @@ function startSpeakingPoll() {
         let sum = 0;
         for (let i=0;i<bufLen;i++) { const v=(data[i]-128)/128; sum += v*v; }
         const rms = Math.sqrt(sum/bufLen);
-        if (rms > SPEAKING_RMS_THRESHOLD) { speakingNow.add(peerId); anyoneSpeaking = true; }
+        if (rms > SPEAKING_RMS_THRESHOLD) { speakingNow.add(peerId); anyoneSpeaking = true; if (peerId !== 'local') setActivity(peerId, 'speaking'); }
         else speakingNow.delete(peerId);
       } catch(_){}
     }
@@ -1376,6 +1407,7 @@ function updateTransferProgress(filename, received, total, done=false) {
 // ==================== MESSAGE DISPATCH ====================
 async function handleNetworkMessage(conn, data) {
   if (!data || typeof data !== 'object') return;
+  conn._lastPong = Date.now();   // any traffic proves liveness
 
   if (data.type === 'AUTH_REQUIRED') {
     let hash = pendingAuthHash;
@@ -1417,6 +1449,31 @@ async function handleNetworkMessage(conn, data) {
   if (data.type==='PING') { try{conn.send({type:'PONG'})}catch(_){} return; }
   if (data.type==='PONG') { conn._lastPong = Date.now(); return; }
 
+  if (data.type==='REQ_SYNC') { if (isHost) try { conn.send({ type:'SYNC', state }); } catch (_) {} return; }
+  if (data.type==='PAGE_INFO') { if (isHost) { conn._page = +data.page || null; conn._detached = !!data.detached; refreshPeers(); } return; }
+  if (data.type==='PROFILE') {
+    const pid = isHost ? conn.peer : data.peerId;
+    if (pid && typeof data.name === 'string') {
+      profiles[pid] = { name: data.name.slice(0,24), avatar: AVATAR_RE.test(data.avatar||'') && data.avatar.length < 60000 ? data.avatar : '' };
+      if (isHost) for (const o of connections) if (o!==conn && o.open && o._authenticated) try { o.send({ type:'PROFILE', peerId: pid, ...profiles[pid] }); } catch (_) {}
+      renderActivity(); refreshPeers();
+    }
+    return;
+  }
+  if (data.type==='ACTIVITY') {
+    const pid = isHost ? conn.peer : data.peerId;
+    if (pid && (data.kind==='typing' || data.kind==='interact')) setActivity(pid, data.kind);
+    if (isHost) for (const o of connections) if (o!==conn && o.open && o._authenticated) try { o.send({ type:'ACTIVITY', kind:data.kind, peerId:pid }); } catch (_) {}
+    return;
+  }
+  if (data.type==='SETTINGS' || data.type==='HOST_MUTE' || data.type==='HOST_PING' || data.type==='HOST_KICK') {
+    if (isHost || conn.peer !== lastJoinCode) return;   // host-origin only
+    if (data.type==='SETTINGS' && data.s) hostSettings = { ...hostSettings, ...data.s };
+    else if (data.type==='HOST_PING') { notify('🔔 The host pinged you', 'info', 6000); try { navigator.vibrate && navigator.vibrate([200,100,200]); } catch (_) {} }
+    else if (data.type==='HOST_MUTE') { if (localStream || listenOnly) disableVoice(); notify('The host muted your microphone', 'warning', 4000); }
+    else if (data.type==='HOST_KICK') { lastJoinCode = null; try { sessionStorage.removeItem('coop-session'); } catch (_) {} notify('You were removed by the host', 'error', 8000); setStatus('Removed by host', 'error'); try { conn.close(); } catch (_) {} }
+    return;
+  }
   if (data.type==='SYNC') {
     if (isHost) return;   // peers must never overwrite the host's state
     const keepPage = state.currentPage; syncedPage = (data.state && data.state.currentPage) || syncedPage;
@@ -1456,6 +1513,7 @@ async function handleNetworkMessage(conn, data) {
     return;
   }
   if (data.type==='DOWNLOAD_PERMISSION') {
+    if (isHost || conn.peer !== lastJoinCode) return;   // only the host may change this
     state.downloadAllowed = !!data.allowed;
     updateDownloadButton();
     notify(data.allowed?'Host enabled downloads.':'Host disabled downloads.','info',3500);
@@ -1477,6 +1535,7 @@ async function handleNetworkMessage(conn, data) {
     return;
   }
   if (data.type==='FILE_START') {
+    if (isHost && !hostSettings.peerUploads) { notify('Blocked a file upload from a peer.','warning',3000); return; }
     if (!data.totalChunks || data.totalChunks > CONFIG.maxChunks || !(data.totalSize > (data.totalChunks-1)*CONFIG.chunkSize) || data.totalSize > data.totalChunks*CONFIG.chunkSize) { notify('Oversized transfer refused.','error',6000); return; }
     if (incomingTransfers.has(conn.peer)) incomingTransfers.delete(conn.peer);
     incomingTransfers.set(conn.peer, {
@@ -1590,6 +1649,7 @@ function broadcastFile(filename, arrayBuffer) {
 fileInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
+  if (!isHost && lastJoinCode && !hostSettings.peerUploads) { notify('Only the host can share files in this session.','warning'); fileInput.value = ''; return; }
   const buf = await file.arrayBuffer();
   await processAndRenderFileLocally(buf, file.name, true);
   broadcastFile(file.name, buf);
@@ -1656,7 +1716,7 @@ function applyImageZoom() {
   img.style.height = 'auto';
 }
 async function renderCurrentPage() {
-  updatePageUI();
+  updatePageUI(); reportPage();
   clearAllRemoteCursors();
   if (state.fileType==='pdf' && pdfDoc) await renderPdfPage();
   else if (state.fileType==='image') applyImageZoom();
@@ -1831,7 +1891,7 @@ const nameInput = document.getElementById('display-name');
 nameInput.value = myDisplayName;
 nameInput.addEventListener('change', () => {
   const v = nameInput.value.trim().substring(0,24);
-  if (v) { myDisplayName = v; localStorage.setItem('coop-name', v); notify('Name updated.','success',2000); }
+  if (v) { myDisplayName = v; localStorage.setItem('coop-name', v); notify('Name updated.','success',2000); broadcastProfile(); }
   else nameInput.value = myDisplayName;
 });
 
@@ -1872,6 +1932,7 @@ window.addEventListener('resize', onViewportChange);
 window.addEventListener('orientationchange', onViewportChange);
 
 function emitPage() {
+  sendActivity('interact');
   if (!detached) { syncedPage = state.currentPage; broadcast({ type:'PAGE_CHANGE', page: state.currentPage }); }
   updateDetachUI();
 }
@@ -1885,9 +1946,9 @@ function setDetached(v) {
   detached = !!v;
   if (!detached && state.totalPages > 0) {
     if (isHost) broadcast({ type:'PAGE_CHANGE', page: state.currentPage });
-    else if (syncedPage !== state.currentPage) { state.currentPage = Math.min(Math.max(syncedPage,1), state.totalPages); renderCurrentPage(); }
+    else { const hc = connections.find(c => c.open); if (hc) try { hc.send({ type:'REQ_SYNC' }); } catch (_) {} }   // ask the HOST for its page
   }
-  updateDetachUI();
+  updateDetachUI(); reportPage();
 }
 function goToPage(n) {
   if (!(n >= 1 && n <= state.totalPages)) return;
@@ -1931,11 +1992,85 @@ function prevChapter() {
   if (t) goToPage(t.page); else notify('No previous chapter.','info',1500);
 }
 viewerContainer.addEventListener('scroll', () => Object.keys(remoteCursors).forEach(placeCursor), { passive: true });
-function touchCursor(e) { if (e.touches.length === 1) sendCursor(e.touches[0].clientX, e.touches[0].clientY); }
+function touchCursor(e) { if (e.touches.length === 1) sendActivity('interact'); if (e.touches.length === 1) sendCursor(e.touches[0].clientX, e.touches[0].clientY); }
 viewerContainer.addEventListener('touchstart', touchCursor, { passive: true });
 viewerContainer.addEventListener('touchmove', touchCursor, { passive: true });
 viewerContainer.addEventListener('touchend', () => setTimeout(() => { if (myPeerId) broadcast({ type:'CURSOR_HIDE', peerId: myPeerId }); }, 1500), { passive: true });
 document.addEventListener('pointerdown', () => document.querySelectorAll('#audio-container audio').forEach(a => { if (a.paused) a.play().catch(() => {}); }), { passive: true });
+
+const AVATAR_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/;
+const profiles = {};
+let hostSettings = { speaking: true, typing: true, interact: true, peerUploads: false };
+function myProfile() { return { name: myDisplayName, avatar: localStorage.getItem('coop-avatar') || '' }; }
+function sendProfile() { for (const c of connections) if (c.open) try { c.send({ type:'PROFILE', peerId: myPeerId, ...myProfile() }); } catch (_) {} }
+function broadcastProfile() { if (myPeerId) profiles[myPeerId] = myProfile(); sendProfile(); refreshMyAvatar(); }
+function refreshMyAvatar() { const a = localStorage.getItem('coop-avatar'), el = document.getElementById('my-avatar'); if (a) el.src = a; el.classList.toggle('hidden', !a); }
+function clearAvatar() { localStorage.removeItem('coop-avatar'); broadcastProfile(); }
+document.getElementById('avatar-input').addEventListener('change', async (e) => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try {
+    const bmp = await createImageBitmap(f), c = document.createElement('canvas'); c.width = c.height = 96;
+    const side = Math.min(bmp.width, bmp.height);
+    c.getContext('2d').drawImage(bmp, (bmp.width-side)/2, (bmp.height-side)/2, side, side, 0, 0, 96, 96);
+    localStorage.setItem('coop-avatar', c.toDataURL('image/jpeg', 0.75)); broadcastProfile();
+  } catch (_) { notify('Could not read that image.', 'error'); }
+});
+refreshMyAvatar();
+
+const activity = new Map(); let actTimer = null; const lastSent = {};
+function setActivity(pid, kind) {
+  if (!pid || pid === myPeerId || hostSettings[kind] === false) return;
+  activity.set(pid, { kind, until: Date.now() + (kind === 'speaking' ? 700 : 2500) });
+  renderActivity();
+}
+function renderActivity() {
+  const now = Date.now(); for (const [k, v] of activity) if (v.until < now) activity.delete(k);
+  document.getElementById('activity-strip').innerHTML = [...activity].map(([pid, v]) => {
+    const p = profiles[pid] || {}, nm = p.name || String(pid).slice(0, 4);
+    const face = AVATAR_RE.test(p.avatar || '') ? `<img class="avatar" src="${p.avatar}" alt="">` : `<span class="avatar">${escapeHtml(nm[0] || '?').toUpperCase()}</span>`;
+    return `<div class="act act-${v.kind}" title="${escapeHtml(nm)}">${face}<i>${{speaking:'🎤',typing:'⌨️',interact:'👆'}[v.kind]}</i></div>`;
+  }).join('');
+  if (activity.size && !actTimer) actTimer = setTimeout(() => { actTimer = null; renderActivity(); }, 400);
+}
+function sendActivity(kind) {
+  if (!myPeerId || hostSettings[kind] === false) return;
+  const now = Date.now(); if (now - (lastSent[kind] || 0) < 1500) return; lastSent[kind] = now;
+  broadcast({ type:'ACTIVITY', kind, peerId: myPeerId });
+}
+chatInput.addEventListener('input', () => sendActivity('typing'));
+function reportPage() {
+  if (isHost) return;
+  const c = connections.find(x => x.open); if (c) try { c.send({ type:'PAGE_INFO', page: state.currentPage, detached }); } catch (_) {}
+}
+
+// host controls
+function openPeers() {
+  document.getElementById('hs-speaking').checked = hostSettings.speaking; document.getElementById('hs-typing').checked = hostSettings.typing;
+  document.getElementById('hs-interact').checked = hostSettings.interact; document.getElementById('hs-uploads').checked = hostSettings.peerUploads;
+  document.getElementById('peers-modal').classList.add('open'); refreshPeers();
+}
+function refreshPeers() {
+  const m = document.getElementById('peers-modal'); if (!m || !m.classList.contains('open')) return;
+  const rows = connections.map(c => {
+    const p = profiles[c.peer] || {}, nm = p.name || String(c.peer).substring(0, 6);
+    const face = AVATAR_RE.test(p.avatar || '') ? `<img class="avatar" src="${p.avatar}" alt="">` : `<span class="avatar">${escapeHtml(nm[0] || '?').toUpperCase()}</span>`;
+    const id = escapeHtml(c.peer);
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">${face}<div style="flex:1;min-width:0"><b>${escapeHtml(nm)}</b><br><small style="color:var(--text-muted)">${c.open ? 'page ' + (c._page || '?') + ' / ' + state.totalPages + (c._detached ? ' · detached' : '') : 'connecting…'}</small></div>
+      <button class="secondary" onclick="hostCmd('${id}','HOST_MUTE')">Mute</button><button class="secondary" onclick="hostCmd('${id}','HOST_PING')">Ping</button><button class="secondary" onclick="hostCmd('${id}','HOST_KICK')">Kick</button></div>`;
+  });
+  document.getElementById('peers-list').innerHTML = rows.join('') || '<p style="color:var(--text-muted)">No peers connected.</p>';
+}
+function hostCmd(pid, type) {
+  if (!isHost) return;
+  const c = connections.find(x => x.peer === pid); if (!c || !c.open) return;
+  try { c.send({ type }); } catch (_) {}
+  if (type === 'HOST_KICK') setTimeout(() => { try { c.close(); } catch (_) {} connections = connections.filter(x => x !== c); updatePeerListUI(); updateChatAvailability(); }, 300);
+  else notify(type === 'HOST_PING' ? 'Ping sent.' : 'Mute sent.', 'info', 1500);
+}
+function updateHostSettings() {
+  hostSettings = { speaking: document.getElementById('hs-speaking').checked, typing: document.getElementById('hs-typing').checked, interact: document.getElementById('hs-interact').checked, peerUploads: document.getElementById('hs-uploads').checked };
+  broadcast({ type:'SETTINGS', s: hostSettings });
+}
 
 // ==================== INIT ====================
 updateDownloadButton();
