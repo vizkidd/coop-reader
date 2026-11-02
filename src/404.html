@@ -1,16 +1,33 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Redirecting...</title>
+  <title>Redirecting…</title>
   <script>
-    // Redirect all 404 requests to index.html with the pathname preserved in query string
-    var pathSegmentsToKeep = 1; // Keeps 'coop-reader'
-    var l = window.location;
-    var pathSegments = l.pathname.split('/').slice(1);
-    var redirectPath = '/' + pathSegments.slice(0, pathSegmentsToKeep).join('/') + '/?p=/' + pathSegments.slice(pathSegmentsToKeep).join('/');
-    l.replace(l.protocol + '//' + l.host + redirectPath + l.hash);
+    (function () {
+      // • GitHub Pages PROJECT site (user.github.io/coop-reader/): 1
+      // • GitHub Pages USER site or custom domain at root:       0
+      var PATH_SEGMENTS_TO_KEEP = 1;
+
+      var l = window.location;
+      var segments = l.pathname.split('/').filter(Boolean);
+
+      if (!segments.length) {
+        l.replace(l.protocol + '//' + l.host + '/');
+        return;
+      }
+
+      var base = segments.slice(0, PATH_SEGMENTS_TO_KEEP).join('/');
+      var rest = segments.slice(PATH_SEGMENTS_TO_KEEP).join('/');
+      var redirectPath =
+        '/' + (base ? base + '/' : '') +
+        '?p=' + encodeURIComponent('/' + rest) +
+        l.hash;
+
+      l.replace(l.protocol + '//' + l.host + redirectPath);
+    })();
   </script>
+  <noscript><meta http-equiv="refresh" content="0; url=/"></noscript>
 </head>
 <body></body>
 </html>
