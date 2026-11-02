@@ -7,2120 +7,1703 @@
   <meta name="format-detection" content="telephone=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>Coop Reader — P2P Collaborative Document Reader</title>
-
   <link rel="preconnect" href="https://cdn.jsdelivr.net">
   <link rel="preconnect" href="https://unpkg.com">
   <link rel="preconnect" href="https://cdnjs.cloudflare.com">
-
-  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-
   <style>
     :root {
-      --primary: #2563eb; --primary-hover: #1d4ed8; --primary-soft: #eff6ff;
-      --bg: #f8fafc; --surface: #ffffff; --surface-alt: #f1f5f9;
-      --text: #1e293b; --text-muted: #64748b; --border: #e2e8f0;
-      --success: #10b981; --warning: #f59e0b; --error: #ef4444;
-      --error-bg: #fee2e2; --error-text: #991b1b;
-      --radius: 12px; --radius-sm: 8px; --touch: 44px;
-      --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
-      --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-      --shadow-lg: 0 12px 32px rgba(0,0,0,0.14);
+      --primary:#2563eb; --primary-hover:#1d4ed8; --primary-soft:#eff6ff;
+      --bg:#f8fafc; --surface:#fff; --surface-alt:#f1f5f9;
+      --text:#1e293b; --text-muted:#64748b; --border:#e2e8f0;
+      --success:#10b981; --warning:#f59e0b; --error:#ef4444;
+      --error-bg:#fee2e2; --error-text:#991b1b;
+      --radius:12px; --radius-sm:8px; --touch:44px;
+      --shadow-sm:0 1px 2px rgba(0,0,0,.04); --shadow-md:0 4px 12px rgba(0,0,0,.08);
+      --shadow-lg:0 12px 32px rgba(0,0,0,.14);
     }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #0f172a; --surface: #1e293b; --surface-alt: #334155;
-        --text: #f1f5f9; --text-muted: #94a3b8; --border: #334155;
-        --primary-soft: #1e3a8a; --error-bg: #7f1d1d; --error-text: #fecaca;
-      }
+    @media (prefers-color-scheme:dark){:root{--bg:#0f172a;--surface:#1e293b;--surface-alt:#334155;--text:#f1f5f9;--text-muted:#94a3b8;--border:#334155;--primary-soft:#1e3a8a;--error-bg:#7f1d1d;--error-text:#fecaca}}
+    *,*::before,*::after{box-sizing:border-box}
+    html,body{margin:0;padding:0}
+    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5;min-height:100dvh;padding-bottom:calc(72px + env(safe-area-inset-bottom,0px))}
+    button,input,select,textarea{font:inherit;font-size:16px;color:inherit}
+    button{min-height:var(--touch);cursor:pointer;padding:0 14px;background:var(--primary);color:#fff;border:none;border-radius:var(--radius-sm);font-weight:500;transition:background .15s,transform .05s}
+    button:hover{background:var(--primary-hover)}
+    button:active{transform:scale(.97)}
+    button:disabled{background:#94a3b8;cursor:not-allowed}
+    button.secondary{background:var(--surface-alt);color:var(--text);border:1px solid var(--border)}
+    button.secondary:hover{background:var(--border)}
+    button.icon-btn{position:relative;min-height:var(--touch);min-width:var(--touch);padding:0;display:inline-flex;align-items:center;justify-content:center;font-size:1.25rem;background:transparent;color:var(--text);border:1px solid var(--border)}
+    button.icon-btn:hover{background:var(--surface-alt)}
+    button.icon-btn.voice-active{background:var(--success);color:#fff;border-color:var(--success)}
+    button.icon-btn.voice-active:hover{background:#059669}
+    button.icon-btn.voice-active.voice-speaking{animation:voicePulse 1s ease-in-out infinite}
+    button.icon-btn.voice-listening{background:var(--primary);color:#fff;border-color:var(--primary)}
+    button.icon-btn.voice-listening:hover{background:var(--primary-hover)}
+    button.icon-btn.voice-listening.voice-speaking{animation:voicePulse 1s ease-in-out infinite}
+    @keyframes voicePulse{0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,.75)}50%{box-shadow:0 0 0 8px rgba(16,185,129,0)}}
+    input[type="text"],input[type="number"],input[type="password"]{min-height:var(--touch);padding:0 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);outline:none;transition:border-color .15s}
+    input[type="text"]:focus,input[type="number"]:focus,input[type="password"]:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.15)}
+    input[type="checkbox"]{width:20px;height:20px;accent-color:var(--primary)}
+    .badge{position:absolute;top:2px;right:2px;background:var(--error);color:#fff;border-radius:999px;font-size:10px;font-weight:700;min-width:16px;height:16px;padding:0 4px;display:inline-flex;align-items:center;justify-content:center;pointer-events:none}
+    .app-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 16px;padding-top:calc(10px + env(safe-area-inset-top,0px));background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:50;box-shadow:var(--shadow-sm)}
+    .app-title-wrap{display:flex;align-items:baseline;gap:10px;min-width:0;flex:1}
+    .app-title{font-weight:700;font-size:1.1rem;white-space:nowrap;flex-shrink:0}
+    .current-file{color:var(--text-muted);font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+    .app-actions{display:flex;gap:6px;flex-shrink:0}
+    .menu-panel{position:fixed;top:calc(60px + env(safe-area-inset-top,0px));left:0;right:0;background:var(--surface);border-bottom:1px solid var(--border);padding:12px 16px 16px;max-height:65vh;overflow-y:auto;transform:translateY(-120%);transition:transform .22s ease;z-index:40;box-shadow:var(--shadow-md);display:flex;flex-direction:column;gap:14px}
+    .menu-panel.open{transform:translateY(0)}
+    .menu-group{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+    .menu-label{font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);width:100%;margin-bottom:-2px}
+    .menu-group input[type="text"],.menu-group input[type="password"]{flex:1;min-width:100px}
+    .page-indicator{font-size:.9rem;color:var(--text-muted);padding:0 6px;white-space:nowrap}
+    .check-label{display:inline-flex;align-items:center;gap:8px;cursor:pointer;user-select:none;min-height:var(--touch)}
+    .page-group-desktop{display:none}
+    @media(min-width:769px){
+      .menu-panel{position:static;transform:none;max-height:none;flex-direction:row;flex-wrap:wrap;align-items:center;border-bottom:1px solid var(--border);padding:10px 16px;box-shadow:none}
+      #btn-menu{display:none}
+      .menu-label{width:auto;margin-bottom:0}
+      .menu-group input[type="text"],.menu-group input[type="password"]{flex:0 0 150px}
+      .page-group-desktop{display:flex}
+      .check-label{min-height:auto}
     }
-    *, *::before, *::after { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; }
-    body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: var(--bg); color: var(--text); line-height: 1.5;
-      min-height: 100dvh; padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
-    }
-    button, input, select, textarea { font: inherit; font-size: 16px; color: inherit; }
-    button {
-      min-height: var(--touch); cursor: pointer; padding: 0 14px;
-      background: var(--primary); color: #fff; border: none;
-      border-radius: var(--radius-sm); font-weight: 500;
-      transition: background 0.15s, transform 0.05s;
-    }
-    button:hover { background: var(--primary-hover); }
-    button:active { transform: scale(0.97); }
-    button:disabled { background: #94a3b8; cursor: not-allowed; }
-    button.secondary { background: var(--surface-alt); color: var(--text); border: 1px solid var(--border); }
-    button.secondary:hover { background: var(--border); }
-    button.icon-btn {
-      position: relative; min-height: var(--touch); min-width: var(--touch); padding: 0;
-      display: inline-flex; align-items: center; justify-content: center;
-      font-size: 1.25rem; background: transparent; color: var(--text);
-      border: 1px solid var(--border);
-    }
-    button.icon-btn:hover { background: var(--surface-alt); }
-    button.icon-btn.voice-active { background: var(--success); color: #fff; border-color: var(--success); }
-    button.icon-btn.voice-active:hover { background: #059669; }
-    button.icon-btn.voice-active.voice-speaking { animation: voicePulse 1s ease-in-out infinite; }
-    @keyframes voicePulse {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(16,185,129,0.75); }
-      50%      { box-shadow: 0 0 0 8px rgba(16,185,129,0); }
-    }
-    input[type="text"], input[type="number"], input[type="password"] {
-      min-height: var(--touch); padding: 0 12px; border: 1px solid var(--border);
-      border-radius: var(--radius-sm); background: var(--surface); outline: none;
-      transition: border-color 0.15s;
-    }
-    input[type="text"]:focus, input[type="number"]:focus, input[type="password"]:focus {
-      border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,0.15);
-    }
-    input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--primary); }
-
-    .badge {
-      position: absolute; top: 2px; right: 2px;
-      background: var(--error); color: #fff; border-radius: 999px;
-      font-size: 10px; font-weight: 700; min-width: 16px; height: 16px; padding: 0 4px;
-      display: inline-flex; align-items: center; justify-content: center; pointer-events: none;
-    }
-
-    .app-bar {
-      display: flex; align-items: center; justify-content: space-between; gap: 8px;
-      padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0px));
-      background: var(--surface); border-bottom: 1px solid var(--border);
-      position: sticky; top: 0; z-index: 50; box-shadow: var(--shadow-sm);
-    }
-    .app-title-wrap { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1; }
-    .app-title { font-weight: 700; font-size: 1.1rem; white-space: nowrap; flex-shrink: 0; }
-    .current-file { color: var(--text-muted); font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-    .app-actions { display: flex; gap: 6px; flex-shrink: 0; }
-
-    .menu-panel {
-      position: fixed; top: calc(60px + env(safe-area-inset-top, 0px)); left: 0; right: 0;
-      background: var(--surface); border-bottom: 1px solid var(--border);
-      padding: 12px 16px 16px; max-height: 65vh; overflow-y: auto;
-      transform: translateY(-120%); transition: transform 0.22s ease;
-      z-index: 40; box-shadow: var(--shadow-md);
-      display: flex; flex-direction: column; gap: 14px;
-    }
-    .menu-panel.open { transform: translateY(0); }
-    .menu-group { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-    .menu-label {
-      font-size: 0.78rem; font-weight: 600; text-transform: uppercase;
-      letter-spacing: 0.06em; color: var(--text-muted);
-      width: 100%; margin-bottom: -2px;
-    }
-    .menu-group input[type="text"], .menu-group input[type="password"] { flex: 1; min-width: 100px; }
-    .page-indicator { font-size: 0.9rem; color: var(--text-muted); padding: 0 6px; white-space: nowrap; }
-    .check-label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; min-height: var(--touch); }
-    .page-group-desktop { display: none; }
-    @media (min-width: 769px) {
-      .menu-panel {
-        position: static; transform: none; max-height: none;
-        flex-direction: row; flex-wrap: wrap; align-items: center;
-        border-bottom: 1px solid var(--border); padding: 10px 16px; box-shadow: none;
-      }
-      #btn-menu { display: none; }
-      .menu-label { width: auto; margin-bottom: 0; }
-      .menu-group input[type="text"], .menu-group input[type="password"] { flex: 0 0 150px; }
-      .page-group-desktop { display: flex; }
-      .check-label { min-height: auto; }
-    }
-
-    .status-pill {
-      display: inline-flex; align-items: center; gap: 8px;
-      margin: 10px 16px 8px; padding: 6px 12px; border-radius: 999px;
-      font-size: 0.85rem; font-weight: 500; background: var(--surface);
-      border: 1px solid var(--border); box-shadow: var(--shadow-sm);
-      max-width: calc(100% - 32px); cursor: pointer;
-    }
-    .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
-    .status-info    .status-dot { background: var(--primary); animation: pulse 1.2s infinite; }
-    .status-success .status-dot { background: var(--success); }
-    .status-warning .status-dot { background: var(--warning); animation: pulse 1.2s infinite; }
-    .status-error   .status-dot { background: var(--error); }
-    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-
-    #error-banner {
-      display: none; margin: 0 16px 10px; padding: 12px 14px;
-      border-radius: var(--radius-sm); background: var(--error-bg);
-      color: var(--error-text); border: 1px solid var(--error); font-size: 0.9rem;
-    }
-    #error-banner.visible { display: block; }
-    #error-banner h4 { margin: 0 0 4px; font-size: 1rem; }
-    #error-banner ul { margin: 8px 0 0 20px; padding: 0; }
-    #error-banner li { margin: 4px 0; }
-    #error-banner .dismiss {
-      margin-top: 10px; padding: 4px 10px; font-size: 0.82rem;
-      background: transparent; color: var(--error-text);
-      border: 1px solid var(--error-text); border-radius: 4px; min-height: auto;
-    }
-
-    /* Transfer progress bar */
-    #transfer-progress {
-      margin: 0 16px 10px; padding: 10px 14px;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius-sm); box-shadow: var(--shadow-sm);
-      transition: opacity 0.3s;
-    }
-    #transfer-progress.hidden { display: none; }
-    .transfer-progress-label {
-      display: flex; justify-content: space-between; align-items: center;
-      font-size: 0.82rem; margin-bottom: 6px;
-    }
-    #transfer-filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%; }
-    #transfer-percentage { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--primary); }
-    .transfer-progress-bar {
-      height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;
-    }
-    #transfer-bar {
-      height: 100%; background: var(--primary); border-radius: 3px;
-      transition: width 0.15s linear; width: 0%;
-    }
-
-    #diagnostics {
-      margin: 0 16px 10px; padding: 12px 14px;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius-sm); font-size: 0.85rem; display: none;
-    }
-    #diagnostics.open { display: block; }
-    #diagnostics h3 { margin: 0 0 10px; font-size: 1rem; display: flex; justify-content: space-between; }
-    #diagnostics .close-btn { background: transparent; color: var(--text-muted); border: none; padding: 0 6px; min-height: auto; }
-    #diagnostics .diag-grid {
-      display: grid; grid-template-columns: auto 1fr; gap: 4px 12px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 0.78rem; word-break: break-word;
-    }
-    #diagnostics .diag-label { color: var(--text-muted); }
-    #diagnostics .diag-section { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
-    #diagnostics .diag-section h4 { margin: 0 0 6px; font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
-    #diagnostics .diag-conn { padding: 6px 8px; margin-bottom: 6px; background: var(--surface-alt); border-radius: 4px; font-size: 0.75rem; }
-    #diagnostics .ok { color: var(--success); }
-    #diagnostics .warn { color: var(--warning); }
-    #diagnostics .bad { color: var(--error); }
-    #diagnostics .diag-actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
-
-    #viewer-container {
-      position: relative; margin: 0 16px; padding: 20px;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius); box-shadow: var(--shadow-sm);
-      min-height: 55vh; display: flex; justify-content: center; align-items: flex-start;
-      overflow: auto; touch-action: pan-y; -webkit-overflow-scrolling: touch;
-    }
-    #pdf-canvas { display: none; max-width: 100%; height: auto; box-shadow: var(--shadow-md); border-radius: 4px; background: #fff; }
-    #image-view { display: none; box-shadow: var(--shadow-md); border-radius: 4px; height: auto; max-width: 100%; }
-    #text-content { width: 100%; white-space: pre-wrap; line-height: 1.7; font-size: 1rem; color: var(--text); }
-
-    .remote-cursor {
-      position: absolute; width: 14px; height: 14px; background: var(--error);
-      border: 2px solid #fff; border-radius: 50%; pointer-events: none;
-      transform: translate(-50%, -50%);
-      transition: left 0.05s linear, top 0.05s linear;
-      z-index: 1000; box-shadow: 0 2px 6px rgba(0,0,0,0.25);
-    }
-    .remote-cursor::after {
-      content: attr(data-peer); position: absolute; left: 18px; top: -4px;
-      background: rgba(15, 23, 42, 0.9); color: #fff; padding: 2px 6px;
-      font-size: 10px; font-weight: 600; border-radius: 4px; white-space: nowrap;
-    }
-
-    #bottom-nav {
-      position: fixed; bottom: 0; left: 0; right: 0;
-      display: flex; align-items: center; justify-content: space-between; gap: 8px;
-      padding: 10px 16px; padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
-      background: var(--surface); border-top: 1px solid var(--border);
-      box-shadow: 0 -4px 12px rgba(0,0,0,0.06); z-index: 45;
-    }
-    .nav-btn {
-      min-width: 56px; min-height: 48px; font-size: 1.5rem; font-weight: 600; line-height: 1;
-      background: var(--primary-soft); color: var(--primary); border: 1px solid var(--primary);
-    }
-    .nav-btn:hover { background: var(--primary); color: #fff; }
-    .page-info-btn {
-      background: transparent; color: var(--text); border: 1px solid var(--border);
-      padding: 8px 16px; min-height: 48px; font-weight: 600; font-variant-numeric: tabular-nums;
-    }
-    .page-info-btn:hover { background: var(--surface-alt); }
-    @media (min-width: 769px) { #bottom-nav { display: none; } body { padding-bottom: 16px; } }
-
-    #toast-container {
-      position: fixed; top: calc(72px + env(safe-area-inset-top, 0px)); right: 16px;
-      display: flex; flex-direction: column; gap: 8px; z-index: 9999; pointer-events: none;
-      max-width: min(360px, calc(100vw - 32px));
-    }
-    .toast {
-      background: var(--surface); border: 1px solid var(--border);
-      border-left: 4px solid var(--primary); border-radius: var(--radius-sm);
-      padding: 10px 14px; box-shadow: var(--shadow-lg); font-size: 0.85rem; color: var(--text);
-      animation: slideIn 0.25s ease; transition: opacity 0.25s, transform 0.25s; pointer-events: auto;
-    }
-    .toast-success { border-left-color: var(--success); }
-    .toast-warning { border-left-color: var(--warning); }
-    .toast-error   { border-left-color: var(--error); }
-    .toast.fade-out { opacity: 0; transform: translateX(20px); }
-    @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
-
-    .modal {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.45);
-      display: none; align-items: center; justify-content: center; z-index: 200; padding: 20px;
-    }
-    .modal.open { display: flex; }
-    .modal-content {
-      background: var(--surface); border-radius: var(--radius); padding: 20px;
-      max-width: 480px; width: 100%; max-height: 80vh; overflow-y: auto; box-shadow: var(--shadow-lg);
-    }
-    .modal-content h3 { margin: 0 0 14px; font-size: 1.1rem; }
-    .modal-content label { display: block; margin-bottom: 12px; font-size: 0.85rem; color: var(--text-muted); }
-    .modal-content label input[type="text"],
-    .modal-content label input[type="number"] { display: block; width: 100%; margin-top: 4px; }
-    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
-
-    .hidden { display: none !important; }
-
-    #chat-panel {
-      position: fixed; right: 0; top: calc(60px + env(safe-area-inset-top, 0px)); bottom: 0;
-      width: 340px; max-width: 100vw; background: var(--surface);
-      border-left: 1px solid var(--border); box-shadow: -4px 0 12px rgba(0,0,0,0.08);
-      transform: translateX(100%); transition: transform 0.24s ease;
-      display: flex; flex-direction: column; z-index: 55;
-    }
-    #chat-panel.open { transform: translateX(0); }
-    .chat-header {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 10px 14px; border-bottom: 1px solid var(--border);
-      font-weight: 600; gap: 10px; flex-shrink: 0;
-    }
-    .chat-header-left { display: flex; align-items: center; gap: 10px; }
-    .voice-indicator {
-      display: inline-flex; align-items: center; gap: 4px;
-      font-size: 0.75rem; font-weight: 500; color: var(--success);
-      background: rgba(16,185,129,0.12); padding: 2px 8px; border-radius: 999px;
-    }
-    .chat-header .icon-btn { border: none; min-height: 32px; min-width: 32px; font-size: 1rem; }
-    .chat-messages {
-      flex: 1; overflow-y: auto; padding: 12px;
-      display: flex; flex-direction: column; gap: 8px; background: var(--surface-alt);
-    }
-    .chat-empty { margin: auto; color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 20px; }
-    .chat-msg {
-      max-width: 82%; align-self: flex-start; background: var(--surface);
-      border: 1px solid var(--border); border-radius: 10px 10px 10px 2px;
-      padding: 8px 12px; font-size: 0.88rem; box-shadow: var(--shadow-sm);
-      word-break: break-word;
-    }
-    .chat-msg.chat-me {
-      align-self: flex-end; background: var(--primary); color: #fff;
-      border-radius: 10px 10px 2px 10px; border-color: var(--primary);
-    }
-    .chat-meta { font-size: 0.68rem; color: var(--text-muted); margin-bottom: 2px; font-weight: 500; }
-    .chat-me .chat-meta { color: rgba(255,255,255,0.7); }
-    .chat-text { white-space: pre-wrap; line-height: 1.4; }
-    .chat-form {
-      display: flex; gap: 6px; padding: 10px 12px;
-      padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
-      border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0;
-    }
-    .chat-form input { flex: 1; min-width: 0; }
-    .chat-form button { min-width: var(--touch); padding: 0 16px; }
-
-    @media (max-width: 768px) {
-      #chat-panel {
-        top: auto; left: 0; right: 0; bottom: calc(72px + env(safe-area-inset-bottom, 0px));
-        width: 100%; height: 60vh; max-height: 480px;
-        border-left: none; border-top: 1px solid var(--border);
-        border-radius: 16px 16px 0 0; transform: translateY(120%);
-        box-shadow: 0 -8px 24px rgba(0,0,0,0.12);
-      }
-      #chat-panel.open { transform: translateY(0); }
-      .chat-form { padding-bottom: 10px; }
-    }
+    .status-pill{display:inline-flex;align-items:center;gap:8px;margin:10px 16px 8px;padding:6px 12px;border-radius:999px;font-size:.85rem;font-weight:500;background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow-sm);max-width:calc(100% - 32px);cursor:pointer}
+    .status-dot{width:10px;height:10px;border-radius:50%;background:var(--text-muted);flex-shrink:0}
+    .status-info .status-dot{background:var(--primary);animation:pulse 1.2s infinite}
+    .status-success .status-dot{background:var(--success)}
+    .status-warning .status-dot{background:var(--warning);animation:pulse 1.2s infinite}
+    .status-error .status-dot{background:var(--error)}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+    #error-banner{display:none;margin:0 16px 10px;padding:12px 14px;border-radius:var(--radius-sm);background:var(--error-bg);color:var(--error-text);border:1px solid var(--error);font-size:.9rem}
+    #error-banner.visible{display:block}
+    #error-banner h4{margin:0 0 4px;font-size:1rem}
+    #error-banner ul{margin:8px 0 0 20px;padding:0}
+    #error-banner li{margin:4px 0}
+    #error-banner .dismiss{margin-top:10px;padding:4px 10px;font-size:.82rem;background:transparent;color:var(--error-text);border:1px solid var(--error-text);border-radius:4px;min-height:auto}
+    #transfer-progress{margin:0 16px 10px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);box-shadow:var(--shadow-sm);transition:opacity .3s}
+    #transfer-progress.hidden{display:none}
+    .transfer-progress-label{display:flex;justify-content:space-between;align-items:center;font-size:.82rem;margin-bottom:6px}
+    #transfer-filename{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:70%}
+    #transfer-percentage{font-variant-numeric:tabular-nums;font-weight:600;color:var(--primary)}
+    .transfer-progress-bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+    #transfer-bar{height:100%;background:var(--primary);border-radius:3px;transition:width .15s linear;width:0%}
+    #diagnostics{margin:0 16px 10px;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:.85rem;display:none}
+    #diagnostics.open{display:block}
+    #diagnostics h3{margin:0 0 10px;font-size:1rem;display:flex;justify-content:space-between}
+    #diagnostics .close-btn{background:transparent;color:var(--text-muted);border:none;padding:0 6px;min-height:auto}
+    #diagnostics .diag-grid{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.78rem;word-break:break-word}
+    #diagnostics .diag-label{color:var(--text-muted)}
+    #diagnostics .diag-section{margin-top:12px;padding-top:10px;border-top:1px solid var(--border)}
+    #diagnostics .diag-section h4{margin:0 0 6px;font-size:.85rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
+    #diagnostics .diag-conn{padding:6px 8px;margin-bottom:6px;background:var(--surface-alt);border-radius:4px;font-size:.75rem}
+    #diagnostics .ok{color:var(--success)}
+    #diagnostics .warn{color:var(--warning)}
+    #diagnostics .bad{color:var(--error)}
+    #diagnostics .diag-actions{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
+    #viewer-wrap{position:relative;margin:0 16px}
+    #viewer-container{position:relative;margin:0;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-sm);min-height:55vh;display:flex;justify-content:center;align-items:flex-start;overflow:auto;touch-action:pan-y;-webkit-overflow-scrolling:touch}
+    #cursor-layer{position:absolute;inset:0;pointer-events:none;overflow:hidden;border-radius:var(--radius);z-index:5}
+    #pdf-canvas{display:none;max-width:100%;height:auto;box-shadow:var(--shadow-md);border-radius:4px;background:#fff}
+    #image-view{display:none;box-shadow:var(--shadow-md);border-radius:4px;height:auto;max-width:100%}
+    #text-content{width:100%;white-space:pre-wrap;line-height:1.7;font-size:1rem;color:var(--text)}
+    .remote-cursor{position:absolute;width:14px;height:14px;background:var(--error);border:2px solid #fff;border-radius:50%;pointer-events:none;transform:translate(-50%,-50%);transition:left .05s linear,top .05s linear;z-index:1000;box-shadow:0 2px 6px rgba(0,0,0,.25)}
+    .remote-cursor::after{content:attr(data-peer);position:absolute;left:18px;top:-4px;background:rgba(15,23,42,.9);color:#fff;padding:2px 6px;font-size:10px;font-weight:600;border-radius:4px;white-space:nowrap}
+    #bottom-nav{position:fixed;bottom:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 16px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));background:var(--surface);border-top:1px solid var(--border);box-shadow:0 -4px 12px rgba(0,0,0,.06);z-index:45}
+    .nav-btn{min-width:56px;min-height:48px;font-size:1.5rem;font-weight:600;line-height:1;background:var(--primary-soft);color:var(--primary);border:1px solid var(--primary)}
+    .nav-btn:hover{background:var(--primary);color:#fff}
+    .page-info-btn{background:transparent;color:var(--text);border:1px solid var(--border);padding:8px 16px;min-height:48px;font-weight:600;font-variant-numeric:tabular-nums}
+    .page-info-btn:hover{background:var(--surface-alt)}
+    @media(min-width:769px){#bottom-nav{display:none}body{padding-bottom:16px}}
+    #toast-container{position:fixed;top:calc(72px + env(safe-area-inset-top,0px));right:16px;display:flex;flex-direction:column;gap:8px;z-index:9999;pointer-events:none;max-width:min(360px,calc(100vw - 32px))}
+    .toast{background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--primary);border-radius:var(--radius-sm);padding:10px 14px;box-shadow:var(--shadow-lg);font-size:.85rem;color:var(--text);animation:slideIn .25s ease;transition:opacity .25s,transform .25s;pointer-events:auto}
+    .toast-success{border-left-color:var(--success)}
+    .toast-warning{border-left-color:var(--warning)}
+    .toast-error{border-left-color:var(--error)}
+    .toast.fade-out{opacity:0;transform:translateX(20px)}
+    @keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+    .modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
+    .modal.open{display:flex}
+    .modal-content{background:var(--surface);border-radius:var(--radius);padding:20px;max-width:480px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:var(--shadow-lg)}
+    .modal-content h3{margin:0 0 14px;font-size:1.1rem}
+    .modal-content label{display:block;margin-bottom:12px;font-size:.85rem;color:var(--text-muted)}
+    .modal-content label input[type="text"],.modal-content label input[type="number"]{display:block;width:100%;margin-top:4px}
+    .modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+    .hidden{display:none !important}
+    #chat-panel{position:fixed;right:0;top:calc(60px + env(safe-area-inset-top,0px));bottom:0;width:340px;max-width:100vw;background:var(--surface);border-left:1px solid var(--border);box-shadow:-4px 0 12px rgba(0,0,0,.08);transform:translateX(100%);transition:transform .24s ease;display:flex;flex-direction:column;z-index:55}
+    #chat-panel.open{transform:translateX(0)}
+    .chat-header{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);font-weight:600;gap:10px;flex-shrink:0}
+    .chat-header-left{display:flex;align-items:center;gap:10px}
+    .voice-indicator{display:inline-flex;align-items:center;gap:4px;font-size:.75rem;font-weight:500;color:var(--success);background:rgba(16,185,129,.12);padding:2px 8px;border-radius:999px}
+    .chat-header .icon-btn{border:none;min-height:32px;min-width:32px;font-size:1rem}
+    .chat-messages{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--surface-alt)}
+    .chat-empty{margin:auto;color:var(--text-muted);font-size:.85rem;text-align:center;padding:20px}
+    .chat-msg{max-width:82%;align-self:flex-start;background:var(--surface);border:1px solid var(--border);border-radius:10px 10px 10px 2px;padding:8px 12px;font-size:.88rem;box-shadow:var(--shadow-sm);word-break:break-word}
+    .chat-msg.chat-me{align-self:flex-end;background:var(--primary);color:#fff;border-radius:10px 10px 2px 10px;border-color:var(--primary)}
+    .chat-meta{font-size:.68rem;color:var(--text-muted);margin-bottom:2px;font-weight:500}
+    .chat-me .chat-meta{color:rgba(255,255,255,.7)}
+    .chat-text{white-space:pre-wrap;line-height:1.4}
+    .chat-form{display:flex;gap:6px;padding:10px 12px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--border);background:var(--surface);flex-shrink:0}
+    .chat-form input{flex:1;min-width:0}
+    .chat-form button{min-width:var(--touch);padding:0 16px}
+    @media(max-width:768px){#chat-panel{top:auto;left:0;right:0;bottom:calc(72px + env(safe-area-inset-bottom,0px));width:100%;height:60vh;max-height:480px;border-left:none;border-top:1px solid var(--border);border-radius:16px 16px 0 0;transform:translateY(120%);box-shadow:0 -8px 24px rgba(0,0,0,.12)}#chat-panel.open{transform:translateY(0)}.chat-form{padding-bottom:10px}}
   </style>
 </head>
 <body>
 
-  <header class="app-bar">
-    <div class="app-title-wrap">
-      <span class="app-title">Coop Reader</span>
-      <span id="current-file" class="current-file"></span>
-    </div>
-    <div class="app-actions">
-      <button id="btn-download" class="icon-btn hidden" aria-label="Download file" title="Download file">⬇</button>
-      <button id="btn-chat" class="icon-btn" aria-label="Chat" title="Chat">
-        💬<span id="chat-badge" class="badge hidden">0</span>
-      </button>
-      <button id="btn-voice" class="icon-btn" aria-label="Toggle voice chat" title="Voice chat">🎤</button>
-      <button id="btn-open-file" class="icon-btn" aria-label="Open file" title="Open file">📂</button>
-      <button id="btn-menu" class="icon-btn" aria-label="Menu" aria-expanded="false">☰</button>
-    </div>
-  </header>
-
-  <div id="menu-panel" class="menu-panel">
-    <div class="menu-group">
-      <span class="menu-label">Session</span>
-      <button onclick="startHost()">Create</button>
-      <input type="password" id="host-password" placeholder="Host password (optional)" autocomplete="new-password" />
-    </div>
-    <div class="menu-group">
-      <span class="menu-label">Join</span>
-      <input type="text" id="join-code" placeholder="Host code" autocomplete="off" />
-      <input type="password" id="join-password" placeholder="Password (if required)" autocomplete="off" />
-      <button onclick="joinSession()">Join</button>
-    </div>
-    <div class="menu-group">
-      <span class="menu-label">You</span>
-      <input type="text" id="display-name" placeholder="Your name" maxlength="24" />
-    </div>
-    <div class="menu-group page-group-desktop">
-      <span class="menu-label">Page</span>
-      <button onclick="prevPage()" aria-label="Previous page">‹</button>
-      <input type="number" id="goto-page" min="1" style="width:72px;" placeholder="1" />
-      <button onclick="jumpToPage()">Go</button>
-      <button onclick="nextPage()" aria-label="Next page">›</button>
-      <span class="page-indicator"><span data-page-num>0</span> / <span data-page-count>0</span></span>
-    </div>
-    <div class="menu-group">
-      <span class="menu-label">View</span>
-      <button class="secondary" onclick="zoomOut()" aria-label="Zoom out">−</button>
-      <button class="secondary" onclick="zoomIn()" aria-label="Zoom in">+</button>
-      <button class="secondary" onclick="fitToWidth()">Fit W</button>
-      <button class="secondary" onclick="fitToHeight()">Fit H</button>
-      <button class="secondary" onclick="toggleFullscreen()">Full</button>
-    </div>
-    <div class="menu-group">
-      <span class="menu-label">Diagnostics</span>
-      <button class="secondary" onclick="openDiagnostics()">Connection Info</button>
-      <button class="secondary" onclick="testNetwork()">Test Network</button>
-      <button class="secondary" onclick="openServerConfig()">Signaling Server</button>
-    </div>
-    <div class="menu-group" id="download-perm-group" style="display:none;">
-      <span class="menu-label">Sharing</span>
-      <label class="check-label">
-        <input type="checkbox" id="download-perm-toggle" onchange="toggleDownloadPermission()" />
-        Allow peers to download the file
-      </label>
-    </div>
-    <div class="menu-group">
-      <label class="check-label">
-        <input type="checkbox" id="gestures-toggle" checked />
-        Gestures &amp; keys
-      </label>
-      <button id="restore-btn" class="secondary hidden" onclick="restoreLastFile()">Restore last</button>
-    </div>
+<header class="app-bar">
+  <div class="app-title-wrap">
+    <span class="app-title">Coop Reader</span>
+    <span id="current-file" class="current-file"></span>
   </div>
-
-  <div id="status-bar" class="status-pill status-info" role="status" aria-live="polite" onclick="openDiagnostics()">
-    <span class="status-dot"></span>
-    <span id="status-text">Initializing WASM sandbox…</span>
+  <div class="app-actions">
+    <button id="btn-download" class="icon-btn hidden" aria-label="Download file" title="Download file">⬇</button>
+    <button id="btn-chat" class="icon-btn" aria-label="Chat" title="Chat">💬<span id="chat-badge" class="badge hidden">0</span></button>
+    <button id="btn-voice" class="icon-btn" aria-label="Toggle voice chat" title="Voice chat">🎤</button>
+    <button id="btn-open-file" class="icon-btn" aria-label="Open file" title="Open file">📂</button>
+    <button id="btn-menu" class="icon-btn" aria-label="Menu" aria-expanded="false">☰</button>
   </div>
+</header>
 
-  <div id="transfer-progress" class="hidden">
-    <div class="transfer-progress-label">
-      <span id="transfer-filename">Receiving…</span>
-      <span id="transfer-percentage">0%</span>
-    </div>
-    <div class="transfer-progress-bar"><div id="transfer-bar"></div></div>
+<div id="menu-panel" class="menu-panel">
+  <div class="menu-group">
+    <span class="menu-label">Session</span>
+    <button onclick="startHost()">Create</button>
+    <input type="password" id="host-password" placeholder="Host password (optional)" autocomplete="new-password" />
   </div>
-
-  <div id="error-banner" role="alert"></div>
-
-  <div id="diagnostics">
-    <h3>
-      <span>Connection Diagnostics</span>
-      <button class="close-btn" onclick="closeDiagnostics()">✕</button>
-    </h3>
-    <div id="diag-body"><p style="color:var(--text-muted)">No session active.</p></div>
+  <div class="menu-group">
+    <span class="menu-label">Join</span>
+    <input type="text" id="join-code" placeholder="Host code" autocomplete="off" />
+    <input type="password" id="join-password" placeholder="Password (if required)" autocomplete="off" />
+    <button onclick="joinSession()">Join</button>
   </div>
+  <div class="menu-group">
+    <span class="menu-label">You</span>
+    <input type="text" id="display-name" placeholder="Your name" maxlength="24" />
+  </div>
+  <div class="menu-group page-group-desktop">
+    <span class="menu-label">Page</span>
+    <button onclick="prevPage()" aria-label="Previous page">‹</button>
+    <input type="number" id="goto-page" min="1" style="width:72px" placeholder="1" />
+    <button onclick="jumpToPage()">Go</button>
+    <button onclick="nextPage()" aria-label="Next page">›</button>
+    <span class="page-indicator"><span data-page-num>0</span> / <span data-page-count>0</span></span>
+  </div>
+  <div class="menu-group">
+    <span class="menu-label">View</span>
+    <button class="secondary" onclick="zoomOut()">−</button>
+    <button class="secondary" onclick="zoomIn()">+</button>
+    <button class="secondary" onclick="fitToWidth()">Fit W</button>
+    <button class="secondary" onclick="fitToHeight()">Fit H</button>
+    <button class="secondary" onclick="toggleFullscreen()">Full</button>
+  </div>
+  <div class="menu-group">
+    <span class="menu-label">Diagnostics</span>
+    <button class="secondary" onclick="openDiagnostics()">Connection Info</button>
+    <button class="secondary" onclick="testNetwork()">Test Network</button>
+    <button class="secondary" onclick="openServerConfig()">Signaling Server</button>
+  </div>
+  <div class="menu-group" id="download-perm-group" style="display:none;">
+    <span class="menu-label">Sharing</span>
+    <label class="check-label">
+      <input type="checkbox" id="download-perm-toggle" onchange="toggleDownloadPermission()" />
+      Allow peers to download the file
+    </label>
+  </div>
+  <div class="menu-group" id="share-group" style="display:none;">
+    <span class="menu-label">Share link</span>
+    <label class="check-label"><input type="checkbox" id="share-include-pw" />Include password</label>
+    <button class="secondary" onclick="copyShareLink()">Copy link</button>
+    <button class="secondary" onclick="copyHostCode()">Copy code</button>
+  </div>
+  <div class="menu-group">
+    <label class="check-label"><input type="checkbox" id="gestures-toggle" checked />Gestures &amp; keys</label>
+    <button id="restore-btn" class="secondary hidden" onclick="restoreLastFile()">Restore last</button>
+  </div>
+</div>
 
+<div id="status-bar" class="status-pill status-info" role="status" aria-live="polite" onclick="openDiagnostics()">
+  <span class="status-dot"></span>
+  <span id="status-text">Initializing WASM sandbox…</span>
+</div>
+
+<div id="transfer-progress" class="hidden">
+  <div class="transfer-progress-label">
+    <span id="transfer-filename">Receiving…</span>
+    <span id="transfer-percentage">0%</span>
+  </div>
+  <div class="transfer-progress-bar"><div id="transfer-bar"></div></div>
+</div>
+
+<div id="error-banner" role="alert"></div>
+
+<div id="diagnostics">
+  <h3><span>Connection Diagnostics</span><button class="close-btn" onclick="closeDiagnostics()">✕</button></h3>
+  <div id="diag-body"><p style="color:var(--text-muted)">No session active.</p></div>
+</div>
+
+<div id="viewer-wrap">
   <main id="viewer-container">
     <canvas id="pdf-canvas"></canvas>
     <img id="image-view" alt="Loaded image" />
     <div id="text-content">Load a file or connect to a session to start reading securely in the WASM sandbox…</div>
   </main>
+  <div id="cursor-layer" aria-hidden="true"></div>
+</div>
 
-  <nav id="bottom-nav" aria-label="Page navigation">
-    <button class="nav-btn" onclick="prevPage()" aria-label="Previous page">‹</button>
-    <button class="page-info-btn" onclick="promptGoto()" aria-label="Go to page">
-      <span data-page-num>0</span> / <span data-page-count>0</span>
-    </button>
-    <button class="nav-btn" onclick="nextPage()" aria-label="Next page">›</button>
-  </nav>
+<nav id="bottom-nav" aria-label="Page navigation">
+  <button class="nav-btn" onclick="prevPage()" aria-label="Previous page">‹</button>
+  <button class="page-info-btn" onclick="promptGoto()" aria-label="Go to page"><span data-page-num>0</span> / <span data-page-count>0</span></button>
+  <button class="nav-btn" onclick="nextPage()" aria-label="Next page">›</button>
+</nav>
 
-  <aside id="chat-panel" aria-label="Chat panel">
-    <header class="chat-header">
-      <div class="chat-header-left">
-        <span>Chat</span>
-        <span id="voice-indicator" class="voice-indicator hidden">🎤 <span id="voice-count">0</span></span>
-      </div>
-      <button class="icon-btn" onclick="closeChat()" aria-label="Close chat">✕</button>
-    </header>
-    <div id="chat-messages" class="chat-messages">
-      <div class="chat-empty" id="chat-empty">No messages yet. Say hello!</div>
+<aside id="chat-panel" aria-label="Chat panel">
+  <header class="chat-header">
+    <div class="chat-header-left">
+      <span>Chat</span>
+      <span id="voice-indicator" class="voice-indicator hidden">🎤 <span id="voice-count">0</span></span>
     </div>
-    <form id="chat-form" class="chat-form" onsubmit="handleChatSubmit(event)">
-      <input type="text" id="chat-input" placeholder="Connect to a session to chat" autocomplete="off" maxlength="500" disabled />
-      <button type="submit" id="chat-send-btn" disabled>Send</button>
-    </form>
-  </aside>
+    <button class="icon-btn" onclick="closeChat()" aria-label="Close chat">✕</button>
+  </header>
+  <div id="chat-messages" class="chat-messages">
+    <div class="chat-empty" id="chat-empty">No messages yet. Say hello!</div>
+  </div>
+  <form id="chat-form" class="chat-form" onsubmit="handleChatSubmit(event)">
+    <input type="text" id="chat-input" placeholder="Connect to a session to chat" autocomplete="off" maxlength="500" disabled />
+    <button type="submit" id="chat-send-btn" disabled>Send</button>
+  </form>
+</aside>
 
-  <div id="toast-container" aria-live="polite"></div>
-  <div id="audio-container" aria-hidden="true"></div>
+<div id="toast-container" aria-live="polite"></div>
+<div id="audio-container" aria-hidden="true"></div>
 
-  <div id="server-modal" class="modal">
-    <div class="modal-content">
-      <h3>PeerJS Signaling Server</h3>
-      <p style="font-size:0.85rem;color:var(--text-muted);margin:0 0 14px">
-        If the default PeerJS cloud server is blocked by your network, point this at a self-hosted PeerJS server.
-      </p>
-      <label>Host <input type="text" id="server-host" placeholder="0.peerjs.com" /></label>
-      <label>Port <input type="number" id="server-port" placeholder="443" /></label>
-      <label>Path <input type="text" id="server-path" placeholder="/" /></label>
-      <label>Key <input type="text" id="server-key" placeholder="peerjs" /></label>
-      <label class="check-label"><input type="checkbox" id="server-secure" /> Secure (WSS)</label>
-      <div class="modal-actions">
-        <button class="secondary" onclick="closeModal('server-modal')">Cancel</button>
-        <button class="secondary" onclick="resetServerConfig()">Reset</button>
-        <button onclick="saveServerConfig()">Save &amp; Apply</button>
-      </div>
+<div id="server-modal" class="modal">
+  <div class="modal-content">
+    <h3>PeerJS Signaling Server</h3>
+    <p style="font-size:.85rem;color:var(--text-muted);margin:0 0 14px">If the default PeerJS cloud server is blocked by your network, point this at a self-hosted PeerJS server.</p>
+    <label>Host <input type="text" id="server-host" placeholder="0.peerjs.com" /></label>
+    <label>Port <input type="number" id="server-port" placeholder="443" /></label>
+    <label>Path <input type="text" id="server-path" placeholder="/" /></label>
+    <label>Key <input type="text" id="server-key" placeholder="peerjs" /></label>
+    <label class="check-label"><input type="checkbox" id="server-secure" />Secure (WSS)</label>
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeModal('server-modal')">Cancel</button>
+      <button class="secondary" onclick="resetServerConfig()">Reset</button>
+      <button onclick="saveServerConfig()">Save &amp; Apply</button>
     </div>
   </div>
+</div>
 
-  <input type="file" id="file-input" hidden
-         accept=".pdf,.docx,.xlsx,.epub,.azw3,.mobi,.png,.jpg,.jpeg,.gif,.webp" />
+<input type="file" id="file-input" hidden accept=".pdf,.docx,.xlsx,.epub,.azw3,.mobi,.png,.jpg,.jpeg,.gif,.webp" />
 
-  <script>
-  // ===================================================================
-  //  CONFIG
-  // ===================================================================
-  const CONFIG = {
-    chunkSize: 64 * 1024, maxBufferedAmount: 256 * 1024, maxChunks: 10000,
-    transferTimeout: 120000, maxRenderDpr: 2, maxCanvasPixels: 4 * 1024 * 1024,
-    heartbeatInterval: 5000, heartbeatTimeout: 15000, gestureThreshold: 65,
-    reconnectDelay: 1200, statsInterval: 5000, signalingTimeout: 8000,
-    chatHistoryLimit: 100,
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-      { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    ],
+<script>
+// ==================== CONFIG ====================
+const CONFIG = {
+  chunkSize: 64*1024, maxBufferedAmount: 256*1024, maxChunks: 10000,
+  transferTimeout: 120000, maxRenderDpr: 2, maxCanvasPixels: 4*1024*1024,
+  heartbeatInterval: 5000, heartbeatTimeout: 30000, gestureThreshold: 65,
+  reconnectDelay: 1200, statsInterval: 5000, signalingTimeout: 8000,
+  chatHistoryLimit: 100,
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  ],
+};
+
+// ==================== STATE ====================
+let peer = null, myPeerId = null, isHost = false;
+let connections = [];
+let connectionGeneration = 0;
+let state = { currentPage: 1, totalPages: 1, fileType: '', downloadAllowed: false };
+let sessionAuth = { required: false, salt: null, hash: null };
+let pendingAuthHash = null;
+let cachedFileBytes = null, cachedFilename = '';
+let pdfDoc = null, currentZoom = 1, hasFitted = false;
+let remoteCursors = {};
+const incomingTransfers = new Map(), outgoingTransfers = new Map();
+
+let chatMessages = [], unreadCount = 0;
+let localStream = null, listenOnly = false;
+let silentStream = null, silentCtx = null;
+const audioCalls = new Map();
+const voicePeers = new Set();
+const speakerAnalysers = new Map();
+const speakingNow = new Set();
+let audioContext = null, speakingPollTimer = null;
+
+let myDisplayName = localStorage.getItem('coop-name') || '';
+if (!myDisplayName) { myDisplayName = 'Peer-' + Math.random().toString(36).substring(2,6); localStorage.setItem('coop-name', myDisplayName); }
+
+let touchStartX = 0, touchStartY = 0, touchLocked = null;
+let mouseDragStartX = 0, mouseDragStartY = 0, isMouseDown = false;
+
+const viewerContainer = document.getElementById('viewer-container');
+const fileInput = document.getElementById('file-input');
+const chatPanel = document.getElementById('chat-panel');
+const chatInput = document.getElementById('chat-input');
+const chatSendBtn = document.getElementById('chat-send-btn');
+const chatMessagesEl = document.getElementById('chat-messages');
+const chatEmptyEl = document.getElementById('chat-empty');
+const cursorLayer = document.getElementById('cursor-layer');
+const cursorTimeouts = new Map();
+const CURSOR_HIDE_AFTER_MS = 30000, CURSOR_THROTTLE_MS = 50;
+let lastMouseClientX = null, lastMouseClientY = null;
+let lastCursorBroadcastTs = 0;
+
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// ==================== UTILITIES ====================
+function notify(message, level='info', duration=4000) {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + level; t.textContent = message;
+  c.appendChild(t);
+  setTimeout(() => { t.classList.add('fade-out'); setTimeout(() => t.remove(), 250); }, duration);
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+async function hashPassword(password, salt) {
+  const data = new TextEncoder().encode(salt + ':' + password);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+// ==================== STATUS / ERRORS / DIAGNOSTICS ====================
+function setStatus(text, type='info') {
+  document.getElementById('status-text').textContent = text;
+  document.getElementById('status-bar').className = 'status-pill status-' + type;
+  updateDiagnosticsUI();
+}
+function updatePageUI() {
+  document.querySelectorAll('[data-page-num]').forEach(el => el.textContent = state.currentPage);
+  document.querySelectorAll('[data-page-count]').forEach(el => el.textContent = state.totalPages);
+  const goto = document.getElementById('goto-page');
+  if (goto) goto.value = state.currentPage;
+}
+function setCurrentFileLabel(name) { document.getElementById('current-file').textContent = name || ''; }
+function classifyError(err) {
+  const type = (err && err.type) || 'unknown';
+  const map = {
+    'browser-incompatible':{title:'Browser does not support WebRTC',fixes:['Update Chrome/Firefox/Edge/Safari 15.2+.','Ensure WebRTC is not disabled by policy.']},
+    'network':{title:'Cannot reach the signaling server',fixes:['Check internet.','Ask IT to allow *.peerjs.com (WSS 443).','Try another network.','Use a self-hosted signaling server.']},
+    'ssl-unavailable':{title:'TLS handshake failed',fixes:['Network may do SSL inspection.','Try a mobile hotspot.','Use a valid cert on self-hosted PeerJS.']},
+    'socket-error':{title:'Signaling socket blocked',fixes:['Firewall may block WSS.','Self-host or use another network.']},
+    'socket-closed':{title:'Signaling socket closed',fixes:['Retry in a few seconds.','Public PeerJS may be rate-limiting.']},
+    'server-error':{title:'Signaling server error',fixes:['Wait and retry.','Self-host a PeerJS server.']},
+    'peer-unavailable':{title:'Host session not found',fixes:['Double-check the host code.','Host may have closed the tab.','Ask host to re-create the session.']},
+    'webrtc':{title:'WebRTC connection failed',fixes:['Network may block UDP/STUN.','Add a TURN server.','Try another network.']},
+    'unavailable-id':{title:'Peer ID collision',fixes:['Retry.']},
+    'invalid-id':{title:'Invalid host code',fixes:['Host codes are letters/numbers/hyphens.']},
   };
-
-  // ===================================================================
-  //  STATE
-  // ===================================================================
-  let pyodide, peer = null, myPeerId = null, isHost = false;
-  let connections = [];
-  let connectionGeneration = 0;
-  let state = { currentPage: 1, totalPages: 1, fileType: '', downloadAllowed: false };
-  let sessionAuth = { required: false, salt: null, hash: null };
-  let cachedFileBytes = null, cachedFilename = '';
-  let pdfDoc = null, currentZoom = 1, hasFitted = false;
-  let remoteCursors = {}, lastMouseMove = 0;
-  const installedPackages = new Set();
-  const incomingTransfers = new Map(), outgoingTransfers = new Map();
-  let packageInstallLock = Promise.resolve();
-
-  let chatMessages = [], unreadCount = 0;
-
-  let localStream = null;
-  const audioCalls = new Map();
-  const voicePeers = new Set();
-  const speakerAnalysers = new Map();
-  const speakingNow = new Set();
-  let audioContext = null, speakingPollTimer = null;
-
-  let myDisplayName = localStorage.getItem('coop-name') || '';
-  if (!myDisplayName) {
-    myDisplayName = 'Peer-' + Math.random().toString(36).substring(2, 6);
-    localStorage.setItem('coop-name', myDisplayName);
-  }
-
-  let touchStartX = 0, touchStartY = 0, touchLocked = null;
-  let mouseDragStartX = 0, mouseDragStartY = 0, isMouseDown = false;
-
-  const viewerContainer = document.getElementById('viewer-container');
-  const fileInput = document.getElementById('file-input');
-  const chatPanel = document.getElementById('chat-panel');
-  const chatInput = document.getElementById('chat-input');
-  const chatSendBtn = document.getElementById('chat-send-btn');
-  const chatMessagesEl = document.getElementById('chat-messages');
-  const chatEmptyEl = document.getElementById('chat-empty');
-
-  pdfjsLib.GlobalWorkerOptions.workerSrc =
-    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-
-  // ===================================================================
-  //  UTILITIES
-  // ===================================================================
-  function notify(message, level = 'info', duration = 4000) {
-    const c = document.getElementById('toast-container');
-    const t = document.createElement('div');
-    t.className = 'toast toast-' + level;
-    t.textContent = message;
-    c.appendChild(t);
-    setTimeout(() => { t.classList.add('fade-out'); setTimeout(() => t.remove(), 250); }, duration);
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  }
-
-  async function hashPassword(password, salt) {
-    const data = new TextEncoder().encode(salt + ':' + password);
-    const hash = await crypto.subtle.digest('SHA-256', data);
-    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-
-  // ===================================================================
-  //  STATUS / ERROR / DIAGNOSTICS
-  // ===================================================================
-  function setStatus(text, type = 'info') {
-    document.getElementById('status-text').textContent = text;
-    document.getElementById('status-bar').className = 'status-pill status-' + type;
-    updateDiagnosticsUI();
-  }
-
-  function updatePageUI() {
-    document.querySelectorAll('[data-page-num]').forEach(el => el.textContent = state.currentPage);
-    document.querySelectorAll('[data-page-count]').forEach(el => el.textContent = state.totalPages);
-    const goto = document.getElementById('goto-page');
-    if (goto) goto.value = state.currentPage;
-  }
-
-  function setCurrentFileLabel(name) { document.getElementById('current-file').textContent = name || ''; }
-
-  function classifyError(err) {
-    const type = (err && err.type) || 'unknown';
-    const map = {
-      'browser-incompatible': { title: 'Browser does not support WebRTC', fixes: ['Update to a recent Chrome, Firefox, Edge, or Safari 15.2+.', 'Ensure WebRTC is not disabled by enterprise policy.'] },
-      'network': { title: 'Cannot reach the signaling server', fixes: ['Check your internet connection.', 'Ask IT to allow *.peerjs.com (WSS on 443) if on a corporate network.', 'Try a different network or a mobile hotspot.', 'Configure a self-hosted signaling server.'] },
-      'ssl-unavailable': { title: 'TLS handshake with signaling server failed', fixes: ['Your network may be doing SSL inspection.', 'Try a mobile hotspot.', 'Use a self-hosted PeerJS server with a valid certificate.'] },
-      'socket-error': { title: 'Signaling socket blocked or dropped', fixes: ['Firewall may be blocking WSS.', 'Self-host a signaling server.', 'Try a mobile hotspot.'] },
-      'socket-closed': { title: 'Signaling socket closed unexpectedly', fixes: ['Retry in a few seconds.', 'Public PeerJS server may be rate-limiting.'] },
-      'server-error': { title: 'Signaling server returned an error', fixes: ['Wait and retry.', 'Self-host a PeerJS server.'] },
-      'peer-unavailable': { title: 'Host session not found', fixes: ['Double-check the host code.', 'The host may have closed the tab.', 'Ask the host to re-create the session.'] },
-      'webrtc': { title: 'WebRTC connection failed', fixes: ['Your network may block UDP/STUN.', 'Add a TURN relay server to CONFIG.iceServers.', 'Try a mobile hotspot.', 'Run "Test Network".'] },
-      'unavailable-id': { title: 'Peer ID collision', fixes: ['Retry — a new ID will be assigned automatically.'] },
-      'invalid-id': { title: 'Invalid host code', fixes: ['Host codes only contain letters, numbers, and hyphens.'] },
-    };
-    const info = map[type] || { title: 'Connection error', fixes: ['Retry.', 'Open browser console.', 'Run "Test Network".'] };
-    return { type, title: info.title, fixes: info.fixes };
-  }
-
-  function showError(errOrMessage) {
-    const info = (errOrMessage && errOrMessage.type)
-      ? classifyError(errOrMessage)
-      : { title: 'Error', fixes: [String(errOrMessage)] };
-    const banner = document.getElementById('error-banner');
-    banner.innerHTML = `
-      <h4>${escapeHtml(info.title)}</h4>
-      <div style="font-size:0.82rem;opacity:0.85">${info.type ? 'Error type: <code>' + escapeHtml(info.type) + '</code>' : ''}</div>
-      <ul>${info.fixes.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>
-      <button class="dismiss" onclick="hideError()">Dismiss</button>
-    `;
-    banner.classList.add('visible');
-    setStatus(info.title, 'error');
-  }
-
-  function hideError() { document.getElementById('error-banner').classList.remove('visible'); }
-  function openDiagnostics() { document.getElementById('diagnostics').classList.add('open'); updateDiagnosticsUI(); }
-  function closeDiagnostics() { document.getElementById('diagnostics').classList.remove('open'); }
-
-  function updateDiagnosticsUI() {
-    const body = document.getElementById('diag-body');
-    if (!body) return;
-    if (!document.getElementById('diagnostics').classList.contains('open') && !peer) return;
-
-    const signaling = peer ? (peer.options.host || '0.peerjs.com') + ':' + (peer.options.port || '443') + (peer.options.path || '/') : '—';
-    let html = `
-      <div class="diag-grid">
-        <span class="diag-label">My Peer ID</span><span>${escapeHtml(myPeerId || '—')}</span>
-        <span class="diag-label">Role</span><span>${isHost ? 'Host' : (peer ? 'Peer' : '—')}</span>
-        <span class="diag-label">Signaling</span><span>${escapeHtml(signaling)}</span>
-        <span class="diag-label">Auth</span><span>${sessionAuth.required ? '<span class="ok">password required</span>' : 'open'}</span>
-        <span class="diag-label">WebRTC</span><span>${window.RTCPeerConnection ? '<span class="ok">available</span>' : '<span class="bad">unavailable</span>'}</span>
-        <span class="diag-label">Online</span><span>${navigator.onLine ? '<span class="ok">yes</span>' : '<span class="bad">no</span>'}</span>
-      </div>
-    `;
-    if (connections.length) {
-      html += '<div class="diag-section"><h4>Peer Connections</h4>';
-      for (const conn of connections) {
-        const ice = conn._iceState || '—';
-        const cands = (conn._iceCandidates || []).reduce((acc, c) => { acc[c.type] = (acc[c.type] || 0) + 1; return acc; }, {});
-        const candStr = Object.entries(cands).map(([k, v]) => `${k}:${v}`).join(' ') || 'gathering…';
-        const cls = ice === 'connected' || ice === 'completed' ? 'ok' : ice === 'checking' ? 'warn' : 'bad';
-        html += `
-          <div class="diag-conn">
-            <div><strong>${escapeHtml(String(conn.peer).substring(0, 10))}…</strong>
-                 <span class="${cls}">(${escapeHtml(ice)})</span>
-                 ${conn._authenticated === false ? ' <span class="bad">unauth</span>' : ''}</div>
-            <div>PC: ${escapeHtml(conn._pcState || '—')} • ICE: ${escapeHtml(candStr)}</div>
-            ${conn._stats?.rtt != null ? `<div>RTT: ${conn._stats.rtt.toFixed(0)} ms • Bytes: ${conn._stats.bytesReceived ?? 0}</div>` : ''}
-            ${conn._isRelay ? '<div class="warn">⚠ Relayed via TURN</div>' : ''}
-          </div>
-        `;
-      }
-      html += '</div>';
-    }
-    html += `<div class="diag-actions">
-      <button class="secondary" onclick="testNetwork()">Test Network</button>
-      <button class="secondary" onclick="openServerConfig()">Change Server</button>
-    </div>`;
-    body.innerHTML = html;
-  }
-
-  // ===================================================================
-  //  NETWORK TEST
-  // ===================================================================
-  async function testNetwork() {
-    openDiagnostics();
-    const body = document.getElementById('diag-body');
-    body.innerHTML = '<p><strong>Running network tests…</strong></p>';
-    const res = { stun: [], turn: [], host: [], signaling: { ok: false, error: null, latency: null } };
-    if (!window.RTCPeerConnection) { body.innerHTML = '<p class="bad">❌ WebRTC unavailable.</p>'; return; }
-    try {
-      const pc = new RTCPeerConnection({ iceServers: CONFIG.iceServers });
-      pc.createDataChannel('diag');
-      pc.onicecandidate = (e) => {
-        if (!e.candidate) return;
-        const t = e.candidate.type;
-        if (t === 'srflx' || t === 'prflx') res.stun.push(e.candidate);
-        else if (t === 'relay') res.turn.push(e.candidate);
-        else if (t === 'host') res.host.push(e.candidate);
-      };
-      await pc.setLocalDescription(await pc.createOffer());
-      await new Promise(r => setTimeout(r, 5000));
-      pc.close();
-    } catch (e) { console.warn(e); }
-    const t0 = Date.now();
-    await new Promise((resolve) => {
-      let done = false;
-      const testPeer = new Peer(peerOptions());
-      const timer = setTimeout(() => { if (!done) { done = true; res.signaling.error = 'timeout'; try { testPeer.destroy(); } catch(_){} resolve(); } }, CONFIG.signalingTimeout);
-      testPeer.on('open', () => { if (done) return; done = true; clearTimeout(timer); res.signaling.ok = true; res.signaling.latency = Date.now() - t0; try { testPeer.destroy(); } catch (_) {} resolve(); });
-      testPeer.on('error', (err) => { if (done) return; done = true; clearTimeout(timer); res.signaling.error = err.type || 'error'; try { testPeer.destroy(); } catch (_) {} resolve(); });
-    });
-    const sigCls = res.signaling.ok ? 'ok' : 'bad', stunCls = res.stun.length ? 'ok' : 'bad', turnCls = res.turn.length ? 'ok' : 'warn';
-    body.innerHTML = `
-      <div class="diag-grid">
-        <span class="diag-label">WebRTC</span><span class="ok">✅ available</span>
-        <span class="diag-label">Signaling</span><span class="${sigCls}">${res.signaling.ok ? '✅ ' + res.signaling.latency + ' ms' : '❌ ' + res.signaling.error}</span>
-        <span class="diag-label">STUN</span><span class="${stunCls}">${res.stun.length ? '✅ ' + res.stun.length + ' candidates' : '❌ blocked'}</span>
-        <span class="diag-label">TURN</span><span class="${turnCls}">${res.turn.length ? '✅ ' + res.turn.length + ' relay' : '⚠️ not configured'}</span>
-        <span class="diag-label">Host</span><span>${res.host.length}</span>
-      </div>
-      <div class="diag-section">
-        ${!res.signaling.ok ? '<p class="bad">Signaling unreachable. Self-host or try another network.</p>' : ''}
-        ${!res.stun.length ? '<p class="warn">STUN blocked — direct P2P will not work.</p>' : ''}
-        ${res.stun.length && res.turn.length ? '<p class="ok">Network healthy.</p>' : ''}
-      </div>`;
-  }
-
-  // ===================================================================
-  //  SERVER CONFIG
-  // ===================================================================
-  function openServerConfig() {
-    const saved = JSON.parse(localStorage.getItem('coop-server-config') || '{}');
-    document.getElementById('server-host').value = saved.host || '';
-    document.getElementById('server-port').value = saved.port || '';
-    document.getElementById('server-path').value = saved.path || '';
-    document.getElementById('server-key').value = saved.key || '';
-    document.getElementById('server-secure').checked = !!saved.secure;
-    document.getElementById('server-modal').classList.add('open');
-  }
-  function closeModal(id) { document.getElementById(id).classList.remove('open'); }
-  function saveServerConfig() {
-    const cfg = {
-      host: document.getElementById('server-host').value.trim() || undefined,
-      port: parseInt(document.getElementById('server-port').value) || undefined,
-      path: document.getElementById('server-path').value.trim() || undefined,
-      key: document.getElementById('server-key').value.trim() || undefined,
-      secure: document.getElementById('server-secure').checked || undefined,
-    };
-    localStorage.setItem('coop-server-config', JSON.stringify(cfg));
-    closeModal('server-modal');
-    notify('Signaling server updated.', 'success');
-    if (peer) { try { peer.destroy(); } catch (_) {} peer = null; myPeerId = null; connections = []; isHost = false; cleanupVoice(); setStatus('Disconnected.', 'warning'); }
-  }
-  function resetServerConfig() {
-    localStorage.removeItem('coop-server-config');
-    closeModal('server-modal');
-    notify('Reset to default.', 'success');
-  }
-  function peerOptions() {
-    const saved = JSON.parse(localStorage.getItem('coop-server-config') || '{}');
-    const opts = { config: { iceServers: CONFIG.iceServers } };
-    if (saved.host) opts.host = saved.host;
-    if (saved.port) opts.port = saved.port;
-    if (saved.path) opts.path = saved.path;
-    if (saved.key) opts.key = saved.key;
-    if (typeof saved.secure === 'boolean') opts.secure = saved.secure;
-    return opts;
-  }
-
-  // ===================================================================
-  //  PYODIDE
-  // ===================================================================
-  async function initPyodide() {
-    pyodide = await loadPyodide();
-    await pyodide.loadPackage(['micropip']);
-    await pyodide.runPythonAsync(`
-import io, zipfile, re
-doc_pages = []
-def parse_document(file_bytes_js, filename):
-    global doc_pages
-    doc_pages = []
-    file_bytes = file_bytes_js.to_py().tobytes()
-    bio = io.BytesIO(file_bytes)
-    fname = filename.lower()
-    if fname.endswith('.docx'):
-        import docx
-        doc_pages = [p.text for p in docx.Document(bio).paragraphs if p.text.strip()]
-    elif fname.endswith('.xlsx'):
-        import openpyxl
-        wb = openpyxl.load_workbook(bio)
-        for sheet in wb.sheetnames:
-            ws = wb[sheet]
-            rows = []
-            for row in ws.iter_rows(values_only=True):
-                rows.append(" | ".join([str(c) for c in row if c is not None]))
-            doc_pages.append(f"--- Sheet: {sheet} ---\\n" + "\\n".join(rows))
-    elif fname.endswith(('.epub', '.azw3', '.mobi')):
-        try:
-            if zipfile.is_zipfile(bio):
-                with zipfile.ZipFile(bio) as z:
-                    for name in z.namelist():
-                        if name.endswith(('.html', '.xhtml', '.htm', '.txt')):
-                            with z.open(name) as f:
-                                clean = re.sub('<[^<]+?>', '', f.read().decode('utf-8', errors='ignore'))
-                                if clean.strip():
-                                    doc_pages.append(f"--- {name} ---\\n" + clean.strip())
-            else:
-                text = file_bytes.decode('utf-8', errors='ignore')
-                chunks = re.findall(r'[A-Za-z0-9\\s,.\\-\\(\\)]+', text)
-                filtered = [c.strip() for c in chunks if len(c.strip()) > 20]
-                doc_pages = filtered[:100] if filtered else ["Could not extract text."]
-        except Exception as e:
-            doc_pages = [f"Error: {str(e)}"]
-    else:
-        doc_pages = [f"Error: Format '{filename}' not supported."]
-    return len(doc_pages)
-def get_page(index):
-    if 0 <= index < len(doc_pages):
-        return doc_pages[index]
-    return ""
-    `);
-    fileInput.disabled = false;
-    setStatus('WASM sandbox ready.', 'success');
-    checkForAutoJoin();
-    tryRestoreFromOPFS();
-  }
-
-  async function ensurePackagesFor(fname) {
-    const lower = fname.toLowerCase();
-    packageInstallLock = packageInstallLock.then(async () => {
-      const micropip = pyodide.pyimport('micropip');
-      if (lower.endsWith('.docx') && !installedPackages.has('python-docx')) {
-        setStatus('Installing DOCX parser…', 'info');
-        await micropip.install('python-docx');
-        installedPackages.add('python-docx');
-      }
-      if (lower.endsWith('.xlsx') && !installedPackages.has('openpyxl')) {
-        setStatus('Installing XLSX parser…', 'info');
-        await micropip.install('openpyxl');
-        installedPackages.add('openpyxl');
-      }
-    });
-    return packageInstallLock;
-  }
-
-  initPyodide().catch(err => { console.error(err); setStatus('WASM failed to initialize', 'error'); });
-
-  // ===================================================================
-  //  GESTURES
-  // ===================================================================
-  const gesturesEnabled = () => document.getElementById('gestures-toggle').checked;
-  viewerContainer.addEventListener('touchstart', (e) => {
-    if (!gesturesEnabled() || e.touches.length !== 1) return;
-    touchStartX = e.touches[0].clientX; touchStartY = e.touches[0].clientY; touchLocked = null;
-  }, { passive: true });
-  viewerContainer.addEventListener('touchmove', (e) => {
-    if (!gesturesEnabled() || e.touches.length !== 1) return;
-    if (!touchLocked) {
-      const dx = Math.abs(e.touches[0].clientX - touchStartX);
-      const dy = Math.abs(e.touches[0].clientY - touchStartY);
-      if (dx > 10 || dy > 10) touchLocked = dx > dy * 1.5 ? 'horizontal' : 'vertical';
-    }
-    if (touchLocked === 'horizontal') e.preventDefault();
-  }, { passive: false });
-  viewerContainer.addEventListener('touchend', (e) => {
-    if (!gesturesEnabled() || touchLocked !== 'horizontal') return;
-    const dx = e.changedTouches[0].clientX - touchStartX;
-    if (Math.abs(dx) > CONFIG.gestureThreshold) dx < 0 ? nextPage() : prevPage();
-    touchLocked = null;
-  }, { passive: true });
-  viewerContainer.addEventListener('mousedown', (e) => {
-    if (!gesturesEnabled() || e.button !== 0) return;
-    isMouseDown = true; mouseDragStartX = e.clientX; mouseDragStartY = e.clientY;
-  });
-  viewerContainer.addEventListener('mouseup', (e) => {
-    if (!gesturesEnabled() || !isMouseDown) return;
-    isMouseDown = false;
-    const dx = e.clientX - mouseDragStartX, dy = e.clientY - mouseDragStartY;
-    if (Math.abs(dx) > CONFIG.gestureThreshold && Math.abs(dx) > Math.abs(dy)) dx < 0 ? nextPage() : prevPage();
-  });
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && chatPanel.classList.contains('open')) { closeChat(); return; }
-    if (!gesturesEnabled()) return;
-    if (['INPUT', 'TEXTAREA', 'BUTTON', 'SELECT'].includes(document.activeElement.tagName)) return;
-    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); nextPage(); }
-    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); prevPage(); }
-  });
-  viewerContainer.addEventListener('mousemove', (e) => {
-    const now = Date.now();
-    if (now - lastMouseMove < 60) return;
-    lastMouseMove = now;
-    const rect = viewerContainer.getBoundingClientRect();
-    const x = (e.clientX - rect.left + viewerContainer.scrollLeft) / Math.max(viewerContainer.scrollWidth, 1);
-    const y = (e.clientY - rect.top + viewerContainer.scrollTop) / Math.max(viewerContainer.scrollHeight, 1);
-    broadcast({ type: 'CURSOR_MOVE', x, y, peerId: myPeerId || 'Host' });
-  });
-
-  function updateRemoteCursor(peerId, xNorm, yNorm) {
-    let el = remoteCursors[peerId];
-    if (!el) {
-      el = document.createElement('div');
-      el.className = 'remote-cursor';
-      el.setAttribute('data-peer', String(peerId).substring(0, 6));
-      viewerContainer.appendChild(el);
-      remoteCursors[peerId] = el;
-    }
-    el.style.left = (xNorm * viewerContainer.scrollWidth) + 'px';
-    el.style.top  = (yNorm * viewerContainer.scrollHeight) + 'px';
-  }
-  function removeRemoteCursor(peerId) {
-    if (remoteCursors[peerId]) { remoteCursors[peerId].remove(); delete remoteCursors[peerId]; }
-  }
-
-  // ===================================================================
-  //  AUTO-JOIN
-  // ===================================================================
-  function checkForAutoJoin() {
-    const params = new URLSearchParams(window.location.search);
-    let sessionId = null;
-    if (params.has('p')) sessionId = decodeURIComponent(params.get('p')).replace(/^\/+/, '').trim();
-    else {
-      const segs = window.location.pathname.split('/').filter(Boolean);
-      if (segs.length > 1) sessionId = segs[1];
-    }
-    if (sessionId) {
-      document.getElementById('join-code').value = sessionId;
-      setTimeout(() => joinSession(sessionId), 400);
-    }
-  }
-
-  // ===================================================================
-  //  CONNECTION HANDLERS
-  // ===================================================================
-  function attachConnectionHandlers(conn) {
-    conn._lastPong = Date.now();
-    conn._iceState = 'new'; conn._pcState = 'new';
-    conn._iceCandidates = []; conn._stats = {}; conn._isRelay = false;
-    if (conn._authenticated === undefined) conn._authenticated = true;
-    const myGen = connectionGeneration;
-
-    conn.on('data', (data) => handleNetworkMessage(conn, data));
-
-    conn.on('close', () => {
-      if (myGen !== connectionGeneration) return;
-      connections = connections.filter(c => c !== conn);
-      removeRemoteCursor(conn.peer);
-      const call = audioCalls.get(conn.peer);
-      if (call) { try { call.close(); } catch (_) {} audioCalls.delete(conn.peer); }
-      removeRemoteAudio(conn.peer);
-      voicePeers.delete(conn.peer);
-      updateVoiceUI();
-      updatePeerListUI();
-      updateChatAvailability();
-      if (!isHost && connections.length === 0) {
-        showError({ type: 'webrtc' });
-        notify('Disconnected from host', 'error');
-      } else {
-        notify(`Peer ${String(conn.peer).substring(0,6)}… disconnected`, 'warning');
-      }
-      updateDiagnosticsUI();
-    });
-
-    conn.on('error', (err) => {
-      console.warn('Connection error', conn.peer, err);
-      notify(`Peer error: ${err.type || err.message || err}`, 'error');
-    });
-
-    const attachPc = () => {
-      const pc = conn.peerConnection;
-      if (!pc) { setTimeout(attachPc, 150); return; }
-      pc.addEventListener('icecandidate', (e) => {
-        if (!e.candidate) return;
-        const c = e.candidate;
-        conn._iceCandidates.push({ type: c.type, protocol: c.protocol, address: c.address, url: c.url });
-        if (c.type === 'relay') conn._isRelay = true;
-        updateDiagnosticsUI();
-      });
-      pc.addEventListener('iceconnectionstatechange', () => {
-        conn._iceState = pc.iceConnectionState;
-        if (pc.iceConnectionState === 'failed') {
-          notify('WebRTC connection failed — try a TURN server or another network.', 'error', 8000);
-        }
-        updateDiagnosticsUI();
-      });
-      pc.addEventListener('connectionstatechange', () => {
-        conn._pcState = pc.connectionState;
-        updateDiagnosticsUI();
-      });
-    };
-    attachPc();
-
-    const hb = setInterval(() => {
-      if (!conn.open) { clearInterval(hb); return; }
-      if (document.hidden) return;
-      if (Date.now() - conn._lastPong > CONFIG.heartbeatTimeout) {
-        clearInterval(hb);
-        notify('Peer heartbeat timeout — closing stale connection.', 'warning');
-        try { conn.close(); } catch (_) {}
-        return;
-      }
-      try { conn.send({ type: 'PING' }); } catch (_) {}
-    }, CONFIG.heartbeatInterval);
-
-    const statsTimer = setInterval(async () => {
-      if (!conn.open || !conn.peerConnection) return;
-      try {
-        const reports = await conn.peerConnection.getStats();
-        reports.forEach(r => {
-          if (r.type === 'candidate-pair' && r.state === 'succeeded') {
-            conn._stats.rtt = (r.currentRoundTripTime || 0) * 1000;
-            conn._stats.packetsLost = r.packetsLost ?? null;
-            conn._stats.bytesReceived = r.bytesReceived ?? 0;
-          }
-        });
-        updateDiagnosticsUI();
-      } catch (_) {}
-    }, CONFIG.statsInterval);
-
-    conn.on('close', () => { clearInterval(hb); clearInterval(statsTimer); });
-  }
-
-  function attachPeerMediaHandlers() {
-    peer.on('call', (call) => {
-      if (audioCalls.has(call.peer)) { try { call.close(); } catch (_) {} return; }
-      if (!localStream) { try { call.close(); } catch (_) {} return; }
-      call.answer(localStream);
-      call.on('stream', (remoteStream) => attachRemoteAudio(call.peer, remoteStream));
-      call.on('close', () => { audioCalls.delete(call.peer); removeRemoteAudio(call.peer); voicePeers.delete(call.peer); updateVoiceUI(); });
-      call.on('error', (err) => console.warn('Incoming call error', call.peer, err));
-      audioCalls.set(call.peer, call);
-      voicePeers.add(call.peer);
-      updateVoiceUI();
-    });
-  }
-
-  // ===================================================================
-  //  INITIAL DATA SYNC (gated by auth)
-  // ===================================================================
-  function sendInitialDataToConn(conn) {
-    try { conn.send({ type: 'SYNC', state }); } catch (_) {}
-    try { conn.send({ type: 'CHAT_HISTORY', messages: chatMessages.slice(-CONFIG.chatHistoryLimit) }); } catch (_) {}
-    if (cachedFileBytes) sendFileToConn(conn, cachedFilename, cachedFileBytes);
-    if (localStream && !audioCalls.has(conn.peer)) {
-      // BUG FIX #2: bridge voice to late-joining peers
-      startOutgoingCall(conn.peer);
-    }
-  }
-
-  // ===================================================================
-  //  HOST / JOIN
-  // ===================================================================
-  async function startHost() {
-    hideError();
-    connectionGeneration++;
-    cleanupVoice();
-    if (peer) { try { peer.destroy(); } catch (_) {} }
-    connections = [];
-    isHost = true;
-    myPeerId = null;
-    state.downloadAllowed = false;
-    document.getElementById('download-perm-toggle').checked = false;
-    updateHostUI();
-    updateDownloadButton();
-
-    if (!window.RTCPeerConnection) { showError({ type: 'browser-incompatible' }); return; }
-
-    // Password setup
-    const pw = document.getElementById('host-password').value.trim();
-    if (pw) {
-      sessionAuth.salt = crypto.randomUUID();
-      sessionAuth.hash = await hashPassword(pw, sessionAuth.salt);
-      sessionAuth.required = true;
-    } else {
-      sessionAuth = { required: false, salt: null, hash: null };
-    }
-
-    setStatus('Creating session…', 'info');
-    peer = new Peer(peerOptions());
-    attachPeerMediaHandlers();
-
-    peer.on('open', (id) => {
-      myPeerId = id;
-      setStatus(`Hosting — code: ${id}${sessionAuth.required ? ' 🔒' : ''}`, 'success');
-      notify(`Session created${sessionAuth.required ? ' (password protected)' : ''}.`, 'success');
-      const url = buildShareUrl(id);
-      navigator.clipboard?.writeText(url).then(() => notify('Link copied.', 'info', 3000)).catch(() => {});
-      updateHostUI();
-      updateDiagnosticsUI();
-    });
-
-    peer.on('error', (err) => {
-      console.error(err);
-      if (err.type === 'unavailable-id') { setTimeout(startHost, 500); return; }
-      showError(err);
-    });
-
-    peer.on('disconnected', () => {
-      setStatus('Signaling lost — reconnecting…', 'warning');
-      setTimeout(() => { try { peer.reconnect(); } catch (_) {} }, CONFIG.reconnectDelay);
-    });
-
-    peer.on('connection', (conn) => {
-      if (connections.some(c => c.peer === conn.peer)) { try { conn.close(); } catch (_) {} return; }
-      connections.push(conn);
-      updatePeerListUI();
-      updateChatAvailability();
-
-      // If password required, mark unauthenticated until AUTH received
-      conn._authenticated = !sessionAuth.required;
-
-      conn.on('open', () => {
-        notify(`Peer ${String(conn.peer).substring(0,6)}… joined`, 'success', 3000);
-        if (sessionAuth.required) {
-          try { conn.send({ type: 'AUTH_REQUIRED', salt: sessionAuth.salt }); } catch (_) {}
-        } else {
-          sendInitialDataToConn(conn);
-        }
-      });
-      attachConnectionHandlers(conn);
-    });
-  }
-
-  function joinSession(targetCode) {
-    hideError();
-    const code = (targetCode || document.getElementById('join-code').value || '').trim();
-    if (!code) return notify('Enter a host code first.', 'warning');
-    if (code === myPeerId) return notify('You cannot join your own session.', 'warning');
-    if (!window.RTCPeerConnection) { showError({ type: 'browser-incompatible' }); return; }
-
-    connectionGeneration++;
-    cleanupVoice();
-    if (peer) { try { peer.destroy(); } catch (_) {} }
-    connections = [];
-    isHost = false;
-    myPeerId = null;
-    updateHostUI();
-    updateDownloadButton();
-
-    setStatus(`Connecting to ${code}…`, 'info');
-    peer = new Peer(peerOptions());
-    attachPeerMediaHandlers();
-
-    peer.on('error', (err) => { console.error(err); showError(err); });
-    peer.on('disconnected', () => {
-      setStatus('Signaling lost — reconnecting…', 'warning');
-      setTimeout(() => { try { peer.reconnect(); } catch (_) {} }, CONFIG.reconnectDelay);
-    });
-
-    peer.on('open', () => {
-      const conn = peer.connect(code, { reliable: true });
-      conn._authenticated = false;
-      const timeout = setTimeout(() => {
-        if (!conn.open) {
-          showError({ type: 'peer-unavailable' });
-          try { conn.close(); } catch (_) {}
-        }
-      }, CONFIG.signalingTimeout);
-
-      connections.push(conn);
-      updatePeerListUI();
-      updateChatAvailability();
-
-      conn.on('open', () => {
-        clearTimeout(timeout);
-        hideError();
-        setStatus('Connected — awaiting session data…', 'info');
-        // BUG FIX #2: if host already has voice, bridge ours (if mic active)
-        if (localStream && !audioCalls.has(conn.peer)) startOutgoingCall(conn.peer);
-      });
-
-      attachConnectionHandlers(conn);
-    });
-  }
-
-  function buildShareUrl(code) {
-    const base = window.location.pathname.replace(/\/index\.html$/, '').replace(/\/$/, '');
-    return `${window.location.origin}${base}/${encodeURIComponent(code)}`;
-  }
-
-  function updatePeerListUI() {
-    const n = connections.length;
-    if (!isHost) return;
-    setStatus(`Hosting — ${n} peer${n === 1 ? '' : 's'}`, n > 0 ? 'success' : 'info');
-  }
-
-  function updateHostUI() {
-    const group = document.getElementById('download-perm-group');
-    group.style.display = (isHost && peer && myPeerId) ? '' : 'none';
-  }
-
-  // ===================================================================
-  //  DOWNLOAD PERMISSION
-  // ===================================================================
-  function toggleDownloadPermission() {
-    if (!isHost) return;
-    state.downloadAllowed = document.getElementById('download-perm-toggle').checked;
-    broadcast({ type: 'DOWNLOAD_PERMISSION', allowed: state.downloadAllowed });
-    updateDownloadButton();
-    notify(state.downloadAllowed ? 'Downloads enabled.' : 'Downloads disabled.', 'info');
-  }
-
-  function updateDownloadButton() {
-    const btn = document.getElementById('btn-download');
-    btn.classList.toggle('hidden', !(state.downloadAllowed && !!cachedFileBytes && !!cachedFilename));
-  }
-
-  function downloadFile() {
-    if (!state.downloadAllowed || !cachedFileBytes || !cachedFilename) return;
-    try {
-      const blob = new Blob([cachedFileBytes], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = cachedFilename; a.style.display = 'none';
-      document.body.appendChild(a); a.click();
-      setTimeout(() => { try { document.body.removeChild(a); } catch (_) {} URL.revokeObjectURL(url); }, 1000);
-      notify(`Downloading ${cachedFilename}…`, 'success');
-    } catch (e) { notify(`Download failed: ${e.message || e}`, 'error'); }
-  }
-  document.getElementById('btn-download').addEventListener('click', downloadFile);
-
-  // ===================================================================
-  //  TEXT CHAT
-  // ===================================================================
-  document.getElementById('btn-chat').addEventListener('click', () => {
-    if (chatPanel.classList.contains('open')) closeChat(); else openChat();
-  });
-
-  function openChat() {
-    chatPanel.classList.add('open');
-    unreadCount = 0;
-    updateChatBadge();
-    setTimeout(() => chatInput.focus({ preventScroll: true }), 250);
-  }
-  function closeChat() { chatPanel.classList.remove('open'); }
-
-  function updateChatBadge() {
-    const badge = document.getElementById('chat-badge');
-    if (unreadCount > 0) {
-      badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
-      badge.classList.remove('hidden');
-    } else badge.classList.add('hidden');
-  }
-
-  function updateChatAvailability() {
-    const hasPeers = connections.some(c => c.open);
-    chatInput.disabled = !hasPeers;
-    chatSendBtn.disabled = !hasPeers;
-    chatInput.placeholder = hasPeers ? 'Type a message…' : 'Connect to a session to chat';
-  }
-
-  function handleChatSubmit(e) {
-    e.preventDefault();
-    const text = chatInput.value.trim();
-    if (!text) return;
-    sendChatMessage(text);
-    chatInput.value = '';
-  }
-
-  function sendChatMessage(text) {
-    const msg = {
-      peerId: myPeerId || 'local',
-      name: myDisplayName || 'Anonymous',
-      text: text.substring(0, 500),
-      ts: Date.now(),
-    };
-    addChatMessage(msg, true);
-    // broadcast() reaches the host from a peer, or all peers from the host.
-    // The host relays it to remaining peers via handleNetworkMessage.
-    broadcast({ type: 'CHAT', msg });
-  }
-
-  function addChatMessage(msg, isLocal) {
-    chatMessages.push(msg);
-    if (chatMessages.length > CONFIG.chatHistoryLimit) {
-      chatMessages = chatMessages.slice(-CONFIG.chatHistoryLimit);
-    }
-    renderChatMessage(msg, isLocal);
-    if (!chatPanel.classList.contains('open') && !isLocal) {
-      unreadCount++;
-      updateChatBadge();
-      if (unreadCount <= 2) {
-        const snippet = msg.text.length > 60 ? msg.text.substring(0, 60) + '…' : msg.text;
-        notify(`${msg.name}: ${snippet}`, 'info', 3000);
-      }
-    }
-  }
-
-  function renderChatMessage(msg, isLocal) {
-    chatEmptyEl.classList.add('hidden');
-    const el = document.createElement('div');
-    const meId = myPeerId || 'local';
-    const mine = isLocal || msg.peerId === meId;
-    el.className = 'chat-msg' + (mine ? ' chat-me' : '');
-    const time = new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    el.innerHTML = `
-      <div class="chat-meta">${escapeHtml(msg.name)} · ${escapeHtml(time)}</div>
-      <div class="chat-text">${escapeHtml(msg.text)}</div>
-    `;
-    chatMessagesEl.appendChild(el);
-    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
-  }
-
-  // BUG FIX #1: rebuild chat DOM from history (late joiner)
-  function replaceChatHistory(messages) {
-    chatMessages = messages.slice(-CONFIG.chatHistoryLimit);
-    Array.from(chatMessagesEl.children).forEach(child => {
-      if (child.id !== 'chat-empty') child.remove();
-    });
-    if (chatMessages.length === 0) {
-      chatEmptyEl.classList.remove('hidden');
-    } else {
-      chatEmptyEl.classList.add('hidden');
-      for (const m of chatMessages) renderChatMessage(m, false);
-    }
-  }
-
-  // ===================================================================
-  //  VOICE CHAT
-  // ===================================================================
-  document.getElementById('btn-voice').addEventListener('click', toggleVoice);
-
-  async function toggleVoice() {
-    if (localStream) await disableVoice();
-    else await enableVoice();
-  }
-
-  async function enableVoice() {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      notify('Microphone is not available in this browser.', 'error');
-      return;
-    }
-    try {
-      localStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
-    } catch (e) {
-      const msg = (e.name === 'NotAllowedError') ? 'Microphone permission denied.'
-                : (e.name === 'NotFoundError') ? 'No microphone found.'
-                : 'Microphone access failed: ' + (e.message || e);
-      notify(msg, 'error', 6000);
-      return;
-    }
-    document.getElementById('btn-voice').classList.add('voice-active');
-    setupSpeakerAnalyser('local', localStream);
-    updateVoiceUI();
-
+  const info = map[type] || {title:'Connection error',fixes:['Retry.','Open console.','Run Test Network.']};
+  return { type, title: info.title, fixes: info.fixes };
+}
+function showError(errOrMessage) {
+  const info = (errOrMessage && errOrMessage.type) ? classifyError(errOrMessage) : { title: 'Error', fixes: [String(errOrMessage)] };
+  const banner = document.getElementById('error-banner');
+  banner.innerHTML = `<h4>${escapeHtml(info.title)}</h4>
+    <div style="font-size:.82rem;opacity:.85">${info.type ? 'Error: <code>'+escapeHtml(info.type)+'</code>' : ''}</div>
+    <ul>${info.fixes.map(f => '<li>'+escapeHtml(f)+'</li>').join('')}</ul>
+    <button class="dismiss" onclick="hideError()">Dismiss</button>`;
+  banner.classList.add('visible');
+  setStatus(info.title, 'error');
+}
+function hideError() { document.getElementById('error-banner').classList.remove('visible'); }
+function openDiagnostics() { document.getElementById('diagnostics').classList.add('open'); updateDiagnosticsUI(); }
+function closeDiagnostics() { document.getElementById('diagnostics').classList.remove('open'); }
+function updateDiagnosticsUI() {
+  const body = document.getElementById('diag-body');
+  if (!body) return;
+  if (!document.getElementById('diagnostics').classList.contains('open') && !peer) return;
+  const signaling = peer ? (peer.options.host||'0.peerjs.com')+':'+(peer.options.port||'443')+(peer.options.path||'/') : '—';
+  let html = `<div class="diag-grid">
+    <span class="diag-label">My Peer ID</span><span>${escapeHtml(myPeerId||'—')}</span>
+    <span class="diag-label">Role</span><span>${isHost?'Host':(peer?'Peer':'—')}</span>
+    <span class="diag-label">Signaling</span><span>${escapeHtml(signaling)}</span>
+    <span class="diag-label">Auth</span><span>${sessionAuth.required?'<span class="ok">password required</span>':'open'}</span>
+    <span class="diag-label">WebRTC</span><span>${window.RTCPeerConnection?'<span class="ok">available</span>':'<span class="bad">unavailable</span>'}</span>
+    <span class="diag-label">Online</span><span>${navigator.onLine?'<span class="ok">yes</span>':'<span class="bad">no</span>'}</span>
+  </div>`;
+  if (connections.length) {
+    html += '<div class="diag-section"><h4>Peer Connections</h4>';
     for (const conn of connections) {
-      if (conn.open && !audioCalls.has(conn.peer)) startOutgoingCall(conn.peer);
+      const ice = conn._iceState || '—';
+      const cands = (conn._iceCandidates||[]).reduce((a,c) => (a[c.type]=(a[c.type]||0)+1, a), {});
+      const candStr = Object.entries(cands).map(([k,v])=>`${k}:${v}`).join(' ') || 'gathering…';
+      const cls = ice==='connected'||ice==='completed'?'ok':ice==='checking'?'warn':'bad';
+      html += `<div class="diag-conn">
+        <div><strong>${escapeHtml(String(conn.peer).substring(0,10))}…</strong>
+        <span class="${cls}">(${escapeHtml(ice)})</span>
+        ${conn._authenticated===false?' <span class="bad">unauth</span>':''}
+        ${conn._peerInVoice?' 🎤':''}</div>
+        <div>PC: ${escapeHtml(conn._pcState||'—')} • ICE: ${escapeHtml(candStr)}</div>
+        ${conn._stats?.rtt!=null?`<div>RTT: ${conn._stats.rtt.toFixed(0)} ms • Bytes: ${conn._stats.bytesReceived??0}</div>`:''}
+        ${conn._isRelay?'<div class="warn">⚠ Relayed via TURN</div>':''}
+      </div>`;
     }
-    notify('Voice chat enabled.', 'success', 2500);
+    html += '</div>';
   }
+  html += '<div class="diag-actions"><button class="secondary" onclick="testNetwork()">Test Network</button><button class="secondary" onclick="openServerConfig()">Change Server</button></div>';
+  body.innerHTML = html;
+}
 
-  async function disableVoice() {
-    if (localStream) {
-      localStream.getTracks().forEach(t => { try { t.stop(); } catch (_) {} });
-      localStream = null;
-    }
-    removeSpeakerAnalyser('local');
-    for (const [peerId, call] of audioCalls) {
-      try { call.close(); } catch (_) {}
-      removeRemoteAudio(peerId);
-    }
-    audioCalls.clear();
-    voicePeers.clear();
-    document.getElementById('btn-voice').classList.remove('voice-active', 'voice-speaking');
-    updateVoiceUI();
-    notify('Voice chat disabled.', 'info', 2000);
-  }
+// ==================== NETWORK TEST ====================
+async function testNetwork() {
+  openDiagnostics();
+  const body = document.getElementById('diag-body');
+  body.innerHTML = '<p><strong>Running network tests…</strong></p>';
+  const res = { stun:[], turn:[], host:[], signaling:{ok:false,error:null,latency:null} };
+  if (!window.RTCPeerConnection) { body.innerHTML = '<p class="bad">❌ WebRTC unavailable.</p>'; return; }
+  try {
+    const pc = new RTCPeerConnection({ iceServers: CONFIG.iceServers });
+    pc.createDataChannel('diag');
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) return;
+      const t = e.candidate.type;
+      if (t==='srflx'||t==='prflx') res.stun.push(e.candidate);
+      else if (t==='relay') res.turn.push(e.candidate);
+      else if (t==='host') res.host.push(e.candidate);
+    };
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise(r => setTimeout(r, 5000));
+    pc.close();
+  } catch (e) { console.warn(e); }
+  const t0 = Date.now();
+  await new Promise((resolve) => {
+    let done = false;
+    const testPeer = new Peer(peerOptions());
+    const timer = setTimeout(() => { if (!done) { done=true; res.signaling.error='timeout'; try{testPeer.destroy()}catch(_){}resolve(); } }, CONFIG.signalingTimeout);
+    testPeer.on('open', () => { if (done) return; done=true; clearTimeout(timer); res.signaling.ok=true; res.signaling.latency=Date.now()-t0; try{testPeer.destroy()}catch(_){}resolve(); });
+    testPeer.on('error', (err) => { if (done) return; done=true; clearTimeout(timer); res.signaling.error=err.type||'error'; try{testPeer.destroy()}catch(_){}resolve(); });
+  });
+  const sigCls=res.signaling.ok?'ok':'bad', stunCls=res.stun.length?'ok':'bad', turnCls=res.turn.length?'ok':'warn';
+  body.innerHTML = `<div class="diag-grid">
+    <span class="diag-label">WebRTC</span><span class="ok">✅ available</span>
+    <span class="diag-label">Signaling</span><span class="${sigCls}">${res.signaling.ok?'✅ '+res.signaling.latency+' ms':'❌ '+res.signaling.error}</span>
+    <span class="diag-label">STUN</span><span class="${stunCls}">${res.stun.length?'✅ '+res.stun.length+' candidates':'❌ blocked'}</span>
+    <span class="diag-label">TURN</span><span class="${turnCls}">${res.turn.length?'✅ '+res.turn.length+' relay':'⚠️ not configured'}</span>
+    <span class="diag-label">Host</span><span>${res.host.length}</span>
+  </div><div class="diag-section">
+    ${!res.signaling.ok?'<p class="bad">Signaling unreachable.</p>':''}
+    ${!res.stun.length?'<p class="warn">STUN blocked — direct P2P will not work.</p>':''}
+    ${res.stun.length&&res.turn.length?'<p class="ok">Network healthy.</p>':''}
+  </div>`;
+}
 
-  function cleanupVoice() {
-    if (localStream) {
-      localStream.getTracks().forEach(t => { try { t.stop(); } catch (_) {} });
-      localStream = null;
-    }
-    for (const [peerId, call] of audioCalls) {
-      try { call.close(); } catch (_) {}
-    }
-    audioCalls.clear();
-    voicePeers.clear();
-    Array.from(speakerAnalysers.keys()).forEach(removeSpeakerAnalyser);
-    document.getElementById('audio-container').innerHTML = '';
-    document.getElementById('btn-voice')?.classList.remove('voice-active', 'voice-speaking');
-    updateVoiceUI();
-  }
+// ==================== SERVER CONFIG ====================
+function openServerConfig() {
+  const saved = JSON.parse(localStorage.getItem('coop-server-config') || '{}');
+  document.getElementById('server-host').value = saved.host || '';
+  document.getElementById('server-port').value = saved.port || '';
+  document.getElementById('server-path').value = saved.path || '';
+  document.getElementById('server-key').value = saved.key || '';
+  document.getElementById('server-secure').checked = !!saved.secure;
+  document.getElementById('server-modal').classList.add('open');
+}
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+function saveServerConfig() {
+  const cfg = {
+    host: document.getElementById('server-host').value.trim()||undefined,
+    port: parseInt(document.getElementById('server-port').value)||undefined,
+    path: document.getElementById('server-path').value.trim()||undefined,
+    key: document.getElementById('server-key').value.trim()||undefined,
+    secure: document.getElementById('server-secure').checked||undefined,
+  };
+  localStorage.setItem('coop-server-config', JSON.stringify(cfg));
+  closeModal('server-modal');
+  notify('Signaling server updated.', 'success');
+  if (peer) { try{peer.destroy()}catch(_){} peer=null; myPeerId=null; connections=[]; isHost=false; cleanupVoice(); setStatus('Disconnected.','warning'); }
+}
+function resetServerConfig() { localStorage.removeItem('coop-server-config'); closeModal('server-modal'); notify('Reset to default.','success'); }
+function peerOptions() {
+  const saved = JSON.parse(localStorage.getItem('coop-server-config') || '{}');
+  const opts = { config: { iceServers: CONFIG.iceServers } };
+  if (saved.host) opts.host = saved.host;
+  if (saved.port) opts.port = saved.port;
+  if (saved.path) opts.path = saved.path;
+  if (saved.key) opts.key = saved.key;
+  if (typeof saved.secure === 'boolean') opts.secure = saved.secure;
+  return opts;
+}
 
-  function startOutgoingCall(peerId) {
-    if (!peer || !localStream || audioCalls.has(peerId)) return;
-    try {
-      const call = peer.call(peerId, localStream);
-      if (!call) return;
-      call.on('stream', (remoteStream) => attachRemoteAudio(peerId, remoteStream));
-      call.on('close', () => {
-        audioCalls.delete(peerId);
-        removeRemoteAudio(peerId);
-        voicePeers.delete(peerId);
-        updateVoiceUI();
-      });
-      call.on('error', (err) => console.warn('Outgoing call error', peerId, err));
-      audioCalls.set(peerId, call);
-      voicePeers.add(peerId);
-      updateVoiceUI();
-    } catch (e) {
-      console.warn('Call failed', peerId, e);
-    }
-  }
+// ==================== PYODIDE WORKER ====================
+let pyodideWorker = null;
+let workerMessageId = 0;
+const workerPending = new Map();
 
-  function attachRemoteAudio(peerId, stream) {
-    removeRemoteAudio(peerId);
-    const audio = document.createElement('audio');
-    audio.id = 'audio-' + peerId;
-    audio.autoplay = true;
-    audio.playsInline = true;
-    audio.srcObject = stream;
-    audio.style.display = 'none';
-    document.getElementById('audio-container').appendChild(audio);
-    audio.play().catch(() => {
-      notify('Tap anywhere to enable remote audio playback.', 'warning', 6000);
-      const unlock = () => { audio.play().catch(() => {}); document.removeEventListener('click', unlock); };
-      document.addEventListener('click', unlock, { once: true });
-    });
-    setupSpeakerAnalyser(peerId, stream);
-    voicePeers.add(peerId);
-    updateVoiceUI();
-  }
+function initWorker() {
+  if (pyodideWorker) return;
+  pyodideWorker = new Worker('./worker.js');
+  pyodideWorker.onmessage = (e) => {
+    const { id, type, error, ...rest } = e.data || {};
+    const pending = workerPending.get(id);
+    if (!pending) return;
+    workerPending.delete(id);
+    if (type === 'error') pending.reject(new Error(error || 'Worker error'));
+    else pending.resolve({ type, ...rest });
+  };
+  pyodideWorker.onerror = (err) => {
+    console.error('Worker error:', err);
+    for (const [, pending] of workerPending) pending.reject(new Error('Worker crashed'));
+    workerPending.clear();
+  };
+}
 
-  // BUG FIX #3: do NOT stop remote media stream tracks
-  function removeRemoteAudio(peerId) {
-    const el = document.getElementById('audio-' + peerId);
-    if (el) {
-      el.srcObject = null;
-      el.remove();
-    }
-    removeSpeakerAnalyser(peerId);
-  }
-
-  function updateVoiceUI() {
-    const btn = document.getElementById('btn-voice');
-    const active = !!localStream;
-    btn.classList.toggle('voice-active', active);
-    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    if (!active) btn.classList.remove('voice-speaking');
-
-    const ind = document.getElementById('voice-indicator');
-    const count = document.getElementById('voice-count');
-    if (ind && count) {
-      const n = voicePeers.size;
-      if (active && n > 0) {
-        ind.classList.remove('hidden');
-        count.textContent = n;
-      } else {
-        ind.classList.add('hidden');
+function workerCall(type, payload = {}, transfer = []) {
+  return new Promise((resolve, reject) => {
+    if (!pyodideWorker) initWorker();
+    const id = ++workerMessageId;
+    workerPending.set(id, { resolve, reject });
+    pyodideWorker.postMessage({ id, type, ...payload }, transfer);
+    setTimeout(() => {
+      if (workerPending.has(id)) {
+        workerPending.delete(id);
+        reject(new Error(`Worker call "${type}" timed out (60s)`));
       }
+    }, 60000);
+  });
+}
+
+async function initPyodide() {
+  initWorker();
+  await workerCall('init');
+  fileInput.disabled = false;
+  setStatus('WASM sandbox ready.', 'success');
+  checkForAutoJoin();
+  tryRestoreFromOPFS();
+}
+initPyodide().catch(err => {
+  console.error(err);
+  setStatus('WASM failed to initialize', 'error');
+  notify('Parsing engine failed to load. Check console.', 'error', 8000);
+});
+
+// ==================== GESTURES ====================
+const gesturesEnabled = () => document.getElementById('gestures-toggle').checked;
+viewerContainer.addEventListener('touchstart', (e) => {
+  if (!gesturesEnabled() || e.touches.length!==1) return;
+  touchStartX = e.touches[0].clientX; touchStartY = e.touches[0].clientY; touchLocked = null;
+}, { passive:true });
+viewerContainer.addEventListener('touchmove', (e) => {
+  if (!gesturesEnabled() || e.touches.length!==1) return;
+  if (!touchLocked) {
+    const dx = Math.abs(e.touches[0].clientX-touchStartX), dy = Math.abs(e.touches[0].clientY-touchStartY);
+    if (dx>10 || dy>10) touchLocked = dx > dy*1.5 ? 'horizontal' : 'vertical';
+  }
+  if (touchLocked==='horizontal') e.preventDefault();
+}, { passive:false });
+viewerContainer.addEventListener('touchend', (e) => {
+  if (!gesturesEnabled() || touchLocked!=='horizontal') return;
+  const dx = e.changedTouches[0].clientX - touchStartX;
+  if (Math.abs(dx) > CONFIG.gestureThreshold) dx < 0 ? nextPage() : prevPage();
+  touchLocked = null;
+}, { passive:true });
+viewerContainer.addEventListener('mousedown', (e) => {
+  if (!gesturesEnabled() || e.button!==0) return;
+  isMouseDown = true; mouseDragStartX = e.clientX; mouseDragStartY = e.clientY;
+});
+viewerContainer.addEventListener('mouseup', (e) => {
+  if (!gesturesEnabled() || !isMouseDown) return;
+  isMouseDown = false;
+  const dx = e.clientX-mouseDragStartX, dy = e.clientY-mouseDragStartY;
+  if (Math.abs(dx) > CONFIG.gestureThreshold && Math.abs(dx) > Math.abs(dy)) dx < 0 ? nextPage() : prevPage();
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key==='Escape' && chatPanel.classList.contains('open')) { closeChat(); return; }
+  if (!gesturesEnabled()) return;
+  if (['INPUT','TEXTAREA','BUTTON','SELECT'].includes(document.activeElement.tagName)) return;
+  if (e.key==='ArrowRight' || e.key==='PageDown' || e.key===' ') { e.preventDefault(); nextPage(); }
+  else if (e.key==='ArrowLeft' || e.key==='PageUp') { e.preventDefault(); prevPage(); }
+});
+
+// ==================== CURSORS ====================
+viewerContainer.addEventListener('mousemove', (e) => {
+  lastMouseClientX = e.clientX; lastMouseClientY = e.clientY;
+  broadcastCursor(false);
+});
+viewerContainer.addEventListener('mouseleave', () => {
+  lastMouseClientX = null; lastMouseClientY = null;
+  // BUG FIX #1: don't broadcast 'local' — if we have no peer ID yet, no peers exist
+  if (myPeerId) broadcast({ type: 'CURSOR_HIDE', peerId: myPeerId });
+});
+function broadcastCursor(force) {
+  // BUG FIX #1: guard against missing peer ID
+  if (lastMouseClientX == null || !myPeerId) return;
+  const now = Date.now();
+  if (!force && now-lastCursorBroadcastTs < CURSOR_THROTTLE_MS) return;
+  lastCursorBroadcastTs = now;
+  const rect = viewerContainer.getBoundingClientRect();
+  const x = Math.max(0, Math.min(1, (lastMouseClientX-rect.left)/Math.max(rect.width,1)));
+  const y = Math.max(0, Math.min(1, (lastMouseClientY-rect.top)/Math.max(rect.height,1)));
+  broadcast({ type:'CURSOR_MOVE', x, y, peerId: myPeerId });
+}
+function updateRemoteCursor(peerId, xNorm, yNorm) {
+  if (!cursorLayer) return;
+  let el = remoteCursors[peerId];
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'remote-cursor';
+    el.setAttribute('data-peer', String(peerId).substring(0,6));
+    cursorLayer.appendChild(el);
+    remoteCursors[peerId] = el;
+  }
+  el.style.left = (Math.max(0, Math.min(1, xNorm))*100) + '%';
+  el.style.top = (Math.max(0, Math.min(1, yNorm))*100) + '%';
+  el.style.display = '';
+  if (cursorTimeouts.has(peerId)) clearTimeout(cursorTimeouts.get(peerId));
+  cursorTimeouts.set(peerId, setTimeout(() => hideRemoteCursor(peerId), CURSOR_HIDE_AFTER_MS));
+}
+function hideRemoteCursor(peerId) {
+  const el = remoteCursors[peerId];
+  if (el) el.style.display = 'none';
+  if (cursorTimeouts.has(peerId)) { clearTimeout(cursorTimeouts.get(peerId)); cursorTimeouts.delete(peerId); }
+}
+function removeRemoteCursor(peerId) {
+  if (remoteCursors[peerId]) { remoteCursors[peerId].remove(); delete remoteCursors[peerId]; }
+  if (cursorTimeouts.has(peerId)) { clearTimeout(cursorTimeouts.get(peerId)); cursorTimeouts.delete(peerId); }
+}
+function clearAllRemoteCursors() { for (const id of Object.keys(remoteCursors)) removeRemoteCursor(id); }
+
+// ==================== AUTO-JOIN ====================
+function checkForAutoJoin() {
+  const hashParams = new URLSearchParams(location.hash.slice(1));
+  const pwHashFromUrl = hashParams.get('pw');
+  if (pwHashFromUrl) {
+    pendingAuthHash = pwHashFromUrl;
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {}
+  }
+  const params = new URLSearchParams(window.location.search);
+  let sessionId = null;
+  if (params.has('p')) sessionId = decodeURIComponent(params.get('p')).replace(/^\/+/, '').trim();
+  else { const segs = window.location.pathname.split('/').filter(Boolean); if (segs.length>1) sessionId = segs[1]; }
+  if (sessionId) { document.getElementById('join-code').value = sessionId; setTimeout(() => joinSession(sessionId), 400); }
+}
+
+// ==================== CONNECTION HANDLERS ====================
+function attachConnectionHandlers(conn) {
+  conn._lastPong = Date.now();
+  conn._iceState = 'new'; conn._pcState = 'new';
+  conn._iceCandidates = []; conn._stats = {}; conn._isRelay = false;
+  if (conn._authenticated === undefined) conn._authenticated = true;
+  const myGen = connectionGeneration;
+  conn.on('data', (data) => handleNetworkMessage(conn, data));
+  conn.on('close', () => {
+    if (myGen !== connectionGeneration) return;
+    connections = connections.filter(c => c !== conn);
+    removeRemoteCursor(conn.peer);
+    const call = audioCalls.get(conn.peer);
+    if (call) { try{call.close()}catch(_){} audioCalls.delete(conn.peer); }
+    removeRemoteAudio(conn.peer);
+    voicePeers.delete(conn.peer);
+    updateVoiceUI(); updatePeerListUI(); updateChatAvailability();
+    if (!isHost && connections.length===0) { showError({type:'webrtc'}); notify('Disconnected from host','error'); }
+    else notify(`Peer ${String(conn.peer).substring(0,6)}… disconnected`,'warning');
+    updateDiagnosticsUI();
+  });
+  conn.on('error', (err) => { console.warn('Connection error', conn.peer, err); notify(`Peer error: ${err.type||err.message||err}`,'error'); });
+  const attachPc = () => {
+    const pc = conn.peerConnection;
+    if (!pc) { setTimeout(attachPc,150); return; }
+    pc.addEventListener('icecandidate', (e) => {
+      if (!e.candidate) return;
+      const c = e.candidate;
+      conn._iceCandidates.push({ type:c.type, protocol:c.protocol, address:c.address, url:c.url });
+      if (c.type==='relay') conn._isRelay = true;
+      updateDiagnosticsUI();
+    });
+    pc.addEventListener('iceconnectionstatechange', () => {
+      conn._iceState = pc.iceConnectionState;
+      if (pc.iceConnectionState==='failed') notify('WebRTC connection failed — try TURN or another network.','error',8000);
+      updateDiagnosticsUI();
+    });
+    pc.addEventListener('connectionstatechange', () => { conn._pcState = pc.connectionState; updateDiagnosticsUI(); });
+  };
+  attachPc();
+  const hb = setInterval(() => {
+    if (!conn.open) { clearInterval(hb); return; }
+    if (document.hidden) return;
+    if (conn._hiddenSince) { conn._lastPong = Date.now(); conn._hiddenSince = null; return; }
+    if (Date.now()-conn._lastPong > CONFIG.heartbeatTimeout) {
+      clearInterval(hb); notify('Peer heartbeat timeout — closing stale.','warning');
+      try{conn.close()}catch(_){}
+      return;
+    }
+    try{conn.send({type:'PING'})}catch(_){}
+  }, CONFIG.heartbeatInterval);
+  const statsTimer = setInterval(async () => {
+    if (!conn.open || !conn.peerConnection) return;
+    try {
+      const reports = await conn.peerConnection.getStats();
+      reports.forEach(r => {
+        if (r.type==='candidate-pair' && r.state==='succeeded') {
+          conn._stats.rtt = (r.currentRoundTripTime||0)*1000;
+          conn._stats.packetsLost = r.packetsLost ?? null;
+          conn._stats.bytesReceived = r.bytesReceived ?? 0;
+        }
+      });
+      updateDiagnosticsUI();
+    } catch(_){}
+  }, CONFIG.statsInterval);
+  conn.on('close', () => { clearInterval(hb); clearInterval(statsTimer); });
+}
+
+// ==================== VOICE HELPERS ====================
+function getSilentStream() {
+  if (silentStream) return silentStream;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    silentCtx = new Ctx();
+    const dest = silentCtx.createMediaStreamDestination();
+    const gain = silentCtx.createGain(); gain.gain.value = 0.001;
+    const osc = silentCtx.createOscillator(); osc.frequency.value = 440;
+    osc.connect(gain); gain.connect(dest); osc.start();
+    silentStream = dest.stream;
+    return silentStream;
+  } catch(e) { console.warn('Silent stream failed', e); return new MediaStream(); }
+}
+function getMediaStreamForCall() {
+  if (localStream) return localStream;
+  if (listenOnly) return getSilentStream();
+  return null;
+}
+
+function attachPeerMediaHandlers() {
+  peer.on('call', (call) => {
+    const existing = audioCalls.get(call.peer);
+    if (existing) {
+      const smallerId = myPeerId < call.peer ? myPeerId : call.peer;
+      // Defensive: if _initiator got lost on a stale call, keep the existing one.
+      if (!existing._initiator) { try{call.close()}catch(_){} return; }
+      if (existing._initiator === smallerId) { try{call.close()}catch(_){} return; }
+      try{existing.close()}catch(_){} audioCalls.delete(call.peer);
+    }
+    if (!getMediaStreamForCall()) {
+      listenOnly = true; updateVoiceUI();
+      notify('Peer joined voice — you are in listen-only mode. Enable mic to talk.','info',5000);
+    }
+    const answerStream = getMediaStreamForCall();
+    if (!answerStream) { try{call.close()}catch(_){} return; }
+    try { call.answer(answerStream); }
+    catch(e) { try{call.answer(new MediaStream())}catch(e2){ try{call.close()}catch(_){} return; } }
+    call._initiator = call.peer; call._outgoing = false;
+    call.on('stream', (rs) => attachRemoteAudio(call.peer, rs));
+    call.on('close', () => { audioCalls.delete(call.peer); removeRemoteAudio(call.peer); voicePeers.delete(call.peer); updateVoiceUI(); });
+    call.on('error', (err) => console.warn('Incoming call error', call.peer, err));
+    audioCalls.set(call.peer, call); voicePeers.add(call.peer);
+    updateVoiceUI();
+  });
+}
+
+// ==================== INITIAL DATA SYNC ====================
+function sendInitialDataToConn(conn) {
+  try { conn.send({ type:'SYNC', state }); } catch(_){}
+  try { conn.send({ type:'CHAT_HISTORY', messages: chatMessages.slice(-CONFIG.chatHistoryLimit) }); } catch(_){}
+  if (cachedFileBytes) sendFileToConn(conn, cachedFilename, cachedFileBytes);
+  if (getMediaStreamForCall() && !audioCalls.has(conn.peer)) {
+    startOutgoingCall(conn.peer);
+    broadcast({ type:'VOICE_STATE', peerId: myPeerId, on: true });
+  }
+}
+
+// ==================== HOST / JOIN ====================
+async function startHost() {
+  hideError();
+  connectionGeneration++;
+  cleanupVoice();
+  if (peer) { try{peer.destroy()}catch(_){} }
+  connections = [];
+  isHost = true; myPeerId = null;
+  state.downloadAllowed = false;
+  document.getElementById('download-perm-toggle').checked = false;
+  updateHostUI(); updateDownloadButton();
+  if (!window.RTCPeerConnection) { showError({type:'browser-incompatible'}); return; }
+  const pw = document.getElementById('host-password').value.trim();
+  if (pw) { sessionAuth.salt = crypto.randomUUID(); sessionAuth.hash = await hashPassword(pw, sessionAuth.salt); sessionAuth.required = true; }
+  else sessionAuth = { required:false, salt:null, hash:null };
+
+  setStatus('Creating session…','info');
+  peer = new Peer(peerOptions());
+  attachPeerMediaHandlers();
+  peer.on('open', (id) => {
+    myPeerId = id;
+    setStatus(`Hosting — code: ${id}${sessionAuth.required?' 🔒':''}`,'success');
+    notify(`Session created${sessionAuth.required?' (password protected)':''}.`,'success');
+    const url = buildShareUrl(id);
+    navigator.clipboard?.writeText(url).then(() => notify('Link copied.','info',3000)).catch(()=>{});
+    updateHostUI(); updateDiagnosticsUI();
+  });
+  peer.on('error', (err) => {
+    console.error(err);
+    if (err.type==='unavailable-id') { setTimeout(startHost,500); return; }
+    showError(err);
+  });
+  peer.on('disconnected', () => {
+    setStatus('Signaling lost — reconnecting…','warning');
+    setTimeout(() => { try{peer.reconnect()}catch(_){} }, CONFIG.reconnectDelay);
+  });
+  peer.on('connection', (conn) => {
+    if (connections.some(c => c.peer===conn.peer)) { try{conn.close()}catch(_){} return; }
+    connections.push(conn);
+    updatePeerListUI(); updateChatAvailability();
+    conn._authenticated = !sessionAuth.required;
+    conn.on('open', () => {
+      notify(`Peer ${String(conn.peer).substring(0,6)}… joined`,'success',3000);
+      if (sessionAuth.required) { try{conn.send({type:'AUTH_REQUIRED', salt: sessionAuth.salt})}catch(_){} }
+      else sendInitialDataToConn(conn);
+    });
+    attachConnectionHandlers(conn);
+  });
+}
+
+function joinSession(targetCode) {
+  hideError();
+  const code = (targetCode || document.getElementById('join-code').value || '').trim();
+  if (!code) return notify('Enter a host code first.','warning');
+  if (code === myPeerId) return notify('You cannot join your own session.','warning');
+  if (!window.RTCPeerConnection) { showError({type:'browser-incompatible'}); return; }
+  connectionGeneration++;
+  cleanupVoice();
+  if (peer) { try{peer.destroy()}catch(_){} }
+  connections = [];
+  isHost = false; myPeerId = null;
+  updateHostUI(); updateDownloadButton();
+
+  setStatus(`Connecting to ${code}…`,'info');
+  peer = new Peer(peerOptions());
+  attachPeerMediaHandlers();
+  peer.on('error', (err) => { console.error(err); showError(err); });
+  peer.on('disconnected', () => {
+    setStatus('Signaling lost — reconnecting…','warning');
+    setTimeout(() => { try{peer.reconnect()}catch(_){} }, CONFIG.reconnectDelay);
+  });
+  peer.on('open', () => {
+    const conn = peer.connect(code, { reliable: true });
+    conn._authenticated = false;
+    const timeout = setTimeout(() => {
+      if (!conn.open) { showError({type:'peer-unavailable'}); try{conn.close()}catch(_){} }
+    }, CONFIG.signalingTimeout);
+    connections.push(conn);
+    updatePeerListUI(); updateChatAvailability();
+    conn.on('open', () => {
+      clearTimeout(timeout);
+      hideError();
+      setStatus('Connected — awaiting session data…','info');
+      if (getMediaStreamForCall() && !audioCalls.has(conn.peer)) startOutgoingCall(conn.peer);
+    });
+    attachConnectionHandlers(conn);
+  });
+}
+
+function buildShareUrl(code, includeHash=false) {
+  const base = window.location.pathname.replace(/\/index\.html$/,'').replace(/\/$/,'');
+  let url = `${window.location.origin}${base}/${encodeURIComponent(code)}`;
+  if (includeHash && sessionAuth.required && sessionAuth.hash) url += '#pw=' + encodeURIComponent(sessionAuth.hash);
+  return url;
+}
+function copyShareLink() {
+  if (!myPeerId) return;
+  const includePw = document.getElementById('share-include-pw').checked;
+  const url = buildShareUrl(myPeerId, includePw);
+  navigator.clipboard?.writeText(url).then(
+    () => notify('Link copied' + (includePw?' (with password)':''),'success'),
+    () => notify('Copy failed','error')
+  );
+}
+function copyHostCode() {
+  if (!myPeerId) return;
+  navigator.clipboard?.writeText(myPeerId).then(
+    () => notify('Host code copied.','success'),
+    () => notify('Copy failed','error')
+  );
+}
+
+function updatePeerListUI() {
+  const n = connections.length;
+  if (!isHost) return;
+  setStatus(`Hosting — ${n} peer${n===1?'':'s'}`, n>0?'success':'info');
+}
+function updateHostUI() {
+  const visible = (isHost && peer && myPeerId) ? '' : 'none';
+  document.getElementById('download-perm-group').style.display = visible;
+  document.getElementById('share-group').style.display = visible;
+  const pwCheckbox = document.getElementById('share-include-pw');
+  if (pwCheckbox) {
+    const hasPw = !!(sessionAuth.required && sessionAuth.hash);
+    pwCheckbox.disabled = !hasPw;
+    const label = pwCheckbox.closest('label');
+    if (label) label.style.opacity = hasPw ? '1' : '0.5';
+    pwCheckbox.title = hasPw ? '' : 'Set a password to enable this';
+  }
+}
+
+// ==================== DOWNLOAD ====================
+function toggleDownloadPermission() {
+  if (!isHost) return;
+  state.downloadAllowed = document.getElementById('download-perm-toggle').checked;
+  broadcast({ type:'DOWNLOAD_PERMISSION', allowed: state.downloadAllowed });
+  updateDownloadButton();
+  notify(state.downloadAllowed?'Downloads enabled.':'Downloads disabled.','info');
+}
+function updateDownloadButton() {
+  const btn = document.getElementById('btn-download');
+  btn.classList.toggle('hidden', !(state.downloadAllowed && !!cachedFileBytes && !!cachedFilename));
+}
+function downloadFile() {
+  if (!state.downloadAllowed || !cachedFileBytes || !cachedFilename) return;
+  try {
+    const blob = new Blob([cachedFileBytes], { type:'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = cachedFilename; a.style.display = 'none';
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { try{document.body.removeChild(a)}catch(_){} URL.revokeObjectURL(url); }, 1000);
+    notify(`Downloading ${cachedFilename}…`,'success');
+  } catch(e) { notify(`Download failed: ${e.message||e}`,'error'); }
+}
+document.getElementById('btn-download').addEventListener('click', downloadFile);
+
+// ==================== CHAT ====================
+document.getElementById('btn-chat').addEventListener('click', () => {
+  if (chatPanel.classList.contains('open')) closeChat(); else openChat();
+});
+function openChat() { chatPanel.classList.add('open'); unreadCount=0; updateChatBadge(); setTimeout(() => chatInput.focus({preventScroll:true}),250); }
+function closeChat() { chatPanel.classList.remove('open'); }
+function updateChatBadge() {
+  const badge = document.getElementById('chat-badge');
+  if (unreadCount>0) { badge.textContent = unreadCount>99?'99+':String(unreadCount); badge.classList.remove('hidden'); }
+  else badge.classList.add('hidden');
+}
+function updateChatAvailability() {
+  const hasPeers = connections.some(c => c.open);
+  chatInput.disabled = !hasPeers;
+  chatSendBtn.disabled = !hasPeers;
+  chatInput.placeholder = hasPeers ? 'Type a message…' : 'Connect to a session to chat';
+}
+function handleChatSubmit(e) {
+  e.preventDefault();
+  const text = chatInput.value.trim();
+  if (!text) return;
+  sendChatMessage(text);
+  chatInput.value = '';
+}
+function sendChatMessage(text) {
+  const msg = { peerId: myPeerId||'local', name: myDisplayName||'Anonymous', text: text.substring(0,500), ts: Date.now() };
+  addChatMessage(msg, true);
+  broadcast({ type:'CHAT', msg });
+}
+function addChatMessage(msg, isLocal) {
+  chatMessages.push(msg);
+  if (chatMessages.length > CONFIG.chatHistoryLimit) chatMessages = chatMessages.slice(-CONFIG.chatHistoryLimit);
+  renderChatMessage(msg, isLocal);
+  if (!chatPanel.classList.contains('open') && !isLocal) {
+    unreadCount++; updateChatBadge();
+    if (unreadCount<=2) {
+      const snippet = msg.text.length>60 ? msg.text.substring(0,60)+'…' : msg.text;
+      notify(`${msg.name}: ${snippet}`,'info',3000);
     }
   }
+}
+function renderChatMessage(msg, isLocal) {
+  chatEmptyEl.classList.add('hidden');
+  const el = document.createElement('div');
+  const mine = isLocal || msg.peerId === (myPeerId||'local');
+  el.className = 'chat-msg' + (mine?' chat-me':'');
+  const time = new Date(msg.ts).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+  el.innerHTML = `<div class="chat-meta">${escapeHtml(msg.name)} · ${escapeHtml(time)}</div><div class="chat-text">${escapeHtml(msg.text)}</div>`;
+  chatMessagesEl.appendChild(el);
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+function replaceChatHistory(messages) {
+  chatMessages = messages.slice(-CONFIG.chatHistoryLimit);
+  Array.from(chatMessagesEl.children).forEach(child => { if (child.id!=='chat-empty') child.remove(); });
+  if (chatMessages.length===0) chatEmptyEl.classList.remove('hidden');
+  else { chatEmptyEl.classList.add('hidden'); for (const m of chatMessages) renderChatMessage(m, false); }
+}
 
-  // ===================================================================
-  //  ACTIVE SPEAKER DETECTION (Web Audio AnalyserNode)
-  // ===================================================================
-  // let audioContext = null;
-  // let speakingPollTimer = null;
-  const SPEAKING_RMS_THRESHOLD = 0.02;
+// ==================== VOICE ====================
+document.getElementById('btn-voice').addEventListener('click', toggleVoice);
+async function toggleVoice() {
+  // BUG FIX #2: unlock AudioContext synchronously during the click gesture.
+  // iOS Safari requires this before any await; otherwise analysers
+  // created later (in callbacks) stay silently at RMS 0.
+  tryUnlockAudio();
+  if (localStream || listenOnly) await disableVoice();
+  else await enableVoice();
+}
+async function enableVoice() {
+  if (localStream || listenOnly) return;
+  tryUnlockAudio(); // BUG FIX #2: ensure context is running before async work
+  if (!navigator.mediaDevices?.getUserMedia) {
+    if (confirm('Microphone unavailable. Join listen-only?')) { listenOnly=true; updateVoiceUI(); announceVoiceOn(); }
+    return;
+  }
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true },
+    });
+  } catch(e) {
+    const msg = (e.name==='NotAllowedError')?'Microphone permission denied.'
+              : (e.name==='NotFoundError')?'No microphone found.'
+              : 'Microphone failed: '+(e.message||e);
+    if (confirm(msg + '\n\nJoin in listen-only mode?')) { listenOnly=true; updateVoiceUI(); announceVoiceOn(); }
+    else notify(msg,'error',5000);
+    return;
+  }
+  setupSpeakerAnalyser('local', localStream);
+  updateVoiceUI(); announceVoiceOn();
+  notify('Microphone enabled.','success',2500);
+}
+function announceVoiceOn() {
+  broadcast({ type:'VOICE_STATE', peerId: myPeerId, on: true });
+  if (isHost) {
+    const voicePeerIds = connections.filter(c => c.open && c._peerInVoice).map(c => c.peer);
+    for (const conn of connections) {
+      if (!conn.open) continue;
+      const others = voicePeerIds.filter(id => id !== conn.peer);
+      if (others.length) try{conn.send({type:'VOICE_PEERS', peers: others})}catch(_){}
+    }
+  }
+  for (const conn of connections) if (conn.open && !audioCalls.has(conn.peer)) startOutgoingCall(conn.peer);
+}
+async function disableVoice() {
+  if (localStream) { localStream.getTracks().forEach(t => { try{t.stop()}catch(_){} }); localStream=null; }
+  listenOnly = false;
+  removeSpeakerAnalyser('local');
+  for (const [peerId, call] of audioCalls) { try{call.close()}catch(_){} removeRemoteAudio(peerId); }
+  audioCalls.clear(); voicePeers.clear();
+  broadcast({ type:'VOICE_STATE', peerId: myPeerId, on: false });
+  updateVoiceUI();
+  notify('Voice chat disabled.','info',2000);
+}
+function cleanupVoice() {
+  if (localStream) { localStream.getTracks().forEach(t => { try{t.stop()}catch(_){} }); localStream=null; }
+  listenOnly = false;
+  for (const [peerId, call] of audioCalls) { try{call.close()}catch(_){} }
+  audioCalls.clear(); voicePeers.clear();
+  Array.from(speakerAnalysers.keys()).forEach(removeSpeakerAnalyser);
+  document.getElementById('audio-container').innerHTML = '';
+  document.getElementById('btn-voice')?.classList.remove('voice-active','voice-listening','voice-speaking');
+  updateVoiceUI();
+}
+function startOutgoingCall(peerId) {
+  if (!peer || audioCalls.has(peerId)) return;
+  const stream = getMediaStreamForCall();
+  if (!stream) return;
+  try {
+    const call = peer.call(peerId, stream);
+    if (!call) return;
+    call._initiator = myPeerId; call._outgoing = true;
+    call.on('stream', (rs) => attachRemoteAudio(peerId, rs));
+    call.on('close', () => { audioCalls.delete(peerId); removeRemoteAudio(peerId); voicePeers.delete(peerId); updateVoiceUI(); });
+    call.on('error', (err) => {
+      console.warn('Outgoing call error', peerId, err);
+      // Ensure errored calls are removed from audioCalls (they may not
+      // emit 'close' after an error on some browsers).
+      try { call.close(); } catch (_) {}
+    });
+    audioCalls.set(peerId, call); voicePeers.add(peerId);
+    updateVoiceUI();
+  } catch(e) { console.warn('Call failed', peerId, e); }
+}
+function attachRemoteAudio(peerId, stream) {
+  removeRemoteAudio(peerId);
+  const audio = document.createElement('audio');
+  audio.id = 'audio-' + peerId;
+  audio.autoplay = true; audio.playsInline = true;
+  audio.srcObject = stream; audio.style.display = 'none';
+  document.getElementById('audio-container').appendChild(audio);
+  audio.play().catch(() => {
+    notify('Tap anywhere to enable remote audio.','warning',6000);
+    const unlock = () => { audio.play().catch(()=>{}); document.removeEventListener('click', unlock); };
+    document.addEventListener('click', unlock, { once:true });
+  });
+  setupSpeakerAnalyser(peerId, stream);
+  voicePeers.add(peerId);
+  updateVoiceUI();
+}
+// BUG FIX: never stop remote media tracks — detach only
+function removeRemoteAudio(peerId) {
+  const el = document.getElementById('audio-' + peerId);
+  if (el) { el.srcObject = null; el.remove(); }
+  removeSpeakerAnalyser(peerId);
+}
+function updateVoiceUI() {
+  const btn = document.getElementById('btn-voice');
+  const mic = !!localStream, listening = listenOnly && !localStream;
+  const active = mic || listening;
+  btn.classList.toggle('voice-active', mic);
+  btn.classList.toggle('voice-listening', listening);
+  btn.classList.remove('voice-speaking');
+  if (active && speakingNow.size>0) btn.classList.add('voice-speaking');
+  btn.setAttribute('aria-pressed', active?'true':'false');
+  const ind = document.getElementById('voice-indicator');
+  const count = document.getElementById('voice-count');
+  if (ind && count) {
+    const n = voicePeers.size;
+    if (active && n>0) { ind.classList.remove('hidden'); count.textContent = n; }
+    else ind.classList.add('hidden');
+  }
+}
 
-  function initAudioContext() {
-    if (!audioContext) {
+// ==================== SPEAKER ANALYSER ====================
+const SPEAKING_RMS_THRESHOLD = 0.02;
+function initAudioContext() {
+  if (!audioContext) {
+    try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       audioContext = new Ctx();
-    }
-    if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
-    return audioContext;
+    } catch (e) { console.warn('AudioContext creation failed', e); return null; }
   }
-
-  function setupSpeakerAnalyser(peerId, stream) {
-    try {
-      const ctx = initAudioContext();
-      removeSpeakerAnalyser(peerId);
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.3;
-      const gain = ctx.createGain();
-      gain.gain.value = 0; // silent — we just need the graph to stay alive
-      source.connect(analyser);
-      analyser.connect(gain);
-      gain.connect(ctx.destination);
-      speakerAnalysers.set(peerId, { analyser, source, gain });
-      startSpeakingPoll();
-    } catch (e) {
-      console.warn('Analyser setup failed', peerId, e);
+  if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+  return audioContext;
+}
+// BUG FIX #2: AudioContext must be unlocked during a user gesture on iOS Safari.
+let audioUnlocked = false;
+function tryUnlockAudio() {
+  if (audioUnlocked) return;
+  try {
+    const ctx = initAudioContext();
+    if (!ctx) return;
+    if (ctx.state === 'running') audioUnlocked = true;
+    else if (ctx.state === 'suspended') {
+      ctx.resume().then(() => { audioUnlocked = ctx.state === 'running'; }).catch(() => {});
     }
-  }
+  } catch (_) {}
+}
+document.addEventListener('pointerdown', tryUnlockAudio, { passive: true });
+document.addEventListener('touchstart', tryUnlockAudio, { passive: true });
+document.addEventListener('keydown', tryUnlockAudio, { passive: true });
 
-  function removeSpeakerAnalyser(peerId) {
-    const entry = speakerAnalysers.get(peerId);
-    if (entry) {
-      try { entry.source.disconnect(); } catch (_) {}
-      try { entry.analyser.disconnect(); } catch (_) {}
-      try { entry.gain.disconnect(); } catch (_) {}
-      speakerAnalysers.delete(peerId);
-      speakingNow.delete(peerId);
+function setupSpeakerAnalyser(peerId, stream) {
+  try {
+    const ctx = initAudioContext();
+    if (!ctx) return;
+    removeSpeakerAnalyser(peerId);
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512; analyser.smoothingTimeConstant = 0.3;
+    const gain = ctx.createGain(); gain.gain.value = 0;
+    source.connect(analyser); analyser.connect(gain); gain.connect(ctx.destination);
+    speakerAnalysers.set(peerId, { analyser, source, gain });
+    startSpeakingPoll();
+  } catch(e) { console.warn('Analyser setup failed', peerId, e); }
+}
+function removeSpeakerAnalyser(peerId) {
+  const entry = speakerAnalysers.get(peerId);
+  if (entry) {
+    try{entry.source.disconnect()}catch(_){} try{entry.analyser.disconnect()}catch(_){} try{entry.gain.disconnect()}catch(_){}
+    speakerAnalysers.delete(peerId); speakingNow.delete(peerId);
+  }
+  if (speakerAnalysers.size===0 && speakingPollTimer) { clearInterval(speakingPollTimer); speakingPollTimer=null; }
+}
+function startSpeakingPoll() {
+  if (speakingPollTimer) return;
+  speakingPollTimer = setInterval(() => {
+    let anyoneSpeaking = false;
+    for (const [peerId, entry] of speakerAnalysers) {
+      try {
+        const bufLen = entry.analyser.frequencyBinCount;
+        const data = new Uint8Array(bufLen);
+        entry.analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i=0;i<bufLen;i++) { const v=(data[i]-128)/128; sum += v*v; }
+        const rms = Math.sqrt(sum/bufLen);
+        if (rms > SPEAKING_RMS_THRESHOLD) { speakingNow.add(peerId); anyoneSpeaking = true; }
+        else speakingNow.delete(peerId);
+      } catch(_){}
     }
-    if (speakerAnalysers.size === 0 && speakingPollTimer) {
-      clearInterval(speakingPollTimer);
-      speakingPollTimer = null;
+    const btn = document.getElementById('btn-voice');
+    if (btn) {
+      if ((localStream||listenOnly) && anyoneSpeaking) btn.classList.add('voice-speaking');
+      else btn.classList.remove('voice-speaking');
     }
+  }, 150);
+}
+
+// ==================== TRANSFER PROGRESS ====================
+let lastProgressTs = 0;
+function updateTransferProgress(filename, received, total, done=false) {
+  const el = document.getElementById('transfer-progress');
+  if (!el) return;
+  if (done) {
+    document.getElementById('transfer-bar').style.width = '100%';
+    document.getElementById('transfer-percentage').textContent = '100%';
+    setTimeout(() => el.classList.add('hidden'), 600);
+    return;
   }
+  const now = Date.now();
+  if (now-lastProgressTs < 50) return;
+  lastProgressTs = now;
+  el.classList.remove('hidden');
+  const pct = total ? Math.round((received/total)*100) : 0;
+  document.getElementById('transfer-filename').textContent = 'Receiving ' + filename;
+  document.getElementById('transfer-bar').style.width = pct + '%';
+  document.getElementById('transfer-percentage').textContent = pct + '%';
+}
 
-  function startSpeakingPoll() {
-    if (speakingPollTimer) return;
-    const buf = new Uint8Array(256);
-    speakingPollTimer = setInterval(() => {
-      let anyoneSpeaking = false;
-      for (const [peerId, entry] of speakerAnalysers) {
-        try {
-          const bufLen = entry.analyser.frequencyBinCount;
-          const data = new Uint8Array(bufLen);
-          entry.analyser.getByteTimeDomainData(data);
-          let sum = 0;
-          for (let i = 0; i < bufLen; i++) {
-            const v = (data[i] - 128) / 128;
-            sum += v * v;
-          }
-          const rms = Math.sqrt(sum / bufLen);
-          if (rms > SPEAKING_RMS_THRESHOLD) {
-            speakingNow.add(peerId);
-            anyoneSpeaking = true;
-          } else {
-            speakingNow.delete(peerId);
-          }
-        } catch (_) {}
-      }
-      const btn = document.getElementById('btn-voice');
-      if (btn) {
-        if (localStream && anyoneSpeaking) btn.classList.add('voice-speaking');
-        else btn.classList.remove('voice-speaking');
-      }
-    }, 150);
-  }
+// ==================== MESSAGE DISPATCH ====================
+async function handleNetworkMessage(conn, data) {
+  if (!data || typeof data !== 'object') return;
 
-  // ===================================================================
-  //  TRANSFER PROGRESS UI
-  // ===================================================================
-  let lastProgressTs = 0;
-  function updateTransferProgress(filename, received, total, done = false) {
-    const el = document.getElementById('transfer-progress');
-    if (!el) return;
-
-    if (done) {
-      document.getElementById('transfer-bar').style.width = '100%';
-      document.getElementById('transfer-percentage').textContent = '100%';
-      setTimeout(() => el.classList.add('hidden'), 600);
-      return;
-    }
-
-    const now = Date.now();
-    if (now - lastProgressTs < 50) return; // ~20 fps
-    lastProgressTs = now;
-
-    el.classList.remove('hidden');
-    const pct = total ? Math.round((received / total) * 100) : 0;
-    document.getElementById('transfer-filename').textContent = 'Receiving ' + filename;
-    document.getElementById('transfer-bar').style.width = pct + '%';
-    document.getElementById('transfer-percentage').textContent = pct + '%';
-  }
-
-  // ===================================================================
-  //  MESSAGES (with relay + auth gating)
-  // ===================================================================
-  async function handleNetworkMessage(conn, data) {
-    if (!data || typeof data !== 'object') return;
-
-    // ---- Auth (always processed, host and peer) ----
-    if (data.type === 'AUTH_REQUIRED') {
+  if (data.type === 'AUTH_REQUIRED') {
+    let hash = pendingAuthHash;
+    if (!hash) {
       let pw = document.getElementById('join-password').value.trim();
-      if (!pw) {
-        pw = prompt('This session is password protected. Enter the password:') || '';
-      }
-      if (!pw) {
-        notify('A password is required to join this session.', 'error', 6000);
-        try { conn.close(); } catch (_) {}
-        return;
-      }
-      try {
-        const hash = await hashPassword(pw, data.salt);
-        conn.send({ type: 'AUTH', hash });
-        setStatus('Authenticating…', 'info');
-      } catch (e) {
-        notify('Auth failed: ' + (e.message || e), 'error');
-        try { conn.close(); } catch (_) {}
-      }
-      return;
+      if (!pw) pw = prompt('This session is password protected. Enter the password:') || '';
+      if (!pw) { notify('Password required.','error',6000); try{conn.close()}catch(_){} return; }
+      try { hash = await hashPassword(pw, data.salt); }
+      catch(e) { notify('Auth failed: '+(e.message||e),'error'); try{conn.close()}catch(_){} return; }
     }
-
-    if (data.type === 'AUTH') {
-      if (!isHost) return;
-      if (conn._authenticated) return;
-      if (data.hash === sessionAuth.hash) {
-        conn._authenticated = true;
-        sendInitialDataToConn(conn);
-        notify(`Peer ${String(conn.peer).substring(0,6)}… authenticated`, 'success', 3000);
-        updateChatAvailability();
-      } else {
-        try { conn.send({ type: 'AUTH_FAIL' }); } catch (_) {}
-        notify('Rejected peer with wrong password.', 'warning', 5000);
-        setTimeout(() => { try { conn.close(); } catch (_) {} }, 500);
-      }
-      return;
-    }
-
-    if (data.type === 'AUTH_FAIL') {
-      notify('Incorrect password — connection rejected by host.', 'error', 6000);
-      setStatus('Authentication failed', 'error');
-      try { conn.close(); } catch (_) {}
-      return;
-    }
-
-    // ---- Gate everything else on authentication (host-side) ----
-    if (isHost && sessionAuth.required && !conn._authenticated) {
-      return; // drop messages from unauthenticated peers
-    }
-
-    // ---- Ping/pong ----
-    if (data.type === 'PING') { try { conn.send({ type: 'PONG' }); } catch (_) {} return; }
-    if (data.type === 'PONG') { conn._lastPong = Date.now(); return; }
-
-    // ---- Sync / history ----
-    if (data.type === 'SYNC') {
-      state = { ...state, ...(data.state || {}) };
+    pendingAuthHash = null;
+    try { conn.send({ type:'AUTH', hash }); } catch(_){}
+    setStatus('Authenticating…','info');
+    return;
+  }
+  if (data.type === 'AUTH') {
+    if (!isHost || conn._authenticated) return;
+    if (data.hash === sessionAuth.hash) {
       conn._authenticated = true;
-      updateDownloadButton();
-      if (isHost) document.getElementById('download-perm-toggle').checked = !!state.downloadAllowed;
-      if (cachedFileBytes) renderCurrentPage();
+      sendInitialDataToConn(conn);
+      notify(`Peer ${String(conn.peer).substring(0,6)}… authenticated`,'success',3000);
       updateChatAvailability();
-      return;
-    }
-
-    if (data.type === 'CHAT_HISTORY') {
-      if (Array.isArray(data.messages)) replaceChatHistory(data.messages);
-      return;
-    }
-
-    // ---- Chat (with host relay) ----
-    if (data.type === 'CHAT') {
-      if (data.msg && typeof data.msg.text === 'string') {
-        addChatMessage(data.msg, false);
-      }
-      // Host relays to other peers (star topology fix)
-      if (isHost) {
-        for (const other of connections) {
-          if (other !== conn && other.open) {
-            try { other.send(data); } catch (_) {}
-          }
-        }
-      }
-      return;
-    }
-
-    // ---- Page change (with host relay) ----
-    if (data.type === 'PAGE_CHANGE') {
-      state.currentPage = data.page;
-      renderCurrentPage();
-      if (isHost) {
-        for (const other of connections) {
-          if (other !== conn && other.open) {
-            try { other.send(data); } catch (_) {}
-          }
-        }
-      }
-      return;
-    }
-
-    // ---- Cursor (with host relay) ----
-    if (data.type === 'CURSOR_MOVE') {
-      updateRemoteCursor(data.peerId, data.x, data.y);
-      if (isHost) {
-        for (const other of connections) {
-          if (other !== conn && other.open) {
-            try { other.send(data); } catch (_) {}
-          }
-        }
-      }
-      return;
-    }
-
-    // ---- Download permission ----
-    if (data.type === 'DOWNLOAD_PERMISSION') {
-      state.downloadAllowed = !!data.allowed;
-      updateDownloadButton();
-      notify(data.allowed ? 'Host enabled file downloads.' : 'Host disabled file downloads.', 'info', 3500);
-      return;
-    }
-
-    // ---- File transfer ----
-    if (data.type === 'FILE_START') {
-      if (!data.totalChunks || data.totalChunks > CONFIG.maxChunks) {
-        notify('Refusing oversized / invalid file transfer.', 'error', 6000);
-        return;
-      }
-      if (incomingTransfers.has(conn.peer)) incomingTransfers.delete(conn.peer);
-      incomingTransfers.set(conn.peer, {
-        filename: data.filename,
-        totalSize: data.totalSize,
-        totalChunks: data.totalChunks,
-        chunks: new Array(data.totalChunks),
-        received: 0,
-        startedAt: Date.now(),
-      });
-      notify(`Receiving ${data.filename}…`, 'info', 2500);
-      updateTransferProgress(data.filename, 0, data.totalChunks);
-      updateDiagnosticsUI();
-      setTimeout(() => {
-        if (incomingTransfers.has(conn.peer)) {
-          const t = incomingTransfers.get(conn.peer);
-          if (t.received < t.totalChunks) {
-            incomingTransfers.delete(conn.peer);
-            notify(`Transfer of ${data.filename} timed out.`, 'error', 6000);
-          }
-        }
-      }, CONFIG.transferTimeout);
-      return;
-    }
-
-    if (data.type === 'FILE_CHUNK') {
-      const t = incomingTransfers.get(conn.peer);
-      if (!t) return;
-      t.chunks[data.index] = toUint8(data.data);
-      t.received++;
-      updateTransferProgress(t.filename, t.received, t.totalChunks);
-      return;
-    }
-
-    if (data.type === 'FILE_END') {
-      const t = incomingTransfers.get(conn.peer);
-      if (!t) return;
-      incomingTransfers.delete(conn.peer);
-      if (t.received < t.totalChunks) {
-        notify(`Transfer incomplete: ${t.received}/${t.totalChunks} chunks.`, 'error', 6000);
-        return;
-      }
-
-      // Guard against undefined chunks
-      const merged = new Uint8Array(t.totalSize);
-      let offset = 0;
-      for (const c of t.chunks) {
-        if (!c) {
-          notify('Transfer corrupted: missing data chunks.', 'error', 6000);
-          updateDiagnosticsUI();
-          return;
-        }
-        merged.set(c, offset);
-        offset += c.length;
-      }
-      if (offset !== t.totalSize) {
-        notify(`Transfer size mismatch (${offset} vs ${t.totalSize}).`, 'error', 6000);
-        return;
-      }
-
-      updateTransferProgress(t.filename, t.totalChunks, t.totalChunks, true);
-      hideError();
-      notify(`Received ${t.filename}`, 'success', 3000);
-
-      if (isHost) {
-        for (const other of connections) {
-          if (other !== conn && other.open && other._authenticated) {
-            sendFileToConn(other, t.filename, merged.buffer);
-          }
-        }
-      }
-      processAndRenderFileLocally(merged.buffer, t.filename, false).catch(err => {
-        console.error(err);
-        notify('Failed to render received file.', 'error');
-      });
-      updateDiagnosticsUI();
-      return;
-    }
-  }
-
-  function toUint8(data) {
-    if (data instanceof Uint8Array) return data;
-    if (data instanceof ArrayBuffer) return new Uint8Array(data);
-    if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    return new Uint8Array(0);
-  }
-
-  function broadcast(data) {
-    for (const conn of connections) {
-      if (conn && conn.open && conn._authenticated !== false) {
-        try { conn.send(data); } catch (_) {}
-      }
-    }
-  }
-
-  // ===================================================================
-  //  FILE TRANSFER (send)
-  // ===================================================================
-  async function sendFileToConn(conn, filename, arrayBuffer) {
-    if (!conn.open) return;
-    const totalSize = arrayBuffer.byteLength;
-    const totalChunks = Math.ceil(totalSize / CONFIG.chunkSize);
-    if (totalChunks > CONFIG.maxChunks) {
-      notify(`File too large (${(totalSize/1e6).toFixed(1)} MB).`, 'error', 8000);
-      return;
-    }
-    outgoingTransfers.set(conn.peer, { sent: 0, total: totalChunks, filename });
-    try {
-      conn.send({ type: 'FILE_START', filename, totalSize, totalChunks });
-      const dc = conn.dataChannel;
-      for (let i = 0; i < totalChunks; i++) {
-        if (dc) {
-          while (dc.bufferedAmount > CONFIG.maxBufferedAmount) {
-            await new Promise(r => setTimeout(r, 20));
-            if (!conn.open) { outgoingTransfers.delete(conn.peer); return; }
-          }
-        }
-        const start = i * CONFIG.chunkSize;
-        const end = Math.min(start + CONFIG.chunkSize, totalSize);
-        conn.send({ type: 'FILE_CHUNK', index: i, data: arrayBuffer.slice(start, end) });
-        outgoingTransfers.get(conn.peer).sent = i + 1;
-        if (i % 32 === 0) updateDiagnosticsUI();
-      }
-      conn.send({ type: 'FILE_END', filename });
-      notify(`Sent ${filename} to ${String(conn.peer).substring(0,6)}…`, 'success', 3000);
-    } catch (e) {
-      console.warn('File send failed', conn.peer, e);
-      notify(`Transfer failed: ${e.message || e}`, 'error', 6000);
-    } finally {
-      outgoingTransfers.delete(conn.peer);
-      updateDiagnosticsUI();
-    }
-  }
-
-  function broadcastFile(filename, arrayBuffer) {
-    for (const conn of connections) {
-      if (conn.open && conn._authenticated !== false) {
-        sendFileToConn(conn, filename, arrayBuffer.slice(0));
-      }
-    }
-  }
-
-  // ===================================================================
-  //  FILE PROCESSING
-  // ===================================================================
-  fileInput.addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const buf = await file.arrayBuffer();
-    await processAndRenderFileLocally(buf, file.name, true);
-    broadcastFile(file.name, buf);
-    saveToOPFS(buf, file.name);
-    fileInput.value = '';
-  });
-  document.getElementById('btn-open-file').addEventListener('click', () => fileInput.click());
-
-  async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
-    if (!arrayBuffer) return;
-    cachedFilename = filename;
-    cachedFileBytes = arrayBuffer.slice(0);
-    setCurrentFileLabel(filename);
-
-    const fname = filename.toLowerCase();
-    if (fname.endsWith('.pdf')) state.fileType = 'pdf';
-    else if (/\.(png|jpe?g|gif|webp)$/.test(fname)) state.fileType = 'image';
-    else state.fileType = 'other';
-
-    document.getElementById('pdf-canvas').style.display   = state.fileType === 'pdf'   ? 'block' : 'none';
-    document.getElementById('image-view').style.display   = state.fileType === 'image' ? 'block' : 'none';
-    document.getElementById('text-content').style.display = state.fileType === 'other' ? 'block' : 'none';
-
-    if (state.fileType === 'pdf') {
-      try {
-        pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
-        state.totalPages = pdfDoc.numPages;
-        currentZoom = 1;
-        hasFitted = false;
-      } catch (err) {
-        console.error(err);
-        showError('Could not open PDF: ' + (err.message || err));
-        return;
-      }
-    } else if (state.fileType === 'image') {
-      state.totalPages = 1;
-      const url = URL.createObjectURL(new Blob([arrayBuffer.slice(0)]));
-      const img = document.getElementById('image-view');
-      img.onload = () => {
-        currentZoom = 1;
-        const availW = viewerContainer.clientWidth - 48;
-        if (img.naturalWidth > availW) currentZoom = availW / img.naturalWidth;
-        applyImageZoom();
-      };
-      img.src = url;
     } else {
-      setStatus('Parsing document in WASM…', 'info');
-      try {
-        await ensurePackagesFor(filename);
-        const parseDoc = pyodide.globals.get('parse_document');
-        state.totalPages = parseDoc(new Uint8Array(arrayBuffer.slice(0)), filename);
-        setStatus('Document ready.', 'success');
-      } catch (err) {
-        console.error(err);
-        showError('Failed to parse document: ' + (err.message || err));
-        return;
-      }
+      try{conn.send({type:'AUTH_FAIL'})}catch(_){}
+      notify('Rejected peer with wrong password.','warning',5000);
+      setTimeout(() => { try{conn.close()}catch(_){} }, 500);
     }
+    return;
+  }
+  if (data.type === 'AUTH_FAIL') {
+    notify('Incorrect password — rejected.','error',6000);
+    setStatus('Authentication failed','error');
+    try{conn.close()}catch(_){}
+    return;
+  }
+  if (isHost && sessionAuth.required && !conn._authenticated) return;
 
-    if (resetPage) state.currentPage = 1;
-    if (state.currentPage < 1) state.currentPage = 1;
-    if (state.currentPage > state.totalPages) state.currentPage = state.totalPages;
+  if (data.type==='PING') { try{conn.send({type:'PONG'})}catch(_){} return; }
+  if (data.type==='PONG') { conn._lastPong = Date.now(); return; }
 
+  if (data.type==='SYNC') {
+    state = { ...state, ...(data.state||{}) };
+    conn._authenticated = true;
     updateDownloadButton();
-    await renderCurrentPage();
-    broadcast({ type: 'SYNC', state });
+    if (isHost) document.getElementById('download-perm-toggle').checked = !!state.downloadAllowed;
+    if (cachedFileBytes) renderCurrentPage();
+    updateChatAvailability();
+    return;
   }
-
-  function applyImageZoom() {
-    const img = document.getElementById('image-view');
-    if (!img.naturalWidth) return;
-    img.style.maxWidth = 'none';
-    img.style.width = Math.round(img.naturalWidth * currentZoom) + 'px';
-    img.style.height = 'auto';
+  if (data.type==='CHAT_HISTORY') {
+    if (Array.isArray(data.messages)) replaceChatHistory(data.messages);
+    return;
   }
-
-  async function renderCurrentPage() {
-    updatePageUI();
-    if (state.fileType === 'pdf' && pdfDoc) await renderPdfPage();
-    else if (state.fileType === 'image') applyImageZoom();
-    else if (state.fileType === 'other' && pyodide) {
-      const getPage = pyodide.globals.get('get_page');
-      const content = getPage(state.currentPage - 1);
-      document.getElementById('text-content').textContent = content || 'Document loaded or page empty.';
+  if (data.type==='CHAT') {
+    if (data.msg && typeof data.msg.text==='string') addChatMessage(data.msg, false);
+    if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
+    return;
+  }
+  if (data.type==='PAGE_CHANGE') {
+    state.currentPage = data.page;
+    renderCurrentPage();
+    if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
+    return;
+  }
+  if (data.type==='CURSOR_MOVE') {
+    updateRemoteCursor(data.peerId, data.x, data.y);
+    if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
+    return;
+  }
+  if (data.type==='CURSOR_HIDE') {
+    hideRemoteCursor(data.peerId);
+    if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
+    return;
+  }
+  if (data.type==='DOWNLOAD_PERMISSION') {
+    state.downloadAllowed = !!data.allowed;
+    updateDownloadButton();
+    notify(data.allowed?'Host enabled downloads.':'Host disabled downloads.','info',3500);
+    return;
+  }
+  if (data.type==='VOICE_STATE') {
+    conn._peerInVoice = !!data.on;
+    if (!data.on) {
+      const call = audioCalls.get(data.peerId);
+      if (call) { try{call.close()}catch(_){} audioCalls.delete(data.peerId); }
+      removeRemoteAudio(data.peerId); voicePeers.delete(data.peerId);
+      updateVoiceUI();
+    } else if (data.peerId !== myPeerId && getMediaStreamForCall()) startOutgoingCall(data.peerId);
+    if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
+    return;
+  }
+  if (data.type==='VOICE_PEERS') {
+    for (const id of (data.peers||[])) if (id!==myPeerId && getMediaStreamForCall()) startOutgoingCall(id);
+    return;
+  }
+  if (data.type==='FILE_START') {
+    if (!data.totalChunks || data.totalChunks > CONFIG.maxChunks) { notify('Oversized transfer refused.','error',6000); return; }
+    if (incomingTransfers.has(conn.peer)) incomingTransfers.delete(conn.peer);
+    incomingTransfers.set(conn.peer, {
+      filename: data.filename, totalSize: data.totalSize, totalChunks: data.totalChunks,
+      chunks: new Array(data.totalChunks), received: 0, startedAt: Date.now(),
+    });
+    notify(`Receiving ${data.filename}…`,'info',2500);
+    updateTransferProgress(data.filename, 0, data.totalChunks);
+    updateDiagnosticsUI();
+    setTimeout(() => {
+      if (incomingTransfers.has(conn.peer)) {
+        const t = incomingTransfers.get(conn.peer);
+        if (t.received < t.totalChunks) { incomingTransfers.delete(conn.peer); notify(`Transfer timed out.`,'error',6000); }
+      }
+    }, CONFIG.transferTimeout);
+    return;
+  }
+  if (data.type==='FILE_CHUNK') {
+    const t = incomingTransfers.get(conn.peer);
+    if (!t) return;
+    t.chunks[data.index] = toUint8(data.data);
+    t.received++;
+    updateTransferProgress(t.filename, t.received, t.totalChunks);
+    return;
+  }
+  if (data.type==='FILE_END') {
+    const t = incomingTransfers.get(conn.peer);
+    if (!t) return;
+    incomingTransfers.delete(conn.peer);
+    if (t.received < t.totalChunks) { notify(`Transfer incomplete: ${t.received}/${t.totalChunks}`,'error',6000); return; }
+    const merged = new Uint8Array(t.totalSize);
+    let offset = 0;
+    for (const c of t.chunks) {
+      if (!c) { notify('Transfer corrupted: missing chunks.','error',6000); updateDiagnosticsUI(); return; }
+      merged.set(c, offset); offset += c.length;
     }
+    if (offset !== t.totalSize) { notify(`Size mismatch (${offset} vs ${t.totalSize}).`,'error',6000); return; }
+    updateTransferProgress(t.filename, t.totalChunks, t.totalChunks, true);
+    hideError();
+    notify(`Received ${t.filename}`,'success',3000);
+    if (isHost) for (const o of connections) if (o!==conn && o.open && o._authenticated) sendFileToConn(o, t.filename, merged.buffer);
+    processAndRenderFileLocally(merged.buffer, t.filename, false).catch(err => { console.error(err); notify('Render failed.','error'); });
+    updateDiagnosticsUI();
+    return;
   }
+}
+function toUint8(data) {
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  return new Uint8Array(0);
+}
+function broadcast(data) {
+  for (const conn of connections) {
+    if (conn && conn.open && conn._authenticated !== false) try{conn.send(data)}catch(_){}
+  }
+}
 
-  async function renderPdfPage() {
-    if (!hasFitted) { hasFitted = true; await fitToWidth(true); return; }
-    const page = await pdfDoc.getPage(state.currentPage);
-    const base = page.getViewport({ scale: 1 });
-    if (!base.width || !base.height) {
-      console.warn('[renderPdfPage] Zero-dimension page — skipping.');
+// ==================== FILE SEND ====================
+async function sendFileToConn(conn, filename, arrayBuffer) {
+  if (!conn.open) return;
+  const totalSize = arrayBuffer.byteLength;
+  const totalChunks = Math.ceil(totalSize / CONFIG.chunkSize);
+  if (totalChunks > CONFIG.maxChunks) { notify(`File too large (${(totalSize/1e6).toFixed(1)} MB).`,'error',8000); return; }
+  outgoingTransfers.set(conn.peer, { sent:0, total: totalChunks, filename });
+  try {
+    conn.send({ type:'FILE_START', filename, totalSize, totalChunks });
+    const dc = conn.dataChannel;
+    for (let i=0; i<totalChunks; i++) {
+      if (dc) {
+        while (dc.bufferedAmount > CONFIG.maxBufferedAmount) {
+          await new Promise(r => setTimeout(r, 20));
+          if (!conn.open) { outgoingTransfers.delete(conn.peer); return; }
+        }
+      }
+      const start = i*CONFIG.chunkSize;
+      const end = Math.min(start+CONFIG.chunkSize, totalSize);
+      conn.send({ type:'FILE_CHUNK', index: i, data: arrayBuffer.slice(start, end) });
+      outgoingTransfers.get(conn.peer).sent = i+1;
+      if (i%32===0) updateDiagnosticsUI();
+    }
+    conn.send({ type:'FILE_END', filename });
+    notify(`Sent ${filename} to ${String(conn.peer).substring(0,6)}…`,'success',3000);
+  } catch(e) {
+    console.warn('File send failed', conn.peer, e);
+    notify(`Transfer failed: ${e.message||e}`,'error',6000);
+  } finally {
+    outgoingTransfers.delete(conn.peer);
+    updateDiagnosticsUI();
+  }
+}
+function broadcastFile(filename, arrayBuffer) {
+  for (const conn of connections) if (conn.open && conn._authenticated !== false) sendFileToConn(conn, filename, arrayBuffer.slice(0));
+}
+
+// ==================== FILE PROCESSING ====================
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const buf = await file.arrayBuffer();
+  await processAndRenderFileLocally(buf, file.name, true);
+  broadcastFile(file.name, buf);
+  saveToOPFS(buf, file.name);
+  fileInput.value = '';
+});
+document.getElementById('btn-open-file').addEventListener('click', () => fileInput.click());
+
+async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
+  if (!arrayBuffer) return;
+  cachedFilename = filename; cachedFileBytes = arrayBuffer.slice(0);
+  setCurrentFileLabel(filename);
+  const fname = filename.toLowerCase();
+  if (fname.endsWith('.pdf')) state.fileType = 'pdf';
+  else if (/\.(png|jpe?g|gif|webp)$/.test(fname)) state.fileType = 'image';
+  else state.fileType = 'other';
+  document.getElementById('pdf-canvas').style.display = state.fileType==='pdf'?'block':'none';
+  document.getElementById('image-view').style.display = state.fileType==='image'?'block':'none';
+  document.getElementById('text-content').style.display = state.fileType==='other'?'block':'none';
+  if (state.fileType==='pdf') {
+    try {
+      pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+      state.totalPages = pdfDoc.numPages; currentZoom = 1; hasFitted = false;
+    } catch(err) { console.error(err); showError('Could not open PDF: '+(err.message||err)); return; }
+  } else if (state.fileType==='image') {
+    state.totalPages = 1;
+    const url = URL.createObjectURL(new Blob([arrayBuffer.slice(0)]));
+    const img = document.getElementById('image-view');
+    img.onload = () => {
+      currentZoom = 1;
+      const availW = viewerContainer.clientWidth - 48;
+      if (img.naturalWidth > availW) currentZoom = availW / img.naturalWidth;
+      applyImageZoom();
+    };
+    img.src = url;
+  } else {
+    setStatus('Parsing document in worker…','info');
+    try {
+      const copy = arrayBuffer.slice(0);
+      const result = await workerCall('parse', { bytes: copy, filename }, [copy]);
+      state.totalPages = result.totalPages;
+      setStatus('Document ready.','success');
+    } catch(err) {
+      console.error(err);
+      showError('Parse failed: ' + (err.message||err));
       return;
     }
-    const cssW = base.width * currentZoom;
-    const cssH = base.height * currentZoom;
-    const dpr = Math.min(window.devicePixelRatio || 1, CONFIG.maxRenderDpr);
-
-    let pixW = cssW * dpr, pixH = cssH * dpr;
-    const totalPix = pixW * pixH;
-    if (totalPix > CONFIG.maxCanvasPixels) {
-      const factor = Math.sqrt(CONFIG.maxCanvasPixels / totalPix);
-      pixW *= factor; pixH *= factor;
-    }
-
-    const renderViewport = page.getViewport({ scale: pixW / base.width });
-    const canvas = document.getElementById('pdf-canvas');
-    const ctx = canvas.getContext('2d');
-    canvas.width = Math.floor(pixW);
-    canvas.height = Math.floor(pixH);
-    canvas.style.width = Math.floor(cssW) + 'px';
-    canvas.style.height = Math.floor(cssH) + 'px';
-    await page.render({ canvasContext: ctx, viewport: renderViewport }).promise;
   }
-
-  // ===================================================================
-  //  NAVIGATION
-  // ===================================================================
-  function prevPage() {
-    if (state.currentPage > 1) {
-      state.currentPage--;
-      renderCurrentPage();
-      broadcast({ type: 'PAGE_CHANGE', page: state.currentPage });
-    }
-  }
-  function nextPage() {
-    if (state.currentPage < state.totalPages) {
-      state.currentPage++;
-      renderCurrentPage();
-      broadcast({ type: 'PAGE_CHANGE', page: state.currentPage });
-    }
-  }
-  function jumpToPage() {
-    const n = parseInt(document.getElementById('goto-page').value, 10);
-    if (n >= 1 && n <= state.totalPages) {
-      state.currentPage = n;
-      renderCurrentPage();
-      broadcast({ type: 'PAGE_CHANGE', page: n });
-    } else notify(`Enter a page between 1 and ${state.totalPages}.`, 'warning');
-  }
-  function promptGoto() {
-    if (state.totalPages <= 1) return;
-    const v = prompt(`Go to page (1–${state.totalPages}):`, state.currentPage);
-    if (v === null) return;
-    const n = parseInt(v, 10);
-    if (n >= 1 && n <= state.totalPages) {
-      state.currentPage = n;
-      renderCurrentPage();
-      broadcast({ type: 'PAGE_CHANGE', page: n });
-    }
-  }
-  function zoomIn() {
-    if (state.fileType === 'image') { currentZoom = Math.min(currentZoom + 0.25, 5); applyImageZoom(); }
-    else { currentZoom += 0.25; renderCurrentPage(); }
-  }
-  function zoomOut() {
-    if (state.fileType === 'image') { currentZoom = Math.max(currentZoom - 0.25, 0.25); applyImageZoom(); }
-    else if (currentZoom > 0.35) { currentZoom -= 0.25; renderCurrentPage(); }
-  }
-  async function fitToWidth(silent = false) {
-    if (state.fileType === 'pdf' && pdfDoc) {
-      const page = await pdfDoc.getPage(state.currentPage);
-      const vp = page.getViewport({ scale: 1 });
-      if (!vp.width || !vp.height) { console.warn('[fitToWidth] Zero-dim.'); return; }
-      const styles = getComputedStyle(viewerContainer);
-      const pad = parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight);
-      const avail = viewerContainer.clientWidth - pad;
-      currentZoom = Math.max(avail / vp.width, 0.1);
-      await renderPdfPage();
-    } else if (state.fileType === 'image') {
-      const img = document.getElementById('image-view');
-      img.style.maxWidth = '100%'; img.style.width = '100%'; img.style.height = 'auto';
-    }
-  }
-  async function fitToHeight() {
-    if (state.fileType === 'pdf' && pdfDoc) {
-      const page = await pdfDoc.getPage(state.currentPage);
-      const vp = page.getViewport({ scale: 1 });
-      if (!vp.width || !vp.height) { console.warn('[fitToHeight] Zero-dim.'); return; }
-      const styles = getComputedStyle(viewerContainer);
-      const pad = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
-      const avail = viewerContainer.clientHeight - pad;
-      currentZoom = Math.max(avail / vp.height, 0.1);
-      await renderPdfPage();
-    } else if (state.fileType === 'image') {
-      const img = document.getElementById('image-view');
-      img.style.maxWidth = '100%'; img.style.maxHeight = '100%';
-      img.style.width = 'auto'; img.style.height = '100%';
-    }
-  }
-  function toggleFullscreen() {
-    if (!document.fullscreenElement) viewerContainer.requestFullscreen?.().catch(err => alert(err.message));
-    else document.exitFullscreen();
-  }
-
-  // ===================================================================
-  //  OPFS
-  // ===================================================================
-  async function saveToOPFS(arrayBuffer, filename) {
-    if (!navigator.storage?.getDirectory) return;
-    try {
-      if (navigator.storage.persist) await navigator.storage.persist();
-      const root = await navigator.storage.getDirectory();
-      const meta = await root.getFileHandle('coop-meta.json', { create: true });
-      const mw = await meta.createWritable();
-      await mw.write(JSON.stringify({ filename, savedAt: Date.now() }));
-      await mw.close();
-      const data = await root.getFileHandle('coop-data.bin', { create: true });
-      const dw = await data.createWritable();
-      await dw.write(arrayBuffer);
-      await dw.close();
-    } catch (e) { console.warn('OPFS save failed', e); }
-  }
-  async function loadFromOPFS() {
-    if (!navigator.storage?.getDirectory) return null;
-    try {
-      const root = await navigator.storage.getDirectory();
-      const metaFile = await (await root.getFileHandle('coop-meta.json')).getFile();
-      const meta = JSON.parse(await metaFile.text());
-      const dataFile = await (await root.getFileHandle('coop-data.bin')).getFile();
-      return { filename: meta.filename, buffer: await dataFile.arrayBuffer() };
-    } catch (_) { return null; }
-  }
-  async function tryRestoreFromOPFS() {
-    const data = await loadFromOPFS();
-    if (data) document.getElementById('restore-btn').classList.remove('hidden');
-  }
-  async function restoreLastFile() {
-    const data = await loadFromOPFS();
-    if (!data) return;
-    await processAndRenderFileLocally(data.buffer, data.filename, true);
-    document.getElementById('restore-btn').classList.add('hidden');
-  }
-
-  // ===================================================================
-  //  UI EVENTS
-  // ===================================================================
-  const btnMenu = document.getElementById('btn-menu');
-  const menuPanel = document.getElementById('menu-panel');
-  btnMenu.addEventListener('click', () => {
-    const open = menuPanel.classList.toggle('open');
-    btnMenu.setAttribute('aria-expanded', open ? 'true' : 'false');
-  });
-  menuPanel.addEventListener('click', (e) => {
-    if (window.innerWidth <= 768 && e.target.closest('button')) {
-      menuPanel.classList.remove('open');
-      btnMenu.setAttribute('aria-expanded', 'false');
-    }
-  });
-
-  const nameInput = document.getElementById('display-name');
-  nameInput.value = myDisplayName;
-  nameInput.addEventListener('change', () => {
-    const v = nameInput.value.trim().substring(0, 24);
-    if (v) { myDisplayName = v; localStorage.setItem('coop-name', v); notify('Name updated.', 'success', 2000); }
-    else nameInput.value = myDisplayName;
-  });
-
-  window.addEventListener('online', () => {
-    notify('Network restored.', 'success');
-    updateDiagnosticsUI();
-    if (peer && peer.disconnected && !peer.destroyed) {
-      try { peer.reconnect(); } catch (_) {}
-    }
-  });
-  window.addEventListener('offline', () => {
-    notify('Network lost. Session will be interrupted.', 'error', 6000);
-    setStatus('Offline', 'error');
-    updateDiagnosticsUI();
-  });
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) return;
-    for (const conn of connections) if (!conn.open) notify('A peer disconnected while you were away.', 'warning');
-    updateDiagnosticsUI();
-  });
-  window.addEventListener('beforeunload', () => {
-    try { peer?.destroy(); } catch (_) {}
-    try { localStream?.getTracks().forEach(t => t.stop()); } catch (_) {}
-    try { if (audioContext) audioContext.close(); } catch (_) {}
-  });
-
-  // Initial UI state
+  if (resetPage) state.currentPage = 1;
+  if (state.currentPage < 1) state.currentPage = 1;
+  if (state.currentPage > state.totalPages) state.currentPage = state.totalPages;
   updateDownloadButton();
-  updateChatAvailability();
-  updateVoiceUI();
-  </script>
+  await renderCurrentPage();
+  broadcast({ type:'SYNC', state });
+}
+
+function applyImageZoom() {
+  const img = document.getElementById('image-view');
+  if (!img.naturalWidth) return;
+  img.style.maxWidth = 'none';
+  img.style.width = Math.round(img.naturalWidth*currentZoom) + 'px';
+  img.style.height = 'auto';
+}
+async function renderCurrentPage() {
+  updatePageUI();
+  clearAllRemoteCursors();
+  if (state.fileType==='pdf' && pdfDoc) await renderPdfPage();
+  else if (state.fileType==='image') applyImageZoom();
+  else if (state.fileType==='other' && pyodideWorker) {
+    try {
+      const result = await workerCall('getPage', { index: state.currentPage - 1 });
+      document.getElementById('text-content').textContent = result.content || 'Document loaded or page empty.';
+    } catch (err) {
+      document.getElementById('text-content').textContent = 'Failed to load page: ' + (err.message||err);
+    }
+  }
+}
+async function renderPdfPage() {
+  if (!hasFitted) { hasFitted = true; await fitToWidth(true); return; }
+  const page = await pdfDoc.getPage(state.currentPage);
+  const base = page.getViewport({ scale: 1 });
+  if (!base.width || !base.height) { console.warn('[renderPdfPage] Zero-dim page'); return; }
+  const cssW = base.width*currentZoom, cssH = base.height*currentZoom;
+  const dpr = Math.min(window.devicePixelRatio||1, CONFIG.maxRenderDpr);
+  let pixW = cssW*dpr, pixH = cssH*dpr;
+  const totalPix = pixW*pixH;
+  if (totalPix > CONFIG.maxCanvasPixels) {
+    const factor = Math.sqrt(CONFIG.maxCanvasPixels/totalPix);
+    pixW *= factor; pixH *= factor;
+  }
+  const renderViewport = page.getViewport({ scale: pixW/base.width });
+  const canvas = document.getElementById('pdf-canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = Math.floor(pixW); canvas.height = Math.floor(pixH);
+  canvas.style.width = Math.floor(cssW)+'px'; canvas.style.height = Math.floor(cssH)+'px';
+  await page.render({ canvasContext: ctx, viewport: renderViewport }).promise;
+}
+
+// ==================== NAVIGATION ====================
+function prevPage() {
+  if (state.currentPage > 1) {
+    state.currentPage--; renderCurrentPage();
+    broadcast({ type:'PAGE_CHANGE', page: state.currentPage });
+  }
+}
+function nextPage() {
+  if (state.currentPage < state.totalPages) {
+    state.currentPage++; renderCurrentPage();
+    broadcast({ type:'PAGE_CHANGE', page: state.currentPage });
+  }
+}
+function jumpToPage() {
+  const n = parseInt(document.getElementById('goto-page').value, 10);
+  if (n>=1 && n<=state.totalPages) {
+    state.currentPage = n; renderCurrentPage();
+    broadcast({ type:'PAGE_CHANGE', page: n });
+  } else notify(`Enter 1–${state.totalPages}.`,'warning');
+}
+function promptGoto() {
+  if (state.totalPages<=1) return;
+  const v = prompt(`Go to page (1–${state.totalPages}):`, state.currentPage);
+  if (v===null) return;
+  const n = parseInt(v, 10);
+  if (n>=1 && n<=state.totalPages) {
+    state.currentPage = n; renderCurrentPage();
+    broadcast({ type:'PAGE_CHANGE', page: n });
+  }
+}
+function zoomIn() {
+  if (state.fileType==='image') { currentZoom = Math.min(currentZoom+0.25,5); applyImageZoom(); }
+  else { currentZoom += 0.25; renderCurrentPage(); }
+}
+function zoomOut() {
+  if (state.fileType==='image') { currentZoom = Math.max(currentZoom-0.25,0.25); applyImageZoom(); }
+  else if (currentZoom>0.35) { currentZoom -= 0.25; renderCurrentPage(); }
+}
+async function fitToWidth(silent=false) {
+  if (state.fileType==='pdf' && pdfDoc) {
+    const page = await pdfDoc.getPage(state.currentPage);
+    const vp = page.getViewport({ scale: 1 });
+    if (!vp.width || !vp.height) { console.warn('[fitToWidth] Zero-dim.'); return; }
+    const styles = getComputedStyle(viewerContainer);
+    const pad = parseFloat(styles.paddingLeft)+parseFloat(styles.paddingRight);
+    const avail = viewerContainer.clientWidth - pad;
+    currentZoom = Math.max(avail/vp.width, 0.1);
+    await renderPdfPage();
+  } else if (state.fileType==='image') {
+    const img = document.getElementById('image-view');
+    img.style.maxWidth = '100%'; img.style.width = '100%'; img.style.height = 'auto';
+  }
+}
+async function fitToHeight() {
+  if (state.fileType==='pdf' && pdfDoc) {
+    const page = await pdfDoc.getPage(state.currentPage);
+    const vp = page.getViewport({ scale: 1 });
+    if (!vp.width || !vp.height) { console.warn('[fitToHeight] Zero-dim.'); return; }
+    const styles = getComputedStyle(viewerContainer);
+    const pad = parseFloat(styles.paddingTop)+parseFloat(styles.paddingBottom);
+    const avail = viewerContainer.clientHeight - pad;
+    currentZoom = Math.max(avail/vp.height, 0.1);
+    await renderPdfPage();
+  } else if (state.fileType==='image') {
+    const img = document.getElementById('image-view');
+    img.style.maxWidth = '100%'; img.style.maxHeight = '100%';
+    img.style.width = 'auto'; img.style.height = '100%';
+  }
+}
+function toggleFullscreen() {
+  if (!document.fullscreenElement) viewerContainer.requestFullscreen?.().catch(err => alert(err.message));
+  else document.exitFullscreen();
+}
+
+// ==================== OPFS ====================
+async function saveToOPFS(arrayBuffer, filename) {
+  if (!navigator.storage?.getDirectory) return;
+  try {
+    if (navigator.storage.persist) await navigator.storage.persist();
+    const root = await navigator.storage.getDirectory();
+    const meta = await root.getFileHandle('coop-meta.json', { create:true });
+    const mw = await meta.createWritable();
+    await mw.write(JSON.stringify({ filename, savedAt: Date.now() })); await mw.close();
+    const data = await root.getFileHandle('coop-data.bin', { create:true });
+    const dw = await data.createWritable();
+    await dw.write(arrayBuffer); await dw.close();
+  } catch(e) { console.warn('OPFS save failed', e); }
+}
+async function loadFromOPFS() {
+  if (!navigator.storage?.getDirectory) return null;
+  try {
+    const root = await navigator.storage.getDirectory();
+    const metaFile = await (await root.getFileHandle('coop-meta.json')).getFile();
+    const meta = JSON.parse(await metaFile.text());
+    const dataFile = await (await root.getFileHandle('coop-data.bin')).getFile();
+    return { filename: meta.filename, buffer: await dataFile.arrayBuffer() };
+  } catch(_) { return null; }
+}
+async function tryRestoreFromOPFS() {
+  const data = await loadFromOPFS();
+  if (data) document.getElementById('restore-btn').classList.remove('hidden');
+}
+async function restoreLastFile() {
+  const data = await loadFromOPFS();
+  if (!data) return;
+  await processAndRenderFileLocally(data.buffer, data.filename, true);
+  document.getElementById('restore-btn').classList.add('hidden');
+}
+
+// ==================== UI EVENTS ====================
+const btnMenu = document.getElementById('btn-menu');
+const menuPanel = document.getElementById('menu-panel');
+btnMenu.addEventListener('click', () => {
+  const open = menuPanel.classList.toggle('open');
+  btnMenu.setAttribute('aria-expanded', open?'true':'false');
+});
+menuPanel.addEventListener('click', (e) => {
+  if (window.innerWidth<=768 && e.target.closest('button')) {
+    menuPanel.classList.remove('open');
+    btnMenu.setAttribute('aria-expanded','false');
+  }
+});
+const nameInput = document.getElementById('display-name');
+nameInput.value = myDisplayName;
+nameInput.addEventListener('change', () => {
+  const v = nameInput.value.trim().substring(0,24);
+  if (v) { myDisplayName = v; localStorage.setItem('coop-name', v); notify('Name updated.','success',2000); }
+  else nameInput.value = myDisplayName;
+});
+
+window.addEventListener('online', () => {
+  notify('Network restored.','success');
+  updateDiagnosticsUI();
+  if (peer && peer.disconnected && !peer.destroyed) try{peer.reconnect()}catch(_){}
+});
+window.addEventListener('offline', () => {
+  notify('Network lost.','error',6000);
+  setStatus('Offline','error');
+  updateDiagnosticsUI();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    for (const conn of connections) conn._hiddenSince = Date.now();
+    return;
+  }
+  for (const conn of connections) {
+    if (conn._hiddenSince) { conn._lastPong = Date.now(); conn._hiddenSince = null; }
+  }
+  if (peer && peer.disconnected && !peer.destroyed) try{peer.reconnect()}catch(_){}
+  for (const conn of connections) if (!conn.open) notify('A peer disconnected while you were away.','warning');
+  updateDiagnosticsUI();
+});
+window.addEventListener('beforeunload', () => {
+  try{peer?.destroy()}catch(_){}
+  try{localStream?.getTracks().forEach(t => t.stop())}catch(_){}
+  try{if (audioContext) audioContext.close()}catch(_){}
+  try{if (silentCtx) silentCtx.close()}catch(_){}
+  try{if (pyodideWorker) pyodideWorker.terminate()}catch(_){}
+});
+
+// ==================== INIT ====================
+updateDownloadButton();
+updateChatAvailability();
+updateVoiceUI();
+</script>
 </body>
 </html>
