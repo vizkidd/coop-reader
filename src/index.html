@@ -159,6 +159,7 @@
   </div>
   <div class="app-actions">
     <button id="btn-download" class="icon-btn hidden" aria-label="Download file" title="Download file">⬇</button>
+    <button id="btn-toc" class="icon-btn" aria-label="Contents" title="Contents" onclick="openToc()">📑</button>
     <button id="btn-chat" class="icon-btn" aria-label="Chat" title="Chat">💬<span id="chat-badge" class="badge hidden">0</span></button>
     <button id="btn-voice" class="icon-btn" aria-label="Toggle voice chat" title="Voice chat">🎤</button>
     <button id="btn-open-file" class="icon-btn" aria-label="Open file" title="Open file">📂</button>
@@ -189,6 +190,15 @@
     <button onclick="jumpToPage()">Go</button>
     <button onclick="nextPage()" aria-label="Next page">›</button>
     <span class="page-indicator"><span data-page-num>0</span> / <span data-page-count>0</span></span>
+  </div>
+  <div class="menu-group">
+    <span class="menu-label">Chapter</span>
+    <button class="secondary" onclick="prevChapter()" aria-label="Previous chapter">‹ Ch</button>
+    <button class="secondary" onclick="nextChapter()" aria-label="Next chapter">Ch ›</button>
+    <button class="secondary" onclick="openToc()">Contents</button>
+  </div>
+  <div class="menu-group">
+    <label class="check-label"><input type="checkbox" id="sync-toggle" checked onchange="setDetached(!this.checked)" />Sync pages with session</label>
   </div>
   <div class="menu-group">
     <span class="menu-label">View</span>
@@ -227,6 +237,8 @@
   <span class="status-dot"></span>
   <span id="status-text">Initializing WASM sandbox…</span>
 </div>
+
+<div id="detach-bar" class="hidden" style="margin:0 16px 10px;padding:8px 12px;border-radius:8px;background:var(--primary-soft);border:1px solid var(--warning);display:flex;gap:10px;align-items:center;justify-content:space-between;font-size:.85rem"><span id="detach-text"></span><button onclick="setDetached(false)" style="min-height:32px">Re-sync</button></div>
 
 <div id="transfer-progress" class="hidden">
   <div class="transfer-progress-label">
@@ -278,6 +290,8 @@
 <div id="toast-container" aria-live="polite"></div>
 <div id="audio-container" aria-hidden="true"></div>
 
+<div id="toc-modal" class="modal" onclick="if(event.target===this)closeModal('toc-modal')"><div class="modal-content"><h3>Contents</h3><div id="toc-list"></div><div class="modal-actions"><button class="secondary" onclick="closeModal('toc-modal')">Close</button></div></div></div>
+
 <div id="server-modal" class="modal">
   <div class="modal-content">
     <h3>PeerJS Signaling Server</h3>
@@ -324,6 +338,7 @@ let sessionAuth = { required: false, salt: null, hash: null };
 let pendingAuthHash = null;
 let cachedFileBytes = null, cachedFilename = '';
 let pdfDoc = null, currentZoom = 1, hasFitted = false, userZoomed = false;
+let lastJoinCode = null, lastAuthHash = null, rejoinTimer = null, rejoinAttempts = 0, detached = false, syncedPage = 1, tocItems = [];
 let remoteCursors = {};
 const incomingTransfers = new Map(), outgoingTransfers = new Map();
 
@@ -644,29 +659,30 @@ viewerContainer.addEventListener('mouseleave', () => {
   lastMouseClientX = null; lastMouseClientY = null;
   if (myPeerId) broadcast({ type: 'CURSOR_HIDE', peerId: myPeerId });
 });
-function broadcastCursor(force) {
-  if (lastMouseClientX == null || !myPeerId) return;
-  const now = Date.now();
-  if (!force && now-lastCursorBroadcastTs < CURSOR_THROTTLE_MS) return;
-  lastCursorBroadcastTs = now;
-  const rect = viewerContainer.getBoundingClientRect();
-  const x = Math.max(0, Math.min(1, (lastMouseClientX-rect.left)/Math.max(rect.width,1)));
-  const y = Math.max(0, Math.min(1, (lastMouseClientY-rect.top)/Math.max(rect.height,1)));
-  broadcast({ type:'CURSOR_MOVE', x, y, peerId: myPeerId });
+function contentEl() {
+  return document.getElementById(state.fileType==='pdf' ? 'pdf-canvas' : state.fileType==='image' ? 'image-view' : 'text-content');
 }
-function updateRemoteCursor(peerId, xNorm, yNorm) {
+function sendCursor(cx, cy) {
+  if (!myPeerId) return;
+  const now = Date.now(); if (now - lastCursorBroadcastTs < CURSOR_THROTTLE_MS) return; lastCursorBroadcastTs = now;
+  const r = contentEl().getBoundingClientRect(); if (!r.width || !r.height) return;
+  broadcast({ type:'CURSOR_MOVE', x:(cx-r.left)/r.width, y:(cy-r.top)/r.height, page:state.currentPage, name:myDisplayName, peerId:myPeerId });
+}
+function broadcastCursor() { if (lastMouseClientX != null) sendCursor(lastMouseClientX, lastMouseClientY); }
+const remoteCursorPos = {};
+function placeCursor(peerId) {
+  const el = remoteCursors[peerId], p = remoteCursorPos[peerId]; if (!el || !p) return;
+  const r = contentEl().getBoundingClientRect(), w = document.getElementById('viewer-wrap').getBoundingClientRect();
+  el.style.left = (r.left - w.left + p.x*r.width) + 'px'; el.style.top = (r.top - w.top + p.y*r.height) + 'px';
+}
+function updateRemoteCursor(peerId, x, y, name, page) {
   if (!cursorLayer) return;
+  if (page && page !== state.currentPage) { hideRemoteCursor(peerId); return; }
   let el = remoteCursors[peerId];
-  if (!el) {
-    el = document.createElement('div');
-    el.className = 'remote-cursor';
-    el.setAttribute('data-peer', String(peerId).substring(0,6));
-    cursorLayer.appendChild(el);
-    remoteCursors[peerId] = el;
-  }
-  el.style.left = (Math.max(0, Math.min(1, xNorm))*100) + '%';
-  el.style.top = (Math.max(0, Math.min(1, yNorm))*100) + '%';
-  el.style.display = '';
+  if (!el) { el = document.createElement('div'); el.className = 'remote-cursor'; cursorLayer.appendChild(el); remoteCursors[peerId] = el; }
+  el.setAttribute('data-peer', name || String(peerId).substring(0,6));
+  remoteCursorPos[peerId] = { x: Math.max(-0.05, Math.min(1.05, +x || 0)), y: Math.max(-0.05, Math.min(1.05, +y || 0)) };
+  placeCursor(peerId); el.style.display = '';
   if (cursorTimeouts.has(peerId)) clearTimeout(cursorTimeouts.get(peerId));
   cursorTimeouts.set(peerId, setTimeout(() => hideRemoteCursor(peerId), CURSOR_HIDE_AFTER_MS));
 }
@@ -693,6 +709,7 @@ function checkForAutoJoin() {
   let sessionId = null;
   if (params.has('p')) sessionId = params.get('p').replace(/^\/+/, '').trim();
   else { const segs = window.location.pathname.split('/').filter(Boolean); if (segs.length>1) sessionId = segs[1]; }
+  if (!sessionId) { try { sessionId = sessionStorage.getItem('coop-session'); if (!pendingAuthHash) pendingAuthHash = sessionStorage.getItem('coop-auth'); } catch (_) {} }
   if (sessionId && !window.__autoJoined) {
     window.__autoJoined = true;
     try { history.replaceState(null, '', location.pathname); } catch (_) {}
@@ -717,7 +734,7 @@ function attachConnectionHandlers(conn) {
     removeRemoteAudio(conn.peer);
     voicePeers.delete(conn.peer);
     updateVoiceUI(); updatePeerListUI(); updateChatAvailability();
-    if (!isHost && connections.length===0) { showError({type:'webrtc'}); notify('Disconnected from host','error'); }
+    if (!isHost && connections.length===0) { notify('Disconnected — reconnecting…','warning'); scheduleRejoin(); }
     else notify(`Peer ${String(conn.peer).substring(0,6)}… disconnected`,'warning');
     updateDiagnosticsUI();
   });
@@ -834,7 +851,7 @@ function attachPeerMediaHandlers() {
     call._initiator = call.peer; call._outgoing = false;
     bindCallCleanup(call, call.peer);
     call.on('stream', (rs) => attachRemoteAudio(call.peer, rs));
-    call.on('close', () => { audioCalls.delete(call.peer); removeRemoteAudio(call.peer); voicePeers.delete(call.peer); updateVoiceUI(); });
+    call.on('close', () => { if (audioCalls.get(call.peer) !== call) return; audioCalls.delete(call.peer); removeRemoteAudio(call.peer); voicePeers.delete(call.peer); updateVoiceUI(); });
     call.on('error', (err) => console.warn('Incoming call error', call.peer, err));
     audioCalls.set(call.peer, call); voicePeers.add(call.peer);
     updateVoiceUI();
@@ -862,6 +879,7 @@ async function startHost() {
   if (peer) { try{peer.destroy()}catch(_){} }
   connections = [];
   isHost = true; myPeerId = null;
+  lastJoinCode = null; clearTimeout(rejoinTimer); rejoinTimer = null; try { sessionStorage.removeItem('coop-session'); } catch (_) {}
   state.downloadAllowed = false;
   document.getElementById('download-perm-toggle').checked = false;
   updateHostUI(); updateDownloadButton();
@@ -904,7 +922,7 @@ async function startHost() {
       }
       return;
     }
-    if (err.type === 'negotiation-failed') return; // Handled by conn.on('error')
+    if (err.type === 'negotiation-failed' || (err.type === 'webrtc' && connections.some(c => c.open))) return; // media/conn errors handled elsewhere
     if (err.type==='unavailable-id') { setTimeout(startHost,500); return; }
     showError(err);
   });
@@ -942,11 +960,20 @@ async function startHost() {
   });
 }
 
-function joinSession(targetCode) {
+function scheduleRejoin() {
+  if (isHost || !lastJoinCode || rejoinTimer) return;
+  if (rejoinAttempts >= 8) { showError({ type: 'webrtc' }); return; }
+  const delay = Math.min(1000 * 2 ** rejoinAttempts, 15000); rejoinAttempts++;
+  setStatus(`Reconnecting (${rejoinAttempts})…`, 'warning');
+  rejoinTimer = setTimeout(() => { rejoinTimer = null; pendingAuthHash = lastAuthHash; joinSession(lastJoinCode, true); }, delay);
+}
+function joinSession(targetCode, isRetry) {
   hideError();
   const code = (targetCode || document.getElementById('join-code').value || '').trim();
   if (!code) return notify('Enter a host code first.','warning');
   if (code === myPeerId) return notify('You cannot join your own session.','warning');
+  lastJoinCode = code; if (!isRetry) rejoinAttempts = 0; clearTimeout(rejoinTimer); rejoinTimer = null;
+  try { sessionStorage.setItem('coop-session', code); } catch (_) {}
   if (!window.RTCPeerConnection) { showError({type:'browser-incompatible'}); return; }
   connectionGeneration++;
   cleanupVoice();
@@ -966,7 +993,7 @@ function joinSession(targetCode) {
       if (!peer.disconnected) { try { peer.reconnect(); } catch (_) {} }
       return;
     }
-    if (err.type === 'negotiation-failed') return; // Handled by conn.on('error')
+    if (err.type === 'negotiation-failed' || (err.type === 'webrtc' && connections.some(c => c.open))) return; // media/conn errors handled elsewhere
     showError(err);
   });
   
@@ -991,12 +1018,12 @@ function joinSession(targetCode) {
     const conn = peer.connect(code, { reliable: true });
     conn._authenticated = false;
     const timeout = setTimeout(() => {
-      if (!conn.open) { showError({type:'peer-unavailable'}); try{conn.close()}catch(_){} }
+      if (!conn.open) { showError({type:'peer-unavailable'}); try{conn.close()}catch(_){} scheduleRejoin(); }
     }, CONFIG.connectTimeout);
     connections.push(conn);
     updatePeerListUI(); updateChatAvailability();
     conn.on('open', () => {
-      clearTimeout(timeout);
+      clearTimeout(timeout); rejoinAttempts = 0;
       hideError();
       setStatus('Connected — awaiting session data…','info');
       if (getMediaStreamForCall() && !audioCalls.has(conn.peer)) startOutgoingCall(conn.peer);
@@ -1203,7 +1230,7 @@ function startOutgoingCall(peerId) {
     call._initiator = myPeerId; call._outgoing = true;
     bindCallCleanup(call, peerId);
     call.on('stream', (rs) => attachRemoteAudio(peerId, rs));
-    call.on('close', () => { audioCalls.delete(peerId); removeRemoteAudio(peerId); voicePeers.delete(peerId); updateVoiceUI(); });
+    call.on('close', () => { if (audioCalls.get(peerId) !== call) return; audioCalls.delete(peerId); removeRemoteAudio(peerId); voicePeers.delete(peerId); updateVoiceUI(); });
     call.on('error', (err) => {
       console.warn('Outgoing call error', peerId, err);
       try { call.close(); } catch (_) {}
@@ -1217,7 +1244,7 @@ function attachRemoteAudio(peerId, stream) {
   const audio = document.createElement('audio');
   audio.id = 'audio-' + peerId;
   audio.autoplay = true; audio.playsInline = true;
-  audio.srcObject = stream; audio.style.display = 'none';
+  audio.srcObject = stream; audio.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px;opacity:0'; audio.muted = false; audio.volume = 1;
   document.getElementById('audio-container').appendChild(audio);
   audio.play().catch(() => {
     notify('Tap anywhere to enable remote audio.','warning',6000);
@@ -1355,10 +1382,11 @@ async function handleNetworkMessage(conn, data) {
     if (!hash) {
       let pw = document.getElementById('join-password').value.trim();
       if (!pw) pw = prompt('This session is password protected. Enter the password:') || '';
-      if (!pw) { notify('Password required.','error',6000); try{conn.close()}catch(_){} return; }
+      if (!pw) { lastJoinCode = null; notify('Password required.','error',6000); try{conn.close()}catch(_){} return; }
       try { hash = await hashPassword(pw, data.salt); }
       catch(e) { notify('Auth failed: '+(e.message||e),'error'); try{conn.close()}catch(_){} return; }
     }
+    lastAuthHash = hash; try { sessionStorage.setItem('coop-auth', hash); } catch (_) {}
     pendingAuthHash = null;
     try { conn.send({ type:'AUTH', hash }); } catch(_){}
     setStatus('Authenticating…','info');
@@ -1379,7 +1407,7 @@ async function handleNetworkMessage(conn, data) {
     return;
   }
   if (data.type === 'AUTH_FAIL') {
-    notify('Incorrect password — rejected.','error',6000);
+    notify('Incorrect password — rejected.','error',6000); lastJoinCode = null; lastAuthHash = null; try { sessionStorage.removeItem('coop-auth'); } catch (_) {}
     setStatus('Authentication failed','error');
     try{conn.close()}catch(_){}
     return;
@@ -1390,7 +1418,9 @@ async function handleNetworkMessage(conn, data) {
   if (data.type==='PONG') { conn._lastPong = Date.now(); return; }
 
   if (data.type==='SYNC') {
-    state = { ...state, ...(data.state||{}) };
+    if (isHost) return;   // peers must never overwrite the host's state
+    const keepPage = state.currentPage; syncedPage = (data.state && data.state.currentPage) || syncedPage;
+    state = { ...state, ...(data.state||{}) }; if (detached) state.currentPage = keepPage;
     conn._authenticated = true;
     updateDownloadButton();
     if (isHost) document.getElementById('download-perm-toggle').checked = !!state.downloadAllowed;
@@ -1410,13 +1440,13 @@ async function handleNetworkMessage(conn, data) {
   if (data.type==='PAGE_CHANGE') {
     const pg = parseInt(data.page, 10);
     if (!(pg >= 1 && pg <= state.totalPages)) return;
-    state.currentPage = pg;
-    renderCurrentPage();
+    syncedPage = pg;
+    if (detached) updateDetachUI(); else { state.currentPage = pg; renderCurrentPage(); }
     if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
     return;
   }
   if (data.type==='CURSOR_MOVE') {
-    updateRemoteCursor(data.peerId, data.x, data.y);
+    updateRemoteCursor(data.peerId, data.x, data.y, data.name, data.page);
     if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
     return;
   }
@@ -1614,7 +1644,8 @@ async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
   if (state.currentPage > state.totalPages) state.currentPage = state.totalPages;
   updateDownloadButton();
   await renderCurrentPage();
-  broadcast({ type:'SYNC', state });
+  loadToc();
+  if (isHost) broadcast({ type:'SYNC', state });
 }
 
 function applyImageZoom() {
@@ -1672,20 +1703,20 @@ async function renderPdfPageInner() {
 function prevPage() {
   if (state.currentPage > 1) {
     state.currentPage--; renderCurrentPage();
-    broadcast({ type:'PAGE_CHANGE', page: state.currentPage });
+    emitPage();
   }
 }
 function nextPage() {
   if (state.currentPage < state.totalPages) {
     state.currentPage++; renderCurrentPage();
-    broadcast({ type:'PAGE_CHANGE', page: state.currentPage });
+    emitPage();
   }
 }
 function jumpToPage() {
   const n = parseInt(document.getElementById('goto-page').value, 10);
   if (n>=1 && n<=state.totalPages) {
     state.currentPage = n; renderCurrentPage();
-    broadcast({ type:'PAGE_CHANGE', page: n });
+    emitPage();
   } else notify(`Enter 1–${state.totalPages}.`,'warning');
 }
 function promptGoto() {
@@ -1695,7 +1726,7 @@ function promptGoto() {
   const n = parseInt(v, 10);
   if (n>=1 && n<=state.totalPages) {
     state.currentPage = n; renderCurrentPage();
-    broadcast({ type:'PAGE_CHANGE', page: n });
+    emitPage();
   }
 }
 function zoomIn() {
@@ -1823,7 +1854,7 @@ document.addEventListener('visibilitychange', () => {
     if (conn._hiddenSince) { conn._lastPong = Date.now(); conn._hiddenSince = null; }
   }
   if (peer && peer.disconnected && !peer.destroyed) try{peer.reconnect()}catch(_){}
-  for (const conn of connections) if (!conn.open) notify('A peer disconnected while you were away.','warning');
+  if (!isHost && lastJoinCode && !connections.some(c => c.open)) { rejoinAttempts = 0; clearTimeout(rejoinTimer); rejoinTimer = null; pendingAuthHash = lastAuthHash; joinSession(lastJoinCode, true); }
   updateDiagnosticsUI();
 });
 window.addEventListener('pagehide', (e) => { if (!e.persisted) { try{peer?.destroy()}catch(_){} } });
@@ -1840,10 +1871,77 @@ function onViewportChange() { clearTimeout(resizeTimer); resizeTimer = setTimeou
 window.addEventListener('resize', onViewportChange);
 window.addEventListener('orientationchange', onViewportChange);
 
+function emitPage() {
+  if (!detached) { syncedPage = state.currentPage; broadcast({ type:'PAGE_CHANGE', page: state.currentPage }); }
+  updateDetachUI();
+}
+function updateDetachUI() {
+  const bar = document.getElementById('detach-bar'), cb = document.getElementById('sync-toggle');
+  if (cb) cb.checked = !detached;
+  bar.classList.toggle('hidden', !detached);
+  document.getElementById('detach-text').textContent = `Detached — session is on page ${syncedPage}`;
+}
+function setDetached(v) {
+  detached = !!v;
+  if (!detached && state.totalPages > 0) {
+    if (isHost) broadcast({ type:'PAGE_CHANGE', page: state.currentPage });
+    else if (syncedPage !== state.currentPage) { state.currentPage = Math.min(Math.max(syncedPage,1), state.totalPages); renderCurrentPage(); }
+  }
+  updateDetachUI();
+}
+function goToPage(n) {
+  if (!(n >= 1 && n <= state.totalPages)) return;
+  state.currentPage = n; renderCurrentPage(); emitPage();
+}
+async function loadToc() {
+  tocItems = [];
+  try {
+    if (state.fileType === 'pdf' && pdfDoc) {
+      const walk = async (items, depth) => {
+        for (const it of items || []) {
+          let page = null;
+          try {
+            let dest = it.dest; if (typeof dest === 'string') dest = await pdfDoc.getDestination(dest);
+            if (dest && dest[0] != null) page = (typeof dest[0] === 'object') ? (await pdfDoc.getPageIndex(dest[0])) + 1 : dest[0] + 1;
+          } catch (_) {}
+          if (page) tocItems.push({ title: it.title || 'Untitled', page, depth });
+          await walk(it.items, depth + 1);
+        }
+      };
+      await walk(await pdfDoc.getOutline(), 0);
+    } else if (state.fileType === 'other') {
+      const r = await workerCall('getToc');
+      tocItems = JSON.parse(r.content).map(x => ({ title: x.t, page: x.p + 1, depth: 0 }));
+    }
+  } catch (e) { console.warn('TOC failed', e); }
+  document.getElementById('btn-toc').style.opacity = tocItems.length ? '1' : '.55';
+}
+function openToc() {
+  const list = document.getElementById('toc-list');
+  list.innerHTML = tocItems.length ? tocItems.map((t, i) => `<button class="secondary" style="display:block;width:100%;text-align:left;margin-bottom:4px;padding-left:${12 + t.depth*16}px" onclick="closeModal('toc-modal');goToPage(${t.page})">${escapeHtml(t.title)} <span style="float:right;opacity:.6">${t.page}</span></button>`).join('')
+    : '<p style="color:var(--text-muted)">No contents available for this file.</p>';
+  document.getElementById('toc-modal').classList.add('open');
+}
+function nextChapter() { const t = tocItems.find(x => x.page > state.currentPage); if (t) goToPage(t.page); else notify('No next chapter.','info',1500); }
+function prevChapter() {
+  const before = tocItems.filter(x => x.page < state.currentPage);
+  const cur = before.length ? before[before.length-1] : null;
+  const atStart = tocItems.some(x => x.page === state.currentPage);
+  const t = atStart ? cur : (cur || null);
+  if (t) goToPage(t.page); else notify('No previous chapter.','info',1500);
+}
+viewerContainer.addEventListener('scroll', () => Object.keys(remoteCursors).forEach(placeCursor), { passive: true });
+function touchCursor(e) { if (e.touches.length === 1) sendCursor(e.touches[0].clientX, e.touches[0].clientY); }
+viewerContainer.addEventListener('touchstart', touchCursor, { passive: true });
+viewerContainer.addEventListener('touchmove', touchCursor, { passive: true });
+viewerContainer.addEventListener('touchend', () => setTimeout(() => { if (myPeerId) broadcast({ type:'CURSOR_HIDE', peerId: myPeerId }); }, 1500), { passive: true });
+document.addEventListener('pointerdown', () => document.querySelectorAll('#audio-container audio').forEach(a => { if (a.paused) a.play().catch(() => {}); }), { passive: true });
+
 // ==================== INIT ====================
 updateDownloadButton();
 updateChatAvailability();
 updateVoiceUI();
+updateDetachUI();
 </script>
 </body>
 </html>

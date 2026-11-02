@@ -9,10 +9,11 @@ async function ensurePyodide() {
     pyodide = await loadPyodide();
     await pyodide.loadPackage('micropip');
     await pyodide.runPythonAsync(`
-import io, zipfile, re, gc, html as _html, posixpath
+import io, zipfile, re, gc, json, html as _html, posixpath
 import xml.etree.ElementTree as ET
 
 doc_pages = []
+doc_toc = []
 PAGE_CHARS = 3500
 
 def paginate(text, size=PAGE_CHARS):
@@ -27,6 +28,12 @@ def paginate(text, size=PAGE_CHARS):
         cur += line + '\\n'
     if cur.strip(): pages.append(cur)
     return pages
+
+def add_section(title, text):
+    pages = paginate(text)
+    if pages:
+        doc_toc.append({'t': (title or 'Untitled')[:120], 'p': len(doc_pages)})
+        doc_pages.extend(pages)
 
 def html_to_text(raw):
     raw = re.sub(r'(?is)<(script|style).*?</\\1>', '', raw)
@@ -47,15 +54,16 @@ def epub_pages(z):
         pass
     if not order:
         order = sorted(n for n in z.namelist() if n.lower().endswith(('.html', '.xhtml', '.htm')))
-    pages = []
     for name in order:
         if name in z.namelist():
-            pages += paginate(html_to_text(z.read(name).decode('utf-8', errors='ignore')))
-    return pages
+            raw = z.read(name).decode('utf-8', errors='ignore')
+            m = re.search(r'(?is)<h[1-3][^>]*>(.*?)</h[1-3]>', raw)
+            add_section(html_to_text(m.group(1)).strip() if m else posixpath.basename(name), html_to_text(raw))
+    return doc_pages
 
 def parse_document(file_bytes_js, filename):
-    global doc_pages
-    doc_pages = []
+    global doc_pages, doc_toc
+    doc_pages = []; doc_toc = []
     gc.collect()
     if hasattr(file_bytes_js, 'to_py'):
         file_bytes = bytes(file_bytes_js.to_py())
@@ -68,18 +76,22 @@ def parse_document(file_bytes_js, filename):
             import docx
             from docx.table import Table
             from docx.text.paragraph import Paragraph
-            d = docx.Document(bio); lines = []
+            d = docx.Document(bio); title = 'Start'; lines = []
             for child in d.element.body.iterchildren():
-                if child.tag.endswith('}p'): lines.append(Paragraph(child, d).text)
+                if child.tag.endswith('}p'):
+                    para = Paragraph(child, d)
+                    if (para.style.name or '').lower().startswith('heading') and para.text.strip():
+                        add_section(title, '\\n'.join(lines)); title = para.text.strip(); lines = [title]
+                    else: lines.append(para.text)
                 elif child.tag.endswith('}tbl'):
                     for row in Table(child, d).rows: lines.append(' | '.join(c.text.strip() for c in row.cells))
-            doc_pages = paginate('\\n'.join(lines))
+            add_section(title, '\\n'.join(lines))
         elif fname.endswith('.xlsx'):
             import openpyxl
             wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
             for sheet in wb.sheetnames:
                 rows = [' | '.join('' if c is None else str(c) for c in r) for r in wb[sheet].iter_rows(values_only=True)]
-                doc_pages += [f'--- Sheet: {sheet} ---\\n' + p for p in paginate('\\n'.join(rows))] or [f'--- Sheet: {sheet} (empty) ---']
+                add_section(sheet, f'--- Sheet: {sheet} ---\\n' + '\\n'.join(rows))
         elif fname.endswith('.epub') or (fname.endswith(('.azw3', '.mobi')) and zipfile.is_zipfile(bio)):
             with zipfile.ZipFile(bio) as z: doc_pages = epub_pages(z)
         elif fname.endswith(('.azw3', '.mobi')):
@@ -94,6 +106,9 @@ def parse_document(file_bytes_js, filename):
         doc_pages = [f'Error parsing {filename}: {e}']
     if not doc_pages: doc_pages = ['(No text content found.)']
     return len(doc_pages)
+
+def get_toc():
+    return json.dumps(doc_toc)
 
 def get_page(index):
     return doc_pages[index] if 0 <= index < len(doc_pages) else ''
@@ -129,6 +144,12 @@ self.onmessage = async (e) => {
         const parseDoc = pyodide.globals.get('parse_document');
         try { self.postMessage({ id, type: 'parsed', totalPages: parseDoc(new Uint8Array(e.data.bytes), e.data.filename) }); }
         finally { parseDoc.destroy(); }
+        break;
+      }
+      case 'getToc': {
+        await ensurePyodide();
+        const f = pyodide.globals.get('get_toc');
+        try { self.postMessage({ id, type: 'toc', content: f() }); } finally { f.destroy(); }
         break;
       }
       case 'getPage': {
