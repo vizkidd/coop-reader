@@ -1,8 +1,6 @@
-// worker.js — Pyodide document parser running off the main thread.
-
-let pyodidePromise = null;
-let pyodide = null;
-const installedPackages = new Set();
+// worker.js — Pyodide document parser (loaded lazily, off the main thread).
+let pyodidePromise = null, pyodide = null;
+const installing = new Map();
 
 async function ensurePyodide() {
   if (pyodidePromise) return pyodidePromise;
@@ -11,123 +9,135 @@ async function ensurePyodide() {
     pyodide = await loadPyodide();
     await pyodide.loadPackage('micropip');
     await pyodide.runPythonAsync(`
-import io, zipfile, re, gc
+import io, zipfile, re, gc, html as _html, posixpath
+import xml.etree.ElementTree as ET
 
 doc_pages = []
+PAGE_CHARS = 3500
+
+def paginate(text, size=PAGE_CHARS):
+    pages, cur = [], ''
+    for line in text.splitlines():
+        while len(line) > size:
+            if cur.strip(): pages.append(cur)
+            cur = ''
+            pages.append(line[:size]); line = line[size:]
+        if cur and len(cur) + len(line) + 1 > size:
+            pages.append(cur); cur = ''
+        cur += line + '\\n'
+    if cur.strip(): pages.append(cur)
+    return pages
+
+def html_to_text(raw):
+    raw = re.sub(r'(?is)<(script|style).*?</\\1>', '', raw)
+    raw = re.sub(r'(?i)</?(p|div|br|li|h[1-6]|tr|section|article)[^>]*>', '\\n', raw)
+    return _html.unescape(re.sub(r'<[^>]+>', '', raw))
+
+def epub_pages(z):
+    order = []
+    try:
+        cont = ET.fromstring(z.read('META-INF/container.xml'))
+        opf_path = next(e.get('full-path') for e in cont.iter() if e.tag.endswith('rootfile'))
+        opf = ET.fromstring(z.read(opf_path)); base = posixpath.dirname(opf_path)
+        manifest = {e.get('id'): e.get('href') for e in opf.iter() if e.tag.endswith('}item')}
+        for e in opf.iter():
+            if e.tag.endswith('itemref') and manifest.get(e.get('idref')):
+                order.append(posixpath.normpath(posixpath.join(base, manifest[e.get('idref')])))
+    except Exception:
+        pass
+    if not order:
+        order = sorted(n for n in z.namelist() if n.lower().endswith(('.html', '.xhtml', '.htm')))
+    pages = []
+    for name in order:
+        if name in z.namelist():
+            pages += paginate(html_to_text(z.read(name).decode('utf-8', errors='ignore')))
+    return pages
 
 def parse_document(file_bytes_js, filename):
     global doc_pages
     doc_pages = []
     gc.collect()
-    
     if hasattr(file_bytes_js, 'to_py'):
-        file_bytes = file_bytes_js.to_py().tobytes()
-    elif hasattr(file_bytes_js, 'tobytes'):
-        file_bytes = file_bytes_js.tobytes()
+        file_bytes = bytes(file_bytes_js.to_py())
     else:
         file_bytes = bytes(file_bytes_js)
-
     bio = io.BytesIO(file_bytes)
     fname = filename.lower()
-
-    if fname.endswith('.docx'):
-        import docx
-        doc_pages = [p.text for p in docx.Document(bio).paragraphs if p.text.strip()]
-    elif fname.endswith('.xlsx'):
-        import openpyxl
-        wb = openpyxl.load_workbook(bio)
-        for sheet in wb.sheetnames:
-            ws = wb[sheet]
-            rows = []
-            for row in ws.iter_rows(values_only=True):
-                rows.append(" | ".join([str(c) for c in row if c is not None]))
-            doc_pages.append(f"--- Sheet: {sheet} ---\\n" + "\\n".join(rows))
-    elif fname.endswith(('.epub','.azw3','.mobi')):
-        try:
-            if zipfile.is_zipfile(bio):
-                with zipfile.ZipFile(bio) as z:
-                    for name in z.namelist():
-                        if name.endswith(('.html','.xhtml','.htm','.txt')):
-                            with z.open(name) as f:
-                                clean = re.sub('<[^<]+?>', '', f.read().decode('utf-8', errors='ignore'))
-                                if clean.strip():
-                                    doc_pages.append(f"--- {name} ---\\n" + clean.strip())
-            else:
-                text = file_bytes.decode('utf-8', errors='ignore')
-                chunks = re.findall(r'[A-Za-z0-9\\s,.\\-\\(\\)]+', text)
-                filtered = [c.strip() for c in chunks if len(c.strip()) > 20]
-                doc_pages = filtered[:100] if filtered else ["Could not extract text."]
-        except Exception as e:
-            doc_pages = [f"Error: {str(e)}"]
-    else:
-        doc_pages = [f"Error: Format '{filename}' not supported."]
-
+    try:
+        if fname.endswith('.docx'):
+            import docx
+            from docx.table import Table
+            from docx.text.paragraph import Paragraph
+            d = docx.Document(bio); lines = []
+            for child in d.element.body.iterchildren():
+                if child.tag.endswith('}p'): lines.append(Paragraph(child, d).text)
+                elif child.tag.endswith('}tbl'):
+                    for row in Table(child, d).rows: lines.append(' | '.join(c.text.strip() for c in row.cells))
+            doc_pages = paginate('\\n'.join(lines))
+        elif fname.endswith('.xlsx'):
+            import openpyxl
+            wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
+            for sheet in wb.sheetnames:
+                rows = [' | '.join('' if c is None else str(c) for c in r) for r in wb[sheet].iter_rows(values_only=True)]
+                doc_pages += [f'--- Sheet: {sheet} ---\\n' + p for p in paginate('\\n'.join(rows))] or [f'--- Sheet: {sheet} (empty) ---']
+        elif fname.endswith('.epub') or (fname.endswith(('.azw3', '.mobi')) and zipfile.is_zipfile(bio)):
+            with zipfile.ZipFile(bio) as z: doc_pages = epub_pages(z)
+        elif fname.endswith(('.azw3', '.mobi')):
+            text = file_bytes.decode('utf-8', errors='ignore')
+            chunks = [c.strip() for c in re.findall(r'[A-Za-z0-9\\s,.\\-\\(\\)]+', text) if len(c.strip()) > 20]
+            doc_pages = paginate('\\n'.join(chunks)) or ['Could not extract text (DRM or unsupported MOBI/AZW3).']
+        elif fname.endswith(('.txt', '.md', '.csv')):
+            doc_pages = paginate(file_bytes.decode('utf-8', errors='replace'))
+        else:
+            doc_pages = [f"Error: Format '{filename}' not supported."]
+    except Exception as e:
+        doc_pages = [f'Error parsing {filename}: {e}']
+    if not doc_pages: doc_pages = ['(No text content found.)']
     return len(doc_pages)
 
 def get_page(index):
-    if 0 <= index < len(doc_pages):
-        return doc_pages[index]
-    return ""
-    `);
+    return doc_pages[index] if 0 <= index < len(doc_pages) else ''
+`);
     return pyodide;
   })();
   return pyodidePromise;
 }
 
-async function installPackage(name) {
-  if (installedPackages.has(name)) return;
-  await ensurePyodide();
-  const micropip = pyodide.pyimport('micropip');
-  await micropip.install(name);
-  installedPackages.add(name);
+function installPackage(name) {
+  if (!installing.has(name)) {
+    installing.set(name, (async () => {
+      await ensurePyodide();
+      const micropip = pyodide.pyimport('micropip');
+      try { await micropip.install(name); } finally { micropip.destroy(); }
+    })().catch(e => { installing.delete(name); throw e; }));
+  }
+  return installing.get(name);
 }
 
 self.onmessage = async (e) => {
   const { id, type } = e.data || {};
   try {
     switch (type) {
-      case 'init':
-        await ensurePyodide();
-        self.postMessage({ id, type: 'ready' });
-        break;
-
-      case 'preload':
-        await ensurePyodide();
-        await installPackage('python-docx');
-        await installPackage('openpyxl');
-        self.postMessage({ id, type: 'preloaded' });
-        break;
-
-      case 'install':
-        await installPackage(e.data.package);
-        self.postMessage({ id, type: 'installed', package: e.data.package });
-        break;
-
+      case 'init': await ensurePyodide(); self.postMessage({ id, type: 'ready' }); break;
+      case 'preload': await installPackage('python-docx'); await installPackage('openpyxl'); self.postMessage({ id, type: 'preloaded' }); break;
+      case 'install': await installPackage(e.data.package); self.postMessage({ id, type: 'installed', package: e.data.package }); break;
       case 'parse': {
         await ensurePyodide();
         const fname = String(e.data.filename || '').toLowerCase();
         if (fname.endsWith('.docx')) await installPackage('python-docx');
         if (fname.endsWith('.xlsx')) await installPackage('openpyxl');
-
-        const bytes = new Uint8Array(e.data.bytes);
         const parseDoc = pyodide.globals.get('parse_document');
-        const totalPages = parseDoc(bytes, e.data.filename);
-        self.postMessage({ id, type: 'parsed', totalPages });
+        try { self.postMessage({ id, type: 'parsed', totalPages: parseDoc(new Uint8Array(e.data.bytes), e.data.filename) }); }
+        finally { parseDoc.destroy(); }
         break;
       }
-
       case 'getPage': {
         await ensurePyodide();
         const getPage = pyodide.globals.get('get_page');
-        const content = getPage(e.data.index);
-        self.postMessage({ id, type: 'page', content });
+        try { self.postMessage({ id, type: 'page', content: getPage(e.data.index) }); } finally { getPage.destroy(); }
         break;
       }
-
-      default:
-        self.postMessage({ id, type: 'error', error: 'Unknown message type: ' + type });
+      default: self.postMessage({ id, type: 'error', error: 'Unknown message type: ' + type });
     }
-  } catch (err) {
-    self.postMessage({ id, type: 'error', error: String(err && (err.message || err)) });
-  }
+  } catch (err) { self.postMessage({ id, type: 'error', error: String(err && (err.message || err)) }); }
 };

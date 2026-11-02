@@ -7,7 +7,7 @@
     (function () {
       // • GitHub Pages PROJECT site (user.github.io/coop-reader/): 1
       // • GitHub Pages USER site or custom domain at root:       0
-      var PATH_SEGMENTS_TO_KEEP = 1;
+      var PATH_SEGMENTS_TO_KEEP = /\.github\.io$/.test(location.hostname) ? 1 : 0;
 
       var l = window.location;
       var segments = l.pathname.split('/').filter(Boolean);
@@ -22,12 +22,12 @@
       var redirectPath =
         '/' + (base ? base + '/' : '') +
         '?p=' + encodeURIComponent('/' + rest) +
-        l.hash;
+        l.search.replace(/^\?/, '&') + l.hash;
 
       l.replace(l.protocol + '//' + l.host + redirectPath);
     })();
   </script>
-  <noscript><meta http-equiv="refresh" content="0; url=/"></noscript>
+  <noscript><meta http-equiv="refresh" content="0; url=./"></noscript>
 </head>
 <body></body>
 </html>

@@ -102,10 +102,11 @@
     #diagnostics .bad{color:var(--error)}
     #diagnostics .diag-actions{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
     #viewer-wrap{position:relative;margin:0 16px}
-    #viewer-container{position:relative;margin:0;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-sm);min-height:55vh;display:flex;justify-content:center;align-items:flex-start;overflow:auto;touch-action:pan-y;-webkit-overflow-scrolling:touch}
+    #viewer-container{position:relative;margin:0;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-sm);min-height:55vh;display:flex;align-items:flex-start;overflow:auto;touch-action:pan-x pan-y;-webkit-overflow-scrolling:touch}
     #cursor-layer{position:absolute;inset:0;pointer-events:none;overflow:hidden;border-radius:var(--radius);z-index:5}
-    #pdf-canvas{display:none;max-width:100%;height:auto;box-shadow:var(--shadow-md);border-radius:4px;background:#fff}
-    #image-view{display:none;box-shadow:var(--shadow-md);border-radius:4px;height:auto;max-width:100%}
+    #pdf-canvas{display:none;max-width:none;flex-shrink:0;margin:0 auto;box-shadow:var(--shadow-md);border-radius:4px;background:#fff}
+    #image-view{display:none;box-shadow:var(--shadow-md);border-radius:4px;height:auto;max-width:100%;margin:0 auto;flex-shrink:0}
+    #viewer-container.pseudo-fs{position:fixed;inset:0;z-index:300;border-radius:0;min-height:100dvh;margin:0}
     #text-content{width:100%;white-space:pre-wrap;line-height:1.7;font-size:1rem;color:var(--text)}
     .remote-cursor{position:absolute;width:14px;height:14px;background:var(--error);border:2px solid #fff;border-radius:50%;pointer-events:none;transform:translate(-50%,-50%);transition:left .05s linear,top .05s linear;z-index:1000;box-shadow:0 2px 6px rgba(0,0,0,.25)}
     .remote-cursor::after{content:attr(data-peer);position:absolute;left:18px;top:-4px;background:rgba(15,23,42,.9);color:#fff;padding:2px 6px;font-size:10px;font-weight:600;border-radius:4px;white-space:nowrap}
@@ -294,7 +295,7 @@
   </div>
 </div>
 
-<input type="file" id="file-input" hidden accept=".pdf,.docx,.xlsx,.epub,.azw3,.mobi,.png,.jpg,.jpeg,.gif,.webp" />
+<input type="file" id="file-input" hidden accept=".pdf,.docx,.xlsx,.epub,.azw3,.mobi,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.csv" />
 
 <script>
 // ==================== CONFIG ====================
@@ -302,7 +303,7 @@ const CONFIG = {
   chunkSize: 64*1024, maxBufferedAmount: 256*1024, maxChunks: 10000,
   maxInFlightChunks: 128,
   transferTimeout: 120000, maxRenderDpr: 2, maxCanvasPixels: 4*1024*1024,
-  heartbeatInterval: 5000, heartbeatTimeout: 30000, gestureThreshold: 65,
+  heartbeatInterval: 5000, heartbeatTimeout: 90000, connectTimeout: 30000, gestureThreshold: 65,
   reconnectDelay: 1200, statsInterval: 5000, signalingTimeout: 8000,
   chatHistoryLimit: 100, workerTimeout: 300000,
   iceServers: [
@@ -322,7 +323,7 @@ let state = { currentPage: 1, totalPages: 1, fileType: '', downloadAllowed: fals
 let sessionAuth = { required: false, salt: null, hash: null };
 let pendingAuthHash = null;
 let cachedFileBytes = null, cachedFilename = '';
-let pdfDoc = null, currentZoom = 1, hasFitted = false;
+let pdfDoc = null, currentZoom = 1, hasFitted = false, userZoomed = false;
 let remoteCursors = {};
 const incomingTransfers = new Map(), outgoingTransfers = new Map();
 
@@ -459,7 +460,7 @@ async function testNetwork() {
   const res = { stun:[], turn:[], host:[], signaling:{ok:false,error:null,latency:null} };
   if (!window.RTCPeerConnection) { body.innerHTML = '<p class="bad">❌ WebRTC unavailable.</p>'; return; }
   try {
-    const pc = new RTCPeerConnection({ iceServers: CONFIG.iceServers, iceCandidatePoolSize: 10 });
+    const pc = new RTCPeerConnection({ iceServers: getIceServers(), iceCandidatePoolSize: 10 });
     pc.createDataChannel('diag');
     pc.onicecandidate = (e) => {
       if (!e.candidate) return;
@@ -519,9 +520,13 @@ function saveServerConfig() {
   if (peer) { try{peer.destroy()}catch(_){} peer=null; myPeerId=null; connections=[]; isHost=false; cleanupVoice(); setStatus('Disconnected.','warning'); }
 }
 function resetServerConfig() { localStorage.removeItem('coop-server-config'); closeModal('server-modal'); notify('Reset to default.','success'); }
+function getIceServers() {
+  try { const c = JSON.parse(localStorage.getItem('coop-ice-servers') || 'null'); if (Array.isArray(c) && c.length) return c; } catch (_) {}
+  return CONFIG.iceServers;
+}
 function peerOptions() {
   const saved = JSON.parse(localStorage.getItem('coop-server-config') || '{}');
-  const opts = { config: { iceServers: CONFIG.iceServers, iceCandidatePoolSize: 10 } };
+  const opts = { config: { iceServers: getIceServers(), iceCandidatePoolSize: 10 } };
   if (saved.host) opts.host = saved.host;
   if (saved.port) opts.port = saved.port;
   if (saved.path) opts.path = saved.path;
@@ -575,8 +580,6 @@ async function initPyodide() {
   
   fileInput.disabled = false;
   setStatus('WASM sandbox ready.', 'success');
-  checkForAutoJoin();
-  tryRestoreFromOPFS();
 }
 
 function resetWorker() {
@@ -586,14 +589,12 @@ function resetWorker() {
   }
   for (const [, pending] of workerPending) pending.reject(new Error('Worker terminated'));
   workerPending.clear();
-  initPyodide();
 }
 
-initPyodide().catch(err => {
-  console.error(err);
-  setStatus('WASM failed to initialize', 'error');
-  notify('Parsing engine failed to load. Check console.', 'error', 8000);
-});
+// Pyodide is now lazy: loaded on first non-PDF/image file (saves ~10MB+ and iOS memory).
+setStatus('Ready.', 'success');
+checkForAutoJoin();
+tryRestoreFromOPFS();
 
 // ==================== GESTURES ====================
 const gesturesEnabled = () => document.getElementById('gestures-toggle').checked;
@@ -605,7 +606,7 @@ viewerContainer.addEventListener('touchmove', (e) => {
   if (!gesturesEnabled() || e.touches.length!==1) return;
   if (!touchLocked) {
     const dx = Math.abs(e.touches[0].clientX-touchStartX), dy = Math.abs(e.touches[0].clientY-touchStartY);
-    if (dx>10 || dy>10) touchLocked = dx > dy*1.5 ? 'horizontal' : 'vertical';
+    if (dx>10 || dy>10) touchLocked = (dx > dy*1.5 && viewerContainer.scrollWidth <= viewerContainer.clientWidth + 2) ? 'horizontal' : 'vertical';
   }
   if (touchLocked==='horizontal') e.preventDefault();
 }, { passive:false });
@@ -628,7 +629,8 @@ viewerContainer.addEventListener('mouseup', (e) => {
 window.addEventListener('keydown', (e) => {
   if (e.key==='Escape' && chatPanel.classList.contains('open')) { closeChat(); return; }
   if (!gesturesEnabled()) return;
-  if (['INPUT','TEXTAREA','BUTTON','SELECT'].includes(document.activeElement.tagName)) return;
+  const tag = document.activeElement.tagName;
+  if (['INPUT','TEXTAREA','SELECT'].includes(tag) || (tag==='BUTTON' && e.key===' ')) return;
   if (e.key==='ArrowRight' || e.key==='PageDown' || e.key===' ') { e.preventDefault(); nextPage(); }
   else if (e.key==='ArrowLeft' || e.key==='PageUp') { e.preventDefault(); prevPage(); }
 });
@@ -689,9 +691,13 @@ function checkForAutoJoin() {
   }
   const params = new URLSearchParams(window.location.search);
   let sessionId = null;
-  if (params.has('p')) sessionId = decodeURIComponent(params.get('p')).replace(/^\/+/, '').trim();
+  if (params.has('p')) sessionId = params.get('p').replace(/^\/+/, '').trim();
   else { const segs = window.location.pathname.split('/').filter(Boolean); if (segs.length>1) sessionId = segs[1]; }
-  if (sessionId) { document.getElementById('join-code').value = sessionId; setTimeout(() => joinSession(sessionId), 400); }
+  if (sessionId && !window.__autoJoined) {
+    window.__autoJoined = true;
+    try { history.replaceState(null, '', location.pathname); } catch (_) {}
+    document.getElementById('join-code').value = sessionId; setTimeout(() => joinSession(sessionId), 400);
+  }
 }
 
 // ==================== CONNECTION HANDLERS ====================
@@ -719,6 +725,7 @@ function attachConnectionHandlers(conn) {
     console.warn('Connection error', conn.peer, err);
     // Silence transient negotiation failures caused by iOS suspending tabs
     if (err.type === 'negotiation-failed' || (err.message && String(err.message).includes('negotiation'))) {
+      if (!conn.open) { connections = connections.filter(c => c !== conn); updatePeerListUI(); updateChatAvailability(); }
       try { conn.close(); } catch (_) {}
       return;
     }
@@ -743,7 +750,8 @@ function attachConnectionHandlers(conn) {
   };
   attachPc();
   const hb = setInterval(() => {
-    if (!conn.open) { clearInterval(hb); return; }
+    if (conn._closed) { clearInterval(hb); return; }
+    if (!conn.open) return;
     if (document.hidden) return;
     if (conn._hiddenSince) { conn._lastPong = Date.now(); conn._hiddenSince = null; return; }
     if (Date.now()-conn._lastPong > CONFIG.heartbeatTimeout) {
@@ -767,7 +775,7 @@ function attachConnectionHandlers(conn) {
       updateDiagnosticsUI();
     } catch(_){}
   }, CONFIG.statsInterval);
-  conn.on('close', () => { clearInterval(hb); clearInterval(statsTimer); });
+  conn.on('close', () => { conn._closed = true; clearInterval(hb); clearInterval(statsTimer); });
 }
 
 // ==================== VOICE HELPERS ====================
@@ -851,7 +859,6 @@ async function startHost() {
   hideError();
   connectionGeneration++;
   cleanupVoice();
-  resetWorker();
   if (peer) { try{peer.destroy()}catch(_){} }
   connections = [];
   isHost = true; myPeerId = null;
@@ -908,10 +915,12 @@ async function startHost() {
   });
   
   peer.on('connection', (conn) => {
-    if (connections.some(c => c.peer===conn.peer)) { try{conn.close()}catch(_){} return; }
+    if (connections.some(c => c.peer===conn.peer && c.open)) { try{conn.close()}catch(_){} return; }
     connections.push(conn);
     updatePeerListUI(); updateChatAvailability();
     conn._authenticated = !sessionAuth.required;
+    // PeerJS never emits 'close' for a conn that never opened -> prune it ourselves
+    setTimeout(() => { if (!conn.open) { connections = connections.filter(c => c !== conn); try{conn.close()}catch(_){} updatePeerListUI(); updateChatAvailability(); } }, CONFIG.connectTimeout);
     
     // Cleanup unauthenticated peers that hang
     let authTimeout = null;
@@ -941,7 +950,6 @@ function joinSession(targetCode) {
   if (!window.RTCPeerConnection) { showError({type:'browser-incompatible'}); return; }
   connectionGeneration++;
   cleanupVoice();
-  resetWorker();
   if (peer) { try{peer.destroy()}catch(_){} }
   connections = [];
   isHost = false; myPeerId = null;
@@ -984,7 +992,7 @@ function joinSession(targetCode) {
     conn._authenticated = false;
     const timeout = setTimeout(() => {
       if (!conn.open) { showError({type:'peer-unavailable'}); try{conn.close()}catch(_){} }
-    }, CONFIG.signalingTimeout);
+    }, CONFIG.connectTimeout);
     connections.push(conn);
     updatePeerListUI(); updateChatAvailability();
     conn.on('open', () => {
@@ -1400,7 +1408,9 @@ async function handleNetworkMessage(conn, data) {
     return;
   }
   if (data.type==='PAGE_CHANGE') {
-    state.currentPage = data.page;
+    const pg = parseInt(data.page, 10);
+    if (!(pg >= 1 && pg <= state.totalPages)) return;
+    state.currentPage = pg;
     renderCurrentPage();
     if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
     return;
@@ -1437,28 +1447,28 @@ async function handleNetworkMessage(conn, data) {
     return;
   }
   if (data.type==='FILE_START') {
-    if (!data.totalChunks || data.totalChunks > CONFIG.maxChunks) { notify('Oversized transfer refused.','error',6000); return; }
+    if (!data.totalChunks || data.totalChunks > CONFIG.maxChunks || !(data.totalSize > (data.totalChunks-1)*CONFIG.chunkSize) || data.totalSize > data.totalChunks*CONFIG.chunkSize) { notify('Oversized transfer refused.','error',6000); return; }
     if (incomingTransfers.has(conn.peer)) incomingTransfers.delete(conn.peer);
     incomingTransfers.set(conn.peer, {
       filename: data.filename, totalSize: data.totalSize, totalChunks: data.totalChunks,
-      chunks: new Array(data.totalChunks), received: 0, startedAt: Date.now(),
+      chunks: new Array(data.totalChunks), received: 0, startedAt: Date.now(), lastAt: Date.now(),
     });
     notify(`Receiving ${data.filename}…`,'info',2500);
     updateTransferProgress(data.filename, 0, data.totalChunks);
     updateDiagnosticsUI();
-    setTimeout(() => {
-      if (incomingTransfers.has(conn.peer)) {
-        const t = incomingTransfers.get(conn.peer);
-        if (t.received < t.totalChunks) { incomingTransfers.delete(conn.peer); notify(`Transfer timed out.`,'error',6000); }
-      }
-    }, CONFIG.transferTimeout);
+    const watchdog = setInterval(() => {
+      const t = incomingTransfers.get(conn.peer);
+      if (!t || t.received >= t.totalChunks) { clearInterval(watchdog); return; }
+      if (Date.now() - t.lastAt > CONFIG.transferTimeout) { clearInterval(watchdog); incomingTransfers.delete(conn.peer); notify('Transfer stalled and was cancelled.','error',6000); }
+    }, 5000);
     return;
   }
   if (data.type==='FILE_CHUNK') {
     const t = incomingTransfers.get(conn.peer);
     if (!t) return;
+    if (!Number.isInteger(data.index) || data.index < 0 || data.index >= t.totalChunks || t.chunks[data.index]) return;
     t.chunks[data.index] = toUint8(data.data);
-    t.received++;
+    t.received++; t.lastAt = Date.now();
     if (t.received % 32 === 0 || t.received === t.totalChunks) {
       try { conn.send({ type:'FILE_ACK', received: t.received }); } catch (_) {}
     }
@@ -1628,7 +1638,15 @@ async function renderCurrentPage() {
     }
   }
 }
+let pdfRendering = false, pdfRenderQueued = false, pdfRenderTask = null;
 async function renderPdfPage() {
+  if (pdfRendering) { pdfRenderQueued = true; try { pdfRenderTask && pdfRenderTask.cancel(); } catch (_) {} return; }
+  pdfRendering = true;
+  try { await renderPdfPageInner(); }
+  catch (e) { if (!e || e.name !== 'RenderingCancelledException') console.warn('PDF render failed', e); }
+  finally { pdfRendering = false; if (pdfRenderQueued) { pdfRenderQueued = false; renderPdfPage(); } }
+}
+async function renderPdfPageInner() {
   if (!hasFitted) { hasFitted = true; await fitToWidth(true); return; }
   const page = await pdfDoc.getPage(state.currentPage);
   const base = page.getViewport({ scale: 1 });
@@ -1646,7 +1664,8 @@ async function renderPdfPage() {
   const ctx = canvas.getContext('2d');
   canvas.width = Math.floor(pixW); canvas.height = Math.floor(pixH);
   canvas.style.width = Math.floor(cssW)+'px'; canvas.style.height = Math.floor(cssH)+'px';
-  await page.render({ canvasContext: ctx, viewport: renderViewport }).promise;
+  pdfRenderTask = page.render({ canvasContext: ctx, viewport: renderViewport });
+  await pdfRenderTask.promise;
 }
 
 // ==================== NAVIGATION ====================
@@ -1681,11 +1700,11 @@ function promptGoto() {
 }
 function zoomIn() {
   if (state.fileType==='image') { currentZoom = Math.min(currentZoom+0.25,5); applyImageZoom(); }
-  else { currentZoom += 0.25; renderCurrentPage(); }
+  else { userZoomed = true; currentZoom += 0.25; renderCurrentPage(); }
 }
 function zoomOut() {
   if (state.fileType==='image') { currentZoom = Math.max(currentZoom-0.25,0.25); applyImageZoom(); }
-  else if (currentZoom>0.35) { currentZoom -= 0.25; renderCurrentPage(); }
+  else if (currentZoom>0.35) { userZoomed = true; currentZoom -= 0.25; renderCurrentPage(); }
 }
 async function fitToWidth(silent=false) {
   if (state.fileType==='pdf' && pdfDoc) {
@@ -1695,7 +1714,7 @@ async function fitToWidth(silent=false) {
     const styles = getComputedStyle(viewerContainer);
     const pad = parseFloat(styles.paddingLeft)+parseFloat(styles.paddingRight);
     const avail = viewerContainer.clientWidth - pad;
-    currentZoom = Math.max(avail/vp.width, 0.1);
+    currentZoom = Math.max(avail/vp.width, 0.1); userZoomed = false;
     await renderPdfPage();
   } else if (state.fileType==='image') {
     const img = document.getElementById('image-view');
@@ -1719,8 +1738,13 @@ async function fitToHeight() {
   }
 }
 function toggleFullscreen() {
-  if (!document.fullscreenElement) viewerContainer.requestFullscreen?.().catch(err => alert(err.message));
-  else document.exitFullscreen();
+  const el = viewerContainer;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (document.fullscreenElement || document.webkitFullscreenElement) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); return; }
+  if (el.classList.contains('pseudo-fs')) { el.classList.remove('pseudo-fs'); return; }
+  const fallback = () => el.classList.add('pseudo-fs');   // iPhone Safari has no element fullscreen
+  if (!req) return fallback();
+  try { const p = req.call(el); if (p && p.catch) p.catch(fallback); } catch (_) { fallback(); }
 }
 
 // ==================== OPFS ====================
@@ -1755,6 +1779,7 @@ async function restoreLastFile() {
   const data = await loadFromOPFS();
   if (!data) return;
   await processAndRenderFileLocally(data.buffer, data.filename, true);
+  broadcastFile(data.filename, data.buffer);
   document.getElementById('restore-btn').classList.add('hidden');
 }
 
@@ -1801,6 +1826,7 @@ document.addEventListener('visibilitychange', () => {
   for (const conn of connections) if (!conn.open) notify('A peer disconnected while you were away.','warning');
   updateDiagnosticsUI();
 });
+window.addEventListener('pagehide', (e) => { if (!e.persisted) { try{peer?.destroy()}catch(_){} } });
 window.addEventListener('beforeunload', () => {
   try{peer?.destroy()}catch(_){}
   try{localStream?.getTracks().forEach(t => t.stop())}catch(_){}
@@ -1808,6 +1834,11 @@ window.addEventListener('beforeunload', () => {
   try{if (silentCtx) silentCtx.close()}catch(_){}
   try{if (pyodideWorker) pyodideWorker.terminate()}catch(_){}
 });
+
+let resizeTimer = null;
+function onViewportChange() { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (state.fileType==='pdf' && pdfDoc && !userZoomed) fitToWidth(true); }, 250); }
+window.addEventListener('resize', onViewportChange);
+window.addEventListener('orientationchange', onViewportChange);
 
 // ==================== INIT ====================
 updateDownloadButton();
