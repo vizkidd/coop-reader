@@ -232,6 +232,7 @@
     <button class="secondary" onclick="openDiagnostics()">Connection Info</button>
     <button class="secondary" onclick="testNetwork()">Test Network</button>
     <button class="secondary host-only" onclick="openServerConfig()">Signaling Server</button>
+    <button class="secondary" onclick="configureIce()">TURN</button>
   </div>
   <div class="menu-group host-only" id="download-perm-group" style="display:none;">
     <span class="menu-label">Sharing</span>
@@ -357,9 +358,14 @@ const CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
     { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
     { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
     { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
   ],
 };
 
@@ -477,6 +483,7 @@ function updateDiagnosticsUI() {
     <span class="diag-label">Auth</span><span>${sessionAuth.required?'<span class="ok">password required</span>':'open'}</span>
     <span class="diag-label">WebRTC</span><span>${window.RTCPeerConnection?'<span class="ok">available</span>':'<span class="bad">unavailable</span>'}</span>
     <span class="diag-label">Online</span><span>${navigator.onLine?'<span class="ok">yes</span>':'<span class="bad">no</span>'}</span>
+    <span class="diag-label">TURN</span><span>${window.__iceResolved?'<span class="ok">custom ('+window.__iceResolved.filter(x=>/turns?:/.test([].concat(x.urls).join())).length+' relays)</span>':'<span class="warn">public default (unreliable) — tap TURN to set up</span>'}</span>
   </div>`;
   if (connections.length) {
     html += '<div class="diag-section"><h4>Peer Connections</h4>';
@@ -489,7 +496,7 @@ function updateDiagnosticsUI() {
         <div><strong>${escapeHtml(String(conn.peer).substring(0,10))}…</strong>
         <span class="${cls}">(${escapeHtml(ice)})</span>
         ${conn._authenticated===false?' <span class="bad">unauth</span>':''}
-        ${conn._peerInVoice?' 🎤':''}${actBadge(conn.peer)}</div>
+        ${conn._peerInVoice?' 🎤':''}${conn._virtual?' 🔗 via peer':''}${actBadge(conn.peer)}</div>
         <div>PC: ${escapeHtml(conn._pcState||'—')} • ICE: ${escapeHtml(candStr)}</div>
         ${conn._stats?.rtt!=null?`<div>RTT: ${conn._stats.rtt.toFixed(0)} ms • Bytes: ${conn._stats.bytesReceived??0}</div>`:''}
         ${conn._isRelay?'<div class="warn">⚠ Relayed via TURN</div>':''}
@@ -569,10 +576,7 @@ function saveServerConfig() {
   if (peer) { try{peer.destroy()}catch(_){} peer=null; myPeerId=null; connections=[]; isHost=false; cleanupVoice(); setStatus('Disconnected.','warning'); }
 }
 function resetServerConfig() { localStorage.removeItem('coop-server-config'); closeModal('server-modal'); notify('Reset to default.','success'); }
-function getIceServers() {
-  try { const c = JSON.parse(localStorage.getItem('coop-ice-servers') || 'null'); if (Array.isArray(c) && c.length) return c; } catch (_) {}
-  return CONFIG.iceServers;
-}
+function getIceServers() { return window.__iceResolved || CONFIG.iceServers; }
 function peerOptions() {
   const saved = JSON.parse(localStorage.getItem('coop-server-config') || '{}');
   const opts = { config: { iceServers: getIceServers(), iceCandidatePoolSize: 10 } };
@@ -642,7 +646,8 @@ function resetWorker() {
 
 // Pyodide is now lazy: loaded on first non-PDF/image file (saves ~10MB+ and iOS memory).
 setStatus('Ready.', 'success');
-checkForAutoJoin();
+(function () { const p = new URLSearchParams(location.hash.slice(1)).get('ice'); if (p) { try { localStorage.setItem('coop-ice-servers', p); } catch (_) {} notify('Using the host\'s network (TURN) settings.', 'info', 3000); } })();
+resolveIce().finally(checkForAutoJoin);
 tryRestoreFromOPFS();
 
 // ==================== GESTURES ====================
@@ -798,7 +803,7 @@ function attachConnectionHandlers(conn) {
     });
     pc.addEventListener('iceconnectionstatechange', () => {
       conn._iceState = pc.iceConnectionState;
-      if (pc.iceConnectionState==='failed') notify('WebRTC connection failed — try TURN or another network.','error',8000);
+      if (pc.iceConnectionState==='failed') notify('No network route between you and the other device. Different networks (Wi-Fi vs mobile data) need a TURN relay: open the menu → TURN to set one up.','error',10000);
       clearTimeout(conn._dcTimer);
       if (pc.iceConnectionState==='disconnected' || pc.iceConnectionState==='failed') {
         conn._dcTimer = setTimeout(() => {
@@ -989,6 +994,7 @@ async function startHost() {
     conn._authenticated = !sessionAuth.required;
     // PeerJS never emits 'close' for a conn that never opened -> prune it ourselves
     setTimeout(() => { if (!conn.open) { connections = connections.filter(c => c !== conn); try{conn.close()}catch(_){} updatePeerListUI(); updateChatAvailability(); } }, CONFIG.connectTimeout);
+    setTimeout(() => { if (!conn.open && connections.includes(conn)) tryBridge(conn, []); }, 10000);
     
     // Cleanup unauthenticated peers that hang
     let authTimeout = null;
@@ -1068,8 +1074,9 @@ function joinSession(targetCode, isRetry) {
     
     const conn = peer.connect(code, { reliable: true });
     conn._authenticated = false;
+    peer.on('connection', c => acceptBridge(c, conn));
     const timeout = setTimeout(() => {
-      if (!conn.open) { showError({type:'peer-unavailable'}); try{conn.close()}catch(_){} scheduleRejoin(); }
+      if (!conn.open && !bridgeV) { showError({type:'peer-unavailable'}); try{conn.close()}catch(_){} scheduleRejoin(); }
     }, CONFIG.connectTimeout);
     connections.push(conn);
     updatePeerListUI(); updateChatAvailability();
@@ -1088,11 +1095,14 @@ function buildShareUrl(code, includeHash=false) {
   const base = window.location.pathname.replace(/\/index\.html$/,'').replace(/\/$/,'');
   let url = `${window.location.origin}${base}/${encodeURIComponent(code)}`;
   if (includeHash && sessionAuth.required && sessionAuth.hash) url += '#pw=' + encodeURIComponent(sessionAuth.hash);
+  if (shareIceRaw) url += (url.includes('#') ? '&' : '#') + 'ice=' + encodeURIComponent(shareIceRaw);
   return url;
 }
 function copyShareLink() {
   if (!myPeerId) return;
   const includePw = document.getElementById('share-include-pw').checked;
+  const rawIce = (localStorage.getItem('coop-ice-servers') || '').trim();
+  shareIceRaw = rawIce && confirm('Include your TURN settings in the link so peers on other networks can connect?\n\nAnyone with the link can read them.') ? rawIce : '';
   const url = buildShareUrl(myPeerId, includePw);
   navigator.clipboard?.writeText(url).then(
     () => notify('Link copied' + (includePw?' (with password)':''),'success'),
@@ -1561,6 +1571,29 @@ async function handleNetworkMessage(conn, data) {
     if (isHost || conn.peer !== lastJoinCode) return;
     const out = {}; for (const [pg, list] of Object.entries(data.all || {})) out[pg] = (Array.isArray(list) ? list : []).map(cleanItem).filter(Boolean);
     annots = out; annotSig = ''; return;
+  }
+  if (data.type==='CHAIN_CONNECT' || data.type==='BRIDGE_DOWN' || data.type==='BRIDGE_CLOSE') {   // helper peer, host-origin only
+    if (isHost || conn.peer !== lastJoinCode) return;
+    if (data.type==='CHAIN_CONNECT') { if (typeof data.target === 'string') openBridgeLink(data.target); }
+    else { const b = bridgeLinks[data.to]; if (b && data.type==='BRIDGE_CLOSE') { try { b.close(); } catch (_) {} } else if (b && b.open) try { b.send({ type:'BRIDGE_DOWN', payload: data.payload }); } catch (_) {} }
+    return;
+  }
+  if (data.type==='BRIDGE_READY' || data.type==='BRIDGE_UP' || data.type==='BRIDGE_CLOSED') {   // host, from a helper peer
+    if (!isHost) return;
+    if (data.type==='BRIDGE_READY') {
+      const p = bridgePending[data.target]; if (!p || p.helper !== conn) return; delete bridgePending[data.target];
+      connections = connections.filter(c => c !== p.direct); try { p.direct.close(); } catch (_) {}
+      const t = data.target, v = { peer: t, open: true, _virtual: true, _via: conn, _authenticated: !sessionAuth.required, get dataChannel() { return conn.dataChannel; },
+        send(m) { conn.send({ type:'BRIDGE_DOWN', to: t, payload: m }); }, close() { try { conn.send({ type:'BRIDGE_CLOSE', to: t }); } catch (_) {} }, on() {} };
+      connections.push(v); updatePeerListUI(); updateChatAvailability();
+      notify(`Peer ${String(t).substring(0,6)}… connected through a relay peer`, 'info', 4000);
+      if (sessionAuth.required) v.send({ type:'AUTH_REQUIRED', salt: sessionAuth.salt }); else sendInitialDataToConn(v);
+      return;
+    }
+    const v = connections.find(c => c._virtual && c._via === conn && c.peer === data.from); if (!v) return;
+    if (data.type==='BRIDGE_UP') handleNetworkMessage(v, data.payload);
+    else { connections = connections.filter(c => c !== v); updatePeerListUI(); updateChatAvailability(); }
+    return;
   }
   if (data.type==='REQ_SYNC') { if (isHost) try { conn.send({ type:'SYNC', state }); } catch (_) {} return; }
   if (data.type==='PAGE_INFO') { if (isHost) { conn._page = +data.page || null; conn._detached = !!data.detached; refreshPeers(); } return; }
@@ -2286,6 +2319,84 @@ function redrawAnnots() {
   }).join('');
 }
 setInterval(redrawAnnots, 100);
+
+let shareIceRaw = '';
+async function resolveIce() {
+  window.__iceResolved = null;
+  const raw = (localStorage.getItem('coop-ice-servers') || '').trim(); if (!raw) return;
+  try {
+    let list;
+    if (/^https:\/\//i.test(raw)) { const r = await fetch(raw, { cache: 'no-store' }); if (!r.ok) throw new Error('HTTP ' + r.status); list = await r.json(); }
+    else list = JSON.parse(raw);
+    if (!Array.isArray(list) || !list.length) throw new Error('expected a non-empty list of ICE servers');
+    window.__iceResolved = [...CONFIG.iceServers.filter(x => String(x.urls).startsWith('stun')), ...list];
+  } catch (e) { notify('Could not load TURN settings: ' + (e.message || e), 'error', 7000); }
+}
+function configureIce() {
+  const o = document.createElement('div');
+  o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px';
+  o.innerHTML = '<div style="background:var(--surface);color:inherit;padding:18px;border-radius:12px;max-width:440px;width:100%;box-shadow:0 8px 30px rgba(0,0,0,.4)"><h3 style="margin:0 0 8px">Network relay (TURN)</h3><p style="margin:0 0 10px;font-size:.85rem;opacity:.8">Needed when devices are on different networks (Wi-Fi ↔ mobile data). Paste a credentials URL (e.g. https://YOURAPP.metered.live/api/v1/turn/credentials?apiKey=KEY) or an iceServers JSON array.</p><textarea id="ice-ta" rows="5" style="width:100%;font-family:monospace;font-size:.8rem"></textarea><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="secondary" id="ice-x">Cancel</button><button class="secondary" id="ice-clear">Clear</button><button id="ice-save">Save</button></div></div>';
+  document.body.appendChild(o);
+  const ta = o.querySelector('#ice-ta'); ta.value = localStorage.getItem('coop-ice-servers') || '';
+  const close = () => o.remove();
+  o.querySelector('#ice-x').onclick = close;
+  o.querySelector('#ice-clear').onclick = async () => { localStorage.removeItem('coop-ice-servers'); await resolveIce(); close(); notify('Using public default relays.', 'info', 2500); };
+  o.querySelector('#ice-save').onclick = async () => {
+    localStorage.setItem('coop-ice-servers', ta.value.trim()); await resolveIce(); close();
+    if (window.__iceResolved) notify('TURN saved. Reload or rejoin the session, then run Test Network.', 'success', 5000);
+  };
+}
+// keep mobile screens awake while in a session (a sleeping phone drops its connections)
+let wakeLock = null;
+async function keepAwake() { try { if ('wakeLock' in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } } catch (_) {} }
+document.addEventListener('visibilitychange', () => { if (!document.hidden && (isHost || lastJoinCode)) keepAwake(); });
+setInterval(() => { if ((isHost && myPeerId) || connections.some(c => c.open)) keepAwake(); }, 15000);
+
+// ---- peer-relay bridge: fallback when a direct/TURN route to the host fails
+const bridgePending = {}, bridgeLinks = {}; let bridgeIn = null, bridgeV = null;
+function tryBridge(conn, tried) {   // host side
+  if (!isHost || conn.open || !connections.includes(conn)) return;
+  const load = h => connections.filter(c => c._virtual && c._via === h).length;
+  const helpers = connections.filter(c => c.open && !c._virtual && c._authenticated && c.peer !== conn.peer && !tried.includes(c.peer)).sort((a, b) => load(a) - load(b));
+  if (!helpers.length) { if (!tried.length) notify('A peer cannot reach you directly and no other peer can relay for it.', 'warning', 5000); return; }
+  const h = helpers[0];
+  bridgePending[conn.peer] = { helper: h, direct: conn };
+  try { h.send({ type:'CHAIN_CONNECT', target: conn.peer }); } catch (_) {}
+  setTimeout(() => { const p = bridgePending[conn.peer]; if (p && p.helper === h) { delete bridgePending[conn.peer]; tryBridge(conn, [...tried, h.peer]); } }, 20000);
+}
+function openBridgeLink(target) {   // helper side: dial the stuck newcomer and relay for it
+  const hc = connections.find(c => c.open && c.peer === lastJoinCode);
+  if (!peer || !hc || bridgeLinks[target] || Object.keys(bridgeLinks).length >= 3) return;
+  const b = peer.connect(target, { reliable: true, metadata: { coopBridge: true } }); bridgeLinks[target] = b;
+  const up = m => { try { hc.send(m); } catch (_) {} };
+  const t = setTimeout(() => { if (!b.open) { try { b.close(); } catch (_) {} delete bridgeLinks[target]; } }, 15000);
+  b.on('open', () => { clearTimeout(t); up({ type:'BRIDGE_READY', target }); });
+  b.on('data', d => { if (d && d.type === 'BRIDGE_UP') up({ type:'BRIDGE_UP', from: target, payload: d.payload }); });
+  b.on('close', () => { clearTimeout(t); delete bridgeLinks[target]; up({ type:'BRIDGE_CLOSED', from: target }); });
+  b.on('error', () => {});
+}
+function acceptBridge(c, direct) {   // newcomer side
+  if (isHost || !c.metadata || !c.metadata.coopBridge || bridgeIn || direct.open) { try { c.close(); } catch (_) {} return; }
+  bridgeIn = c;
+  c.on('open', () => {
+    const v = { peer: lastJoinCode, open: true, _virtual: true, _authenticated: false, _via: c, get dataChannel() { return c.dataChannel; },
+      send(m) { c.send({ type:'BRIDGE_UP', payload: m }); }, close() { try { c.close(); } catch (_) {} }, on() {} };
+    connections = connections.filter(x => x !== direct); connections.push(v); bridgeV = v;
+    hideError(); setStatus('Connected through another peer — awaiting session data…', 'info');
+    notify('No direct route to the host — connected through another peer.', 'warning', 5000);
+    updatePeerListUI(); updateChatAvailability();
+  });
+  c.on('data', d => { if (d && d.type === 'BRIDGE_DOWN' && bridgeV) handleNetworkMessage(bridgeV, d.payload); });
+  c.on('close', () => {
+    bridgeIn = null;
+    if (bridgeV) { connections = connections.filter(x => x !== bridgeV); bridgeV = null; updatePeerListUI(); notify('Relay peer lost — reconnecting…', 'warning'); scheduleRejoin(); }
+  });
+}
+setInterval(() => {   // host: drop relayed peers whose relay peer vanished
+  if (!isHost) return; const n = connections.length;
+  connections = connections.filter(c => !(c._virtual && !c._via.open));
+  if (connections.length !== n) { updatePeerListUI(); updateChatAvailability(); }
+}, 3000);
 
 // ==================== INIT ====================
 updateDownloadButton();
