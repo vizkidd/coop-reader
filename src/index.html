@@ -239,6 +239,10 @@
       <input type="checkbox" id="download-perm-toggle" onchange="toggleDownloadPermission()" />
       Allow peers to download the file
     </label>
+    <label class="check-label">
+      <input type="checkbox" id="peer-upload-toggle" onchange="setPeerUploads(this.checked)" />
+      Allow peers to upload files
+    </label>
   </div>
   <div class="menu-group host-only" id="share-group" style="display:none;">
     <span class="menu-label">Share link</span>
@@ -1131,17 +1135,71 @@ function updateDownloadButton() {
   const btn = document.getElementById('btn-download');
   btn.classList.toggle('hidden', !(state.downloadAllowed && !!cachedFileBytes && !!cachedFilename));
 }
-function downloadFile() {
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = name; a.style.display = 'none'; document.body.appendChild(a); a.click();
+  setTimeout(() => { try { document.body.removeChild(a); } catch (_) {} URL.revokeObjectURL(url); }, 1000);
+}
+function hasAnnots() { return Object.values(annots).some(l => l && l.length); }
+async function loadPdfLib() {
+  if (window.PDFLib) return;
+  await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js'; sc.onload = res; sc.onerror = () => rej(new Error('Could not load the PDF export library')); document.head.appendChild(sc); });
+}
+const pdfSafe = t => String(t).replace(/[^\x20-\x7E\u00A0-\u00FF]/g, '?');
+function wrapText(t, n) { const out = []; let cur = ''; for (const w of t.split(/\s+/)) { if ((cur + ' ' + w).length > n && cur) { out.push(cur); cur = w; } else cur = cur ? cur + ' ' + w : w; } if (cur) out.push(cur); return out; }
+async function exportAnnotatedPdf() {
+  await loadPdfLib(); const { PDFDocument, rgb, StandardFonts } = PDFLib;
+  const doc = await PDFDocument.load(cachedFileBytes.slice(0), { ignoreEncryption: true });
+  const font = await doc.embedFont(StandardFonts.Helvetica), pages = doc.getPages(), comments = [];
+  const hex = h => rgb(parseInt(h.slice(1,3),16)/255, parseInt(h.slice(3,5),16)/255, parseInt(h.slice(5,7),16)/255);
+  for (const [pg, list] of Object.entries(annots)) {
+    const page = pages[+pg - 1]; if (!page || !list.length) continue;
+    const { width: W, height: H } = page.getSize();
+    for (const a of list) {
+      if (a.t === 'pen') { for (let i = 1; i < a.pts.length; i++) page.drawLine({ start: { x: a.pts[i-1][0]*W, y: H - a.pts[i-1][1]*H }, end: { x: a.pts[i][0]*W, y: H - a.pts[i][1]*H }, thickness: 2, color: hex(a.c) }); }
+      else if (a.t === 'hl') page.drawRectangle({ x: a.r[0]*W, y: H - (a.r[1]+a.r[3])*H, width: a.r[2]*W, height: a.r[3]*H, color: hex(a.c), opacity: 0.35 });
+      else if (a.t === 'note') {
+        comments.push({ pg: +pg, n: comments.length + 1, by: a.name, text: a.text });
+        const x = a.x*W, y = H - a.y*H;
+        page.drawRectangle({ x, y, width: 14, height: 14, color: rgb(1, .85, .2), borderColor: rgb(.6, .45, 0), borderWidth: .5 });
+        page.drawText(String(comments.length), { x: x + 3, y: y + 3, size: 8, font, color: rgb(0, 0, 0) });
+      }
+    }
+  }
+  if (comments.length) {
+    let pg = doc.addPage([595, 842]), y = 800; pg.drawText('Comments', { x: 40, y, size: 16, font }); y -= 26;
+    for (const c of comments) {
+      for (const l of wrapText(pdfSafe(`${c.n}. [p.${c.pg}] ${c.by || 'peer'}: ${c.text}`), 90)) { if (y < 50) { pg = doc.addPage([595, 842]); y = 800; } pg.drawText(l, { x: 40, y, size: 10, font }); y -= 14; }
+      y -= 4;
+    }
+  }
+  return await doc.save();
+}
+function exportAnnotatedImage() {
+  const img = document.getElementById('image-view'), cv = document.createElement('canvas');
+  cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+  const g = cv.getContext('2d'), W = cv.width, H = cv.height, lw = Math.max(2, W / 300);
+  g.drawImage(img, 0, 0);
+  (annots[1] || []).forEach((a, i) => {
+    if (a.t === 'pen') { g.strokeStyle = a.c; g.lineWidth = lw; g.lineCap = g.lineJoin = 'round'; g.beginPath(); a.pts.forEach((p, k) => k ? g.lineTo(p[0]*W, p[1]*H) : g.moveTo(p[0]*W, p[1]*H)); g.stroke(); }
+    else if (a.t === 'hl') { g.globalAlpha = .35; g.fillStyle = a.c; g.fillRect(a.r[0]*W, a.r[1]*H, a.r[2]*W, a.r[3]*H); g.globalAlpha = 1; }
+    else if (a.t === 'note') { const s = lw * 8; g.fillStyle = '#ffd933'; g.fillRect(a.x*W, a.y*H, s, s); g.fillStyle = '#000'; g.font = `${s*.7}px sans-serif`; g.fillText('i', a.x*W + s*.35, a.y*H + s*.75); }
+  });
+  return new Promise((res, rej) => cv.toBlob(b => b ? res(b) : rej(new Error('Image export failed')), 'image/png'));
+}
+async function downloadFile() {
   if (!state.downloadAllowed || !cachedFileBytes || !cachedFilename) return;
   try {
-    const blob = new Blob([cachedFileBytes], { type:'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = cachedFilename; a.style.display = 'none';
-    document.body.appendChild(a); a.click();
-    setTimeout(() => { try{document.body.removeChild(a)}catch(_){} URL.revokeObjectURL(url); }, 1000);
-    notify(`Downloading ${cachedFilename}…`,'success');
-  } catch(e) { notify(`Download failed: ${e.message||e}`,'error'); }
+    let blob = null, name = cachedFilename;
+    const annotated = hasAnnots() && (state.fileType === 'pdf' || state.fileType === 'image');
+    if (annotated && confirm('Include annotations in the download?\n\nOK = annotated copy, Cancel = original file.')) {
+      notify('Preparing annotated copy…', 'info', 2000);
+      if (state.fileType === 'pdf') { blob = new Blob([await exportAnnotatedPdf()], { type: 'application/pdf' }); name = name.replace(/(\.pdf)?$/i, '-annotated.pdf'); }
+      else { blob = await exportAnnotatedImage(); name = name.replace(/\.[^.]+$/, '') + '-annotated.png'; }
+    } else if (hasAnnots() && state.fileType === 'other') notify('Annotations can only be embedded in PDF and image downloads; saving the original.', 'info', 4000);
+    saveBlob(blob || new Blob([cachedFileBytes], { type: 'application/octet-stream' }), name);
+    notify(`Downloading ${name}…`, 'success');
+  } catch (e) { notify(`Download failed: ${e.message || e}`, 'error'); }
 }
 document.getElementById('btn-download').addEventListener('click', downloadFile);
 
@@ -1506,7 +1564,7 @@ async function handleNetworkMessage(conn, data) {
   }
   if (data.type==='SETTINGS' || data.type==='HOST_MUTE' || data.type==='HOST_PING' || data.type==='HOST_KICK') {
     if (isHost || conn.peer !== lastJoinCode) return;   // host-origin only
-    if (data.type==='SETTINGS' && data.s) { hostSettings = { ...hostSettings, ...data.s }; updateAnnotUI(); }
+    if (data.type==='SETTINGS' && data.s) { const was = hostSettings.peerUploads; hostSettings = { ...hostSettings, ...data.s }; updateAnnotUI(); if (hostSettings.peerUploads !== was) notify(hostSettings.peerUploads ? 'The host now lets you open files.' : 'The host turned off file uploads.', 'info', 3500); }
     else if (data.type==='HOST_PING') { notify('🔔 The host pinged you', 'info', 6000); try { navigator.vibrate && navigator.vibrate([200,100,200]); } catch (_) {} }
     else if (data.type==='HOST_MUTE') { if (localStream || listenOnly) disableVoice(); notify('The host muted your microphone', 'warning', 4000); }
     else if (data.type==='HOST_KICK') { lastJoinCode = null; try { sessionStorage.removeItem('coop-session'); } catch (_) {} notify('You were removed by the host', 'error', 8000); setStatus('Removed by host', 'error'); try { conn.close(); } catch (_) {} }
@@ -2115,8 +2173,16 @@ function hostCmd(pid, type) {
   if (type === 'HOST_KICK') setTimeout(() => { try { c.close(); } catch (_) {} connections = connections.filter(x => x !== c); updatePeerListUI(); updateChatAvailability(); }, 300);
   else notify(type === 'HOST_PING' ? 'Ping sent.' : 'Mute sent.', 'info', 1500);
 }
+function setPeerUploads(v) {
+  if (!isHost) return;
+  hostSettings.peerUploads = !!v;
+  const u = document.getElementById('hs-uploads'); if (u) u.checked = hostSettings.peerUploads;
+  broadcast({ type:'SETTINGS', s: hostSettings });
+  notify(v ? 'Peers can now upload files.' : 'Peer uploads disabled.', 'info', 2000);
+}
 function updateHostSettings() {
   hostSettings = { speaking: document.getElementById('hs-speaking').checked, typing: document.getElementById('hs-typing').checked, interact: document.getElementById('hs-interact').checked, peerUploads: document.getElementById('hs-uploads').checked, peerAnnotate: document.getElementById('hs-annot').checked }; updateAnnotUI();
+  document.getElementById('peer-upload-toggle').checked = hostSettings.peerUploads;
   broadcast({ type:'SETTINGS', s: hostSettings });
 }
 
