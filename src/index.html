@@ -101,6 +101,8 @@
     #diagnostics .warn{color:var(--warning)}
     #diagnostics .bad{color:var(--error)}
     #diagnostics .diag-actions{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
+    #viewer-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:0 16px 8px}
+    #viewer-toolbar button{min-height:38px}
     #viewer-wrap{position:relative;margin:0 16px}
     #viewer-container{position:relative;margin:0;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-sm);min-height:55vh;display:flex;align-items:flex-start;overflow:auto;touch-action:pan-x pan-y;-webkit-overflow-scrolling:touch}
     .net-opt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;cursor:pointer}
@@ -112,7 +114,7 @@
     body.peer-mode .host-only{display:none !important}
     .avatar{width:40px;height:40px;border-radius:50%;object-fit:cover;border:2px solid var(--border);background:var(--surface-alt);display:inline-flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0}
     #activity-strip{position:fixed;top:calc(68px + env(safe-area-inset-top,0px));left:12px;display:flex;gap:8px;z-index:60;pointer-events:none}
-    .act{position:relative}.act .avatar{width:44px;height:44px;border-width:3px;box-shadow:var(--shadow-md)}
+    .act{position:relative;transition:opacity 2s ease-out}.act.fading{opacity:0}.act .avatar{width:44px;height:44px;border-width:3px;box-shadow:var(--shadow-md)}
     .act-speaking .avatar{border-color:var(--success)}.act-typing .avatar{border-color:var(--primary)}.act-interact .avatar{border-color:var(--warning)}
     .act i{position:absolute;right:-4px;bottom:-4px;font-style:normal;font-size:14px}
     #cursor-layer{position:absolute;inset:0;pointer-events:none;overflow:hidden;border-radius:var(--radius);z-index:5}
@@ -170,9 +172,7 @@
     <span id="current-file" class="current-file"></span>
   </div>
   <div class="app-actions">
-    <button id="btn-download" class="icon-btn hidden" aria-label="Download file" title="Download file">⬇</button>
     <button id="btn-peers" class="icon-btn host-only" aria-label="Peers" title="Peers" onclick="openPeers()">👥</button>
-    <button id="btn-toc" class="icon-btn" aria-label="Contents" title="Contents" onclick="openToc()">📑</button>
     <button id="btn-chat" class="icon-btn" aria-label="Chat" title="Chat">💬<span id="chat-badge" class="badge hidden">0</span></button>
     <button id="btn-voice" class="icon-btn" aria-label="Toggle voice chat" title="Voice chat">🎤</button>
     <button id="btn-open-file" class="icon-btn" aria-label="Open file" title="Open file">📂</button>
@@ -217,7 +217,6 @@
     <span class="menu-label">Chapter</span>
     <button class="secondary" onclick="prevChapter()" aria-label="Previous chapter">‹ Ch</button>
     <button class="secondary" onclick="nextChapter()" aria-label="Next chapter">Ch ›</button>
-    <button class="secondary" onclick="openToc()">Contents</button>
   </div>
   <div class="menu-group">
     <label class="check-label"><input type="checkbox" id="sync-toggle" checked onchange="setDetached(!this.checked)" />Sync pages with session</label>
@@ -282,6 +281,11 @@
   <div id="diag-body"><p style="color:var(--text-muted)">No session active.</p></div>
 </div>
 
+<div id="viewer-toolbar" style="display:none">
+  <button class="secondary" id="btn-toc" onclick="openToc()">📑 Contents</button>
+  <button class="secondary" id="btn-comments" onclick="showComments()">💬 Comments</button>
+  <button class="secondary hidden" id="btn-download" aria-label="Download file">⬇ Download</button>
+</div>
 <div id="viewer-wrap">
   <main id="viewer-container">
     <canvas id="pdf-canvas"></canvas>
@@ -1174,16 +1178,18 @@ async function exportAnnotatedPdf() {
   const font = await doc.embedFont(StandardFonts.Helvetica), pages = doc.getPages(), comments = [];
   const hex = h => rgb(parseInt(h.slice(1,3),16)/255, parseInt(h.slice(3,5),16)/255, parseInt(h.slice(5,7),16)/255);
   for (const [pg, list] of Object.entries(annots)) {
-    const page = pages[+pg - 1]; if (!page || !list.length) continue;
-    const { width: W, height: H } = page.getSize();
+    const page = pages[+pg - 1]; if (!page || !list || !list.length) continue;
+    const cb = page.getCropBox(), W = cb.width, H = cb.height, rot = ((page.getRotation().angle % 360) + 360) % 360;
+    const P = (u, v) => { let x, y;   // displayed (u,v) -> unrotated page coordinates
+      if (rot === 90) { x = v*W; y = u*H; } else if (rot === 180) { x = (1-u)*W; y = v*H; } else if (rot === 270) { x = (1-v)*W; y = (1-u)*H; } else { x = u*W; y = H - v*H; }
+      return { x: cb.x + x, y: cb.y + y }; };
     for (const a of list) {
-      if (a.t === 'pen') { for (let i = 1; i < a.pts.length; i++) page.drawLine({ start: { x: a.pts[i-1][0]*W, y: H - a.pts[i-1][1]*H }, end: { x: a.pts[i][0]*W, y: H - a.pts[i][1]*H }, thickness: 2, color: hex(a.c) }); }
-      else if (a.t === 'hl') page.drawRectangle({ x: a.r[0]*W, y: H - (a.r[1]+a.r[3])*H, width: a.r[2]*W, height: a.r[3]*H, color: hex(a.c), opacity: 0.35 });
+      if (a.t === 'pen') { for (let i = 1; i < a.pts.length; i++) page.drawLine({ start: P(a.pts[i-1][0], a.pts[i-1][1]), end: P(a.pts[i][0], a.pts[i][1]), thickness: 2, color: hex(a.c) }); }
+      else if (a.t === 'hl') { const p1 = P(a.r[0], a.r[1]), p2 = P(a.r[0] + a.r[2], a.r[1] + a.r[3]); page.drawRectangle({ x: Math.min(p1.x, p2.x), y: Math.min(p1.y, p2.y), width: Math.abs(p2.x - p1.x), height: Math.abs(p2.y - p1.y), color: hex(a.c), opacity: .35 }); }
       else if (a.t === 'note') {
-        comments.push({ pg: +pg, n: comments.length + 1, by: a.name, text: a.text });
-        const x = a.x*W, y = H - a.y*H;
-        page.drawRectangle({ x, y, width: 14, height: 14, color: rgb(1, .85, .2), borderColor: rgb(.6, .45, 0), borderWidth: .5 });
-        page.drawText(String(comments.length), { x: x + 3, y: y + 3, size: 8, font, color: rgb(0, 0, 0) });
+        comments.push({ pg: +pg, n: comments.length + 1, by: a.name, text: a.text }); const q = P(a.x, a.y);
+        page.drawCircle({ x: q.x, y: q.y, size: 8, color: rgb(1, .85, .2), borderColor: rgb(.54, .43, 0), borderWidth: .8 });
+        page.drawText(String(comments.length), { x: q.x - (comments.length > 9 ? 4.5 : 2.5), y: q.y - 3, size: 8, font, color: rgb(0, 0, 0) });
       }
     }
   }
@@ -1197,29 +1203,56 @@ async function exportAnnotatedPdf() {
   return await doc.save();
 }
 function exportAnnotatedImage() {
-  const img = document.getElementById('image-view'), cv = document.createElement('canvas');
-  cv.width = img.naturalWidth; cv.height = img.naturalHeight;
-  const g = cv.getContext('2d'), W = cv.width, H = cv.height, lw = Math.max(2, W / 300);
-  g.drawImage(img, 0, 0);
-  (annots[1] || []).forEach((a, i) => {
+  const img = document.getElementById('image-view'), W = img.naturalWidth, H = img.naturalHeight, lw = Math.max(2, W / 300);
+  const notes = (annots[1] || []).filter(a => a.t === 'note'), fs = Math.max(14, Math.round(W / 60)), pad = fs * 1.4;
+  const lines = []; notes.forEach((a, i) => wrapText(pdfSafe(`${i+1}. ${a.name || 'peer'}: ${a.text}`), Math.max(30, Math.floor(W / (fs * .55)))).forEach(l => lines.push(l)));
+  const legendH = lines.length ? Math.round((lines.length + 1) * pad) : 0, cv = document.createElement('canvas'); cv.width = W; cv.height = H + legendH;
+  const g = cv.getContext('2d'); g.drawImage(img, 0, 0);
+  let n = 0;
+  (annots[1] || []).forEach(a => {
     if (a.t === 'pen') { g.strokeStyle = a.c; g.lineWidth = lw; g.lineCap = g.lineJoin = 'round'; g.beginPath(); a.pts.forEach((p, k) => k ? g.lineTo(p[0]*W, p[1]*H) : g.moveTo(p[0]*W, p[1]*H)); g.stroke(); }
     else if (a.t === 'hl') { g.globalAlpha = .35; g.fillStyle = a.c; g.fillRect(a.r[0]*W, a.r[1]*H, a.r[2]*W, a.r[3]*H); g.globalAlpha = 1; }
-    else if (a.t === 'note') { const s = lw * 8; g.fillStyle = '#ffd933'; g.fillRect(a.x*W, a.y*H, s, s); g.fillStyle = '#000'; g.font = `${s*.7}px sans-serif`; g.fillText('i', a.x*W + s*.35, a.y*H + s*.75); }
+    else if (a.t === 'note') { const r = fs * .8; g.fillStyle = '#ffd933'; g.strokeStyle = '#8a6d00'; g.lineWidth = 2; g.beginPath(); g.arc(a.x*W, a.y*H, r, 0, 7); g.fill(); g.stroke(); g.fillStyle = '#000'; g.font = `bold ${fs}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(++n), a.x*W, a.y*H); }
   });
+  if (lines.length) { g.fillStyle = '#fff'; g.fillRect(0, H, W, legendH); g.fillStyle = '#000'; g.font = `${fs}px sans-serif`; g.textAlign = 'left'; g.textBaseline = 'top'; lines.forEach((l, i) => g.fillText(l, pad / 2, H + pad / 2 + i * pad)); }
   return new Promise((res, rej) => cv.toBlob(b => b ? res(b) : rej(new Error('Image export failed')), 'image/png'));
+}
+function annotationsReport() {
+  const out = [`# Annotations — ${cachedFilename}`, ''];
+  for (const pg of Object.keys(annots).map(Number).sort((a, b) => a - b)) {
+    const list = annots[pg] || []; if (!list.length) continue; out.push(`## Page ${pg}`);
+    for (const a of list) out.push(a.t === 'note' ? `- Comment (${a.name || 'peer'}): ${a.text}` : a.t === 'hl' ? '- Highlight' : '- Drawing');
+    out.push('');
+  }
+  return out.join('\n');
+}
+function chooseDownload(opts) {
+  return new Promise(res => {
+    const o = document.createElement('div'); o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:12px';
+    o.innerHTML = `<div style="background:var(--surface);color:inherit;padding:16px;border-radius:14px;max-width:380px;width:100%"><h3 style="margin:0 0 10px">Download</h3>${opts.map(x => `<button class="secondary" data-id="${x.id}" style="display:block;width:100%;text-align:left;margin-bottom:8px;white-space:normal"><b>${x.label}</b><br><small>${x.sub}</small></button>`).join('')}<div style="text-align:right"><button class="secondary" id="dl-x">Cancel</button></div></div>`;
+    document.body.appendChild(o);
+    o.onclick = e => { const b = e.target.closest('[data-id]'); if (b) { o.remove(); res(b.dataset.id); } else if (e.target === o || e.target.id === 'dl-x') { o.remove(); res(null); } };
+  });
 }
 async function downloadFile() {
   if (!state.downloadAllowed || !cachedFileBytes || !cachedFilename) return;
   try {
-    let blob = null, name = cachedFilename;
-    const annotated = hasAnnots() && (state.fileType === 'pdf' || state.fileType === 'image');
-    if (annotated && confirm('Include annotations in the download?\n\nOK = annotated copy, Cancel = original file.')) {
+    let mode = 'orig';
+    if (hasAnnots()) {
+      const embeds = state.fileType === 'pdf' || state.fileType === 'image';
+      mode = await chooseDownload(embeds
+        ? [{ id: 'embed', label: 'Annotated copy', sub: 'Highlights, drawings and comments included' }, { id: 'orig', label: 'Original file', sub: 'Without annotations' }]
+        : [{ id: 'orig', label: 'Original file', sub: 'Without annotations' }, { id: 'report', label: 'Annotations report (.md)', sub: 'Comments and annotations listed by page — this file type cannot hold them' }]);
+      if (!mode) return;
+    }
+    let blob, name = cachedFilename;
+    if (mode === 'embed') {
       notify('Preparing annotated copy…', 'info', 2000);
       if (state.fileType === 'pdf') { blob = new Blob([await exportAnnotatedPdf()], { type: 'application/pdf' }); name = name.replace(/(\.pdf)?$/i, '-annotated.pdf'); }
       else { blob = await exportAnnotatedImage(); name = name.replace(/\.[^.]+$/, '') + '-annotated.png'; }
-    } else if (hasAnnots() && state.fileType === 'other') notify('Annotations can only be embedded in PDF and image downloads; saving the original.', 'info', 4000);
-    saveBlob(blob || new Blob([cachedFileBytes], { type: 'application/octet-stream' }), name);
-    notify(`Downloading ${name}…`, 'success');
+    } else if (mode === 'report') { blob = new Blob([annotationsReport()], { type: 'text/markdown' }); name = name.replace(/\.[^.]+$/, '') + '-annotations.md'; }
+    else blob = new Blob([cachedFileBytes], { type: 'application/octet-stream' });
+    saveBlob(blob, name); notify(`Downloading ${name}…`, 'success');
   } catch (e) { notify(`Download failed: ${e.message || e}`, 'error'); }
 }
 document.getElementById('btn-download').addEventListener('click', downloadFile);
@@ -2185,15 +2218,24 @@ function setActivity(pid, kind) {
   activity.set(pid, { kind, until: Date.now() + (kind === 'speaking' ? 700 : 2500) });
   renderActivity();
 }
+const FADE_MS = 2000, actEls = new Map();
 function renderActivity() {
-  const now = Date.now(); for (const [k, v] of activity) if (v.until < now) activity.delete(k);
-  document.getElementById('activity-strip').innerHTML = [...activity].map(([pid, v]) => {
+  const now = Date.now(), strip = document.getElementById('activity-strip');
+  for (const [k, v] of activity) if (now > v.until + FADE_MS) activity.delete(k);
+  for (const [pid, el] of actEls) if (!activity.has(pid)) { el.remove(); actEls.delete(pid); }
+  for (const [pid, v] of activity) {
     const p = profiles[pid] || {}, nm = p.name || String(pid).slice(0, 4);
-    const face = AVATAR_RE.test(p.avatar || '') ? `<img class="avatar" src="${p.avatar}" alt="">` : `<span class="avatar">${escapeHtml(nm[0] || '?').toUpperCase()}</span>`;
-    return `<div class="act act-${v.kind}" title="${escapeHtml(nm)}">${face}<i>${{speaking:'🎤',typing:'⌨️',interact:'👆'}[v.kind]}</i></div>`;
-  }).join('');
+    let el = actEls.get(pid); if (!el) { el = document.createElement('div'); strip.appendChild(el); actEls.set(pid, el); }
+    const sig = v.kind + '|' + nm + '|' + (p.avatar || '').length;
+    if (el._sig !== sig) {
+      el._sig = sig; el.title = nm;
+      const face = AVATAR_RE.test(p.avatar || '') ? `<img class="avatar" src="${p.avatar}" alt="">` : `<span class="avatar">${escapeHtml(nm[0] || '?').toUpperCase()}</span>`;
+      el.innerHTML = `${face}<i>${{speaking:'🎤',typing:'⌨️',interact:'👆'}[v.kind]}</i>`;
+    }
+    el.className = 'act act-' + v.kind + (now > v.until ? ' fading' : '');
+  }
   refreshPeers(); updateDiagnosticsUI();
-  if (activity.size && !actTimer) actTimer = setTimeout(() => { actTimer = null; renderActivity(); }, 400);
+  if (activity.size && !actTimer) actTimer = setTimeout(() => { actTimer = null; renderActivity(); }, 250);
 }
 function actBadge(pid) { const a = activity.get(pid); return a && a.until > Date.now() ? ' ' + ({speaking:'🎤 speaking',typing:'⌨️ typing',interact:'👆 active'})[a.kind] : ''; }
 function sendActivity(kind) {
@@ -2248,7 +2290,7 @@ let annots = {}, tool = null, drawing = null, annotSig = '';
 const asvg = document.getElementById('annot-svg');
 const annotColor = () => document.getElementById('annot-color').value;
 function canAnnotate() { return isHost || (!!lastJoinCode && hostSettings.peerAnnotate); }
-function updateAnnotUI() { const ok = canAnnotate(); document.getElementById('annot-group').style.display = ok ? '' : 'none'; if (!ok && tool) setTool(null); }
+function updateAnnotUI() { document.getElementById('viewer-toolbar').style.display = cachedFileBytes ? 'flex' : 'none'; const ok = canAnnotate(); document.getElementById('annot-group').style.display = ok ? '' : 'none'; if (!ok && tool) setTool(null); }
 setInterval(updateAnnotUI, 1000);
 function setTool(t) {
   tool = (tool === t) ? null : t;
@@ -2306,9 +2348,25 @@ asvg.addEventListener('pointerup', () => {
 });
 asvg.addEventListener('pointercancel', () => { drawing = null; annotSig = ''; });
 asvg.addEventListener('click', e => {
-  const id = e.target.dataset && e.target.dataset.id; if (!id) return;
-  if (tool === 'erase') delAnnot(id); else if (e.target.classList.contains('note')) alert((e.target.dataset.by ? e.target.dataset.by + ': ' : '') + e.target.dataset.text);
+  const g = e.target.closest && e.target.closest('[data-id]'); if (!g || !g.dataset.id) return;
+  if (tool === 'erase') { delAnnot(g.dataset.id); hideNotePop(); } else if (g.classList.contains('note')) showNotePop(g, e.clientX, e.clientY);
 });
+document.addEventListener('pointerdown', e => { if (!(e.target.closest && e.target.closest('#note-pop,.note'))) hideNotePop(); });
+function hideNotePop() { const p = document.getElementById('note-pop'); if (p) p.remove(); }
+function showNotePop(g, x, y) {
+  hideNotePop(); const p = document.createElement('div'); p.id = 'note-pop';
+  p.style.cssText = `position:fixed;z-index:500;max-width:min(280px,90vw);left:${Math.max(8, Math.min(x, innerWidth - 290))}px;top:${Math.min(y + 14, innerHeight - 120)}px;background:#fff8d6;color:#222;border:1px solid #c9a800;border-radius:10px;padding:10px 12px;box-shadow:0 6px 20px rgba(0,0,0,.35);font-size:.9rem;white-space:pre-wrap;word-break:break-word`;
+  p.innerHTML = `<b style="display:block;margin-bottom:4px">${escapeHtml(g.dataset.by || 'Someone')}</b>${escapeHtml(g.dataset.text || '')}`;
+  document.body.appendChild(p);
+}
+function showComments() {
+  const items = []; for (const [pg, list] of Object.entries(annots)) (list || []).filter(a => a.t === 'note').forEach(a => items.push({ pg: +pg, a }));
+  items.sort((x, y) => x.pg - y.pg);
+  const o = document.createElement('div'); o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:12px';
+  o.innerHTML = `<div style="background:var(--surface);color:inherit;padding:16px;border-radius:14px;max-width:460px;width:100%;max-height:85vh;overflow:auto"><h3 style="margin:0 0 10px">Comments (${items.length})</h3>${items.length ? items.map(it => `<button class="secondary" data-pg="${it.pg}" style="display:block;width:100%;text-align:left;margin-bottom:6px;white-space:normal"><small>Page ${it.pg} · ${escapeHtml(it.a.name || 'someone')}</small><br>${escapeHtml(it.a.text)}</button>`).join('') : '<p style="opacity:.7">No comments yet.</p>'}<div style="text-align:right;margin-top:8px"><button class="secondary" id="cm-x">Close</button></div></div>`;
+  document.body.appendChild(o);
+  o.onclick = e => { const b = e.target.closest('[data-pg]'); if (b) { goToPage(+b.dataset.pg); o.remove(); } else if (e.target === o || e.target.id === 'cm-x') o.remove(); };
+}
 function redrawAnnots() {
   const el = contentEl(); if (!el) return;
   const r = el.getBoundingClientRect(), w = document.getElementById('viewer-wrap').getBoundingClientRect(), c = viewerContainer.getBoundingClientRect();
@@ -2318,10 +2376,11 @@ function redrawAnnots() {
   asvg.style.clipPath = `inset(${c.top-w.top}px ${w.right-c.right}px ${w.bottom-c.bottom}px ${c.left-w.left}px)`;
   const X = x => (r.left - w.left + x * r.width).toFixed(1), Y = y => (r.top - w.top + y * r.height).toFixed(1);
   const all = drawing ? [...list, { id:'', t: drawing.t, c: drawing.c, pts: drawing.pts, r: drawing.r }] : list;
+  let nn = 0;
   asvg.innerHTML = all.map(a => {
     if (a.t === 'pen' && a.pts.length > 1) return `<polyline data-id="${a.id}" data-by="${escapeHtml(a.name||'')}" points="${a.pts.map(p => X(p[0]) + ',' + Y(p[1])).join(' ')}" fill="none" stroke="${a.c}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`;
     if (a.t === 'hl' && a.r) return `<rect data-id="${a.id}" x="${X(a.r[0])}" y="${Y(a.r[1])}" width="${(a.r[2]*r.width).toFixed(1)}" height="${(a.r[3]*r.height).toFixed(1)}" fill="${a.c}" fill-opacity=".35"/>`;
-    if (a.t === 'note') return `<text class="note" data-id="${a.id}" data-text="${escapeHtml(a.text)}" data-by="${escapeHtml(a.name||'')}" x="${X(a.x)}" y="${Y(a.y)}" font-size="22">📝</text>`;
+    if (a.t === 'note') { const n = ++nn; return `<g class="note" data-id="${a.id}" data-text="${escapeHtml(a.text)}" data-by="${escapeHtml(a.name||'')}" transform="translate(${X(a.x)},${Y(a.y)})"><circle r="13" fill="#ffd933" stroke="#8a6d00" stroke-width="1.5"/><text text-anchor="middle" dy=".35em" font-size="13" font-weight="700" fill="#000">${n}</text></g>`; }
     return '';
   }).join('');
 }
