@@ -1,76 +1,108 @@
-# `coop-reader` (P2P WASM Collaborative Document Reader)
+# `coop-reader` — collaborative document reader
 
-A secure, serverless, peer-to-peer (P2P) document and media reader running entirely within browser WebAssembly (WASM) environments. This application allows multiple users to read documents synchronously together while ensuring **the source document never leaves the host system's local memory or browser sandbox**.
+Read documents together in real time. Everything runs in the browser (static files, no backend of your own required): the host opens a file, shares a link or code, and everyone follows along. Connections are peer-to-peer (WebRTC via PeerJS), with optional relay fallbacks for difficult networks.
 
----
-
-## ✨ Key Features
-
-* **Serverless & Secure P2P Architecture**: Utilizes WebRTC data channels via PeerJS. Files are securely transferred directly into peers' local WASM sandboxes without hitting any central server storage.
-* **Multi-Format Support**:
-  * **Documents & Spreadsheets**: PDF, DOCX, XLSX, EPUB, AZW3, MOBI (powered by Pyodide Python runtime and PDF.js).
-  * **Images**: PNG, JPG, JPEG, WEBP, GIF.
-* **Direct URL Joining**: Shareable deep links (`/coop-reader/<session-id>`) for instant session joining, with robust error handling for offline or non-existent rooms.
-* **Real-Time Synchronization**: Synchronizes active page states, views, and navigation across all connected participants instantly.
-* **Multi-User Cursors**: Live visual cursor tracking showing where other participants are looking within the document container.
-* **Comprehensive Reader Controls**:
-  * Direct page jump input.
-  * Zoom In / Zoom Out.
-  * Fit to Width & Fit to Height layout views.
-  * Fullscreen toggle.
-  * Toggle-able touch/mouse swipe gestures and keyboard navigation (Arrow keys, Spacebar, Page Up/Down).
-* **Automated CI/CD**: Pre-configured GitHub Actions workflow for seamless deployment to GitHub Pages.
+> **Privacy note:** the document is sent to each peer's browser. It is not stored on any server. If the optional relay server is used, the document passes *through* it in transit, so whoever runs that relay could see it.
 
 ---
 
-## 🚀 Quick Start (Local Development)
+## Features
 
-1. **Clone the Repository**:
-   ```bash
-   git clone https://github.com/vizkidd/coop-reader.git
-   cd coop-reader
-   ```
-   
-3. **Project Structure**:
-  ```text
-  coop-reader/
-  ├── .github/
-  │   └── workflows/
-  │       └── deploy.yml
-  ├── src/
-  │   ├── index.html
-  │   └── 404.html
-  ├── package.json
-  └── README.md
-  ```
-3. **Run Locally**:
-Using `http-server` (or any static local server):
-  ```bash
-  npm install
-  npm run dev
-  ```
-Open `http://localhost:3000` in your browser.
+### Sessions
+- **Create / join** with a session code or a share link (`/coop-reader/<session-id>`).
+- **Optional password** (salted hash). The share link can include it.
+- **Auto-reconnect:** peers rejoin automatically after drops, reloads, or switching apps; heartbeat detects dead connections.
+- **Profile picture and name** shown to others.
+
+### Documents
+| Format | Support |
+|---|---|
+| PDF | Full rendering (PDF.js), outline-based contents |
+| Images (PNG, JPG, WEBP, GIF) | Full |
+| DOCX | Text and tables, split into pages; heading-based contents |
+| XLSX | Cell values per sheet as text pages; one contents entry per sheet |
+| EPUB | Text in reading order; chapter-based contents |
+| TXT / MD / CSV | Plain text pages |
+| MOBI / AZW3 | **Best-effort text extraction only**; DRM-protected files are not supported |
+
+DOCX, XLSX, EPUB and MOBI/AZW3 are shown as extracted text, not with their original layout. Python parsing (Pyodide) is loaded only when one of these formats is opened.
+
+### Reading together
+- Page sync across everyone; **detach** to browse on your own, then **re-sync** to the host's page.
+- Contents panel and previous/next chapter buttons.
+- Zoom, fit to width/height, fullscreen (with a fallback for iPhone), swipe and keyboard navigation.
+- Live cursors for mouse and touch, shown relative to the page so they line up across devices.
+
+### Annotations and comments
+- Pen, highlight and numbered comment notes, with colour choice and an eraser (peers erase only their own; the host can clear a page).
+- Tap a comment to read it; the **Comments** list jumps to any comment.
+- Synced live to everyone, including late joiners.
+- **Export:** annotated **PDF** (drawings, highlights, numbered notes, plus a comments page that supports Latin, Greek, Cyrillic, Vietnamese and Devanagari text; CJK, Arabic and emoji print as “?”) and annotated **PNG** (with a comment legend). For DOCX/XLSX/EPUB/MOBI/TXT, which cannot hold them, you can download an **annotations report (.md)** instead.
+- Host / solo annotations are saved in your browser (local storage) and restored when you reopen the same file. **Annotations data (.json)** can be downloaded and re-imported with **Import**. Peers always receive the host's copy; opening a different file starts clean.
+
+### Voice and chat
+- Text chat.
+- Voice chat between peers (WebRTC audio). Speaking, typing and activity indicators with a fading avatar bubble.
+- Voice needs a direct or TURN connection; it is **not** available through the peer-relay or relay-server routes.
+
+### Host controls (👥 panel and menu)
+- See each peer's connection route and current page.
+- **Mute**, **ping** and **kick** peers.
+- Toggle: peers may **download**, **open files**, **annotate and comment**.
+- Toggle speaking / typing / activity indicators for everyone.
+- Peers get a reduced interface (no host or sharing controls). This is a **UI-level** restriction: a peer's browser still receives the file, so download limits are not cryptographically enforced.
+
+### Connectivity (menu → 🌐 Network)
+Connections try these routes in order:
+1. **Direct** WebRTC (STUN).
+2. **TURN relay** if you configure one (credentials URL or ICE JSON). Needed across Wi-Fi / mobile data in many cases.
+3. **Peer relay:** another connected peer dials the stuck newcomer and forwards data (one hop; the helper can see the traffic).
+4. **WebSocket relay server:** deploy `relay-worker.js` (below), or rely on the built-in default address, which is used **only if it answers a reachability check**.
+
+Options:
+- **Automatic** (default) or **Relay server only** mode.
+- **Private mode:** forces all WebRTC through TURN to hide your IP from other participants (requires TURN; connections fail without it).
+- Peers see how each person is connected: ⚡ direct, 🔒 TURN, 🔗 via peer, 🌐 relay server.
+
+### Mobile
+Screen stays awake during a session, password entry uses an in-page dialog, and iPhone/Android quirks (fullscreen, backgrounding, touch panning) are handled.
 
 ---
 
-## 📖 Usage Guide
-
-1. **Host a Session**:
-* Open the app and click **Create Session**.
-* Copy the generated Host Code or use the **Copy** button to copy the direct join link.
-* Upload a supported file (`.pdf`, `.docx`, `.xlsx`, `.epub`, `.jpg`, etc.). The file is processed locally and safely sent to connected peers' WASM sandboxes.
-
-
-2. **Join a Session**:
-* Open a shareable link (`https://vizkidd.github.io/coop-reader/<session-id>`) or paste the session code into the input field and click **Join**.
-* Read along as the host controls the document, or use local controls (zoom, fit width/height, fullscreen) as preferred.
+## Not implemented
+- Editing XLSX, DOCX or PDF forms.
+- Voice through relay routes; end-to-end encryption of relay traffic.
+- Original layout for DOCX / EPUB / MOBI.
 
 ---
 
-## 🛠️ Tech Stack
+## Files
+```text
+index.html        the app (all UI and networking)
+worker.js         Pyodide document parser (DOCX / XLSX / EPUB / MOBI / TXT)
+404.html          redirects deep links (/<session-id>) back to the app (GitHub Pages)
+relay-worker.js   optional WebSocket relay (Cloudflare Worker + Durable Object)
+wrangler.toml     config for deploying the relay
+```
+Keep `index.html`, `worker.js` and `404.html` in the same folder.
 
-* **WebAssembly Runtime**: [Pyodide](https://pyodide.org/) (Python ecosystem running in browser via WebAssembly).
-* **Networking & Signaling**: [PeerJS](https://peerjs.com/) (WebRTC P2P DataChannels).
-* **Rendering Engine**: [PDF.js](https://mozilla.github.io/pdf.js/) for canvas-based visual PDF rendering.
-* **Parsing Libraries**: `pypdf`, `python-docx`, `openpyxl`.
-* **Hosting**: GitHub Pages with GitHub Actions automation.
+## Run locally
+```bash
+npx http-server -p 3000      # or any static server
+```
+Open `http://localhost:3000`. A secure context (https or localhost) is required for WebRTC, clipboard and microphone.
+
+## Deploy the relay (optional, recommended)
+```bash
+npx wrangler deploy          # run in the folder with relay-worker.js and wrangler.toml
+```
+Copy the printed `wss://…workers.dev` address into **Network → Relay server** and press **Test**. Share links carry a custom relay address so peers need no setup.
+
+---
+
+## Tech stack
+- **Networking:** [PeerJS](https://peerjs.com/) (WebRTC) with optional STUN/TURN and a WebSocket relay.
+- **PDF rendering:** [PDF.js](https://mozilla.github.io/pdf.js/); **PDF export:** [pdf-lib](https://pdf-lib.js.org/) with fontkit and Noto Sans for Unicode comments (all loaded from a CDN on first export).
+- **Parsing:** [Pyodide](https://pyodide.org/) with `python-docx` and `openpyxl`.
+- **Relay:** Cloudflare Workers + Durable Objects.
+- **Hosting:** static files (GitHub Pages).

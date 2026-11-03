@@ -103,6 +103,7 @@
     #diagnostics .diag-actions{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
     #viewer-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:0 16px 8px}
     #viewer-toolbar button{min-height:38px}
+    #annot-group{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
     #viewer-wrap{position:relative;margin:0 16px}
     #viewer-container{position:relative;margin:0;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-sm);min-height:55vh;display:flex;align-items:flex-start;overflow:auto;touch-action:pan-x pan-y;-webkit-overflow-scrolling:touch}
     .net-opt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;cursor:pointer}
@@ -204,15 +205,6 @@
     <button onclick="nextPage()" aria-label="Next page">›</button>
     <span class="page-indicator"><span data-page-num>0</span> / <span data-page-count>0</span></span>
   </div>
-  <div class="menu-group" id="annot-group" style="display:none">
-    <span class="menu-label">Annotate</span>
-    <button class="secondary" data-tool="pen" onclick="setTool('pen')">✏️ Pen</button>
-    <button class="secondary" data-tool="hl" onclick="setTool('hl')">🖍 Highlight</button>
-    <button class="secondary" data-tool="note" onclick="setTool('note')">📝 Note</button>
-    <button class="secondary" data-tool="erase" onclick="setTool('erase')">🧽 Erase</button>
-    <input type="color" id="annot-color" value="#e11d48" aria-label="Colour" style="width:40px;height:36px;padding:0" />
-    <button class="secondary host-only" onclick="clearPageAnnots()">Clear page</button>
-  </div>
   <div class="menu-group">
     <span class="menu-label">Chapter</span>
     <button class="secondary" onclick="prevChapter()" aria-label="Previous chapter">‹ Ch</button>
@@ -285,6 +277,16 @@
   <button class="secondary" id="btn-toc" onclick="openToc()">📑 Contents</button>
   <button class="secondary" id="btn-comments" onclick="showComments()">💬 Comments</button>
   <button class="secondary hidden" id="btn-download" aria-label="Download file">⬇ Download</button>
+  <div id="annot-group" style="display:none">
+    <button class="secondary" data-tool="pen" onclick="setTool('pen')">✏️ Pen</button>
+    <button class="secondary" data-tool="hl" onclick="setTool('hl')">🖍 Highlight</button>
+    <button class="secondary" data-tool="note" onclick="setTool('note')">📝 Comment</button>
+    <button class="secondary" data-tool="erase" onclick="setTool('erase')">🧽 Erase</button>
+    <input type="color" id="annot-color" value="#e11d48" aria-label="Colour" style="width:42px;height:38px;padding:2px" />
+    <button class="secondary host-only" onclick="clearPageAnnots()">Clear page</button>
+    <button class="secondary host-only" onclick="document.getElementById('annot-import').click()">Import</button><input type="file" id="annot-import" accept=".json,application/json" hidden />
+  </div>
+  <span id="annot-off" style="display:none;opacity:.65;font-size:.85rem;align-self:center">✏️ Annotations are view-only (host setting)</span>
 </div>
 <div id="viewer-wrap">
   <main id="viewer-container">
@@ -1156,14 +1158,41 @@ function toggleDownloadPermission() {
   updateDownloadButton();
   notify(state.downloadAllowed?'Downloads enabled.':'Downloads disabled.','info');
 }
+function canDownload() { return isHost || !lastJoinCode || !!state.downloadAllowed; }   // host/solo always; peers need host clearance
 function updateDownloadButton() {
   const btn = document.getElementById('btn-download');
-  btn.classList.toggle('hidden', !(state.downloadAllowed && !!cachedFileBytes && !!cachedFilename));
+  btn.classList.toggle('hidden', !(canDownload() && !!cachedFileBytes && !!cachedFilename));
 }
 function saveBlob(blob, name) {
   const url = URL.createObjectURL(blob), a = document.createElement('a');
   a.href = url; a.download = name; a.style.display = 'none'; document.body.appendChild(a); a.click();
   setTimeout(() => { try { document.body.removeChild(a); } catch (_) {} URL.revokeObjectURL(url); }, 1000);
+}
+const docKey = () => 'coop-annots:' + cachedFilename + ':' + (cachedFileBytes ? cachedFileBytes.byteLength : 0);
+let annotSaveT = null;
+function scheduleAnnotSave() {   // host / solo only; peers always get the host's copy
+  if (!(isHost || !lastJoinCode) || !cachedFileBytes || !cachedFilename) return;
+  clearTimeout(annotSaveT);
+  annotSaveT = setTimeout(() => { try { if (hasAnnots()) { const j = JSON.stringify(annots); if (j.length < 1.5e6) localStorage.setItem(docKey(), j); } else localStorage.removeItem(docKey()); } catch (_) {} }, 800);
+}
+function loadSavedAnnots() {
+  if (!(isHost || !lastJoinCode)) return;
+  try {
+    const raw = localStorage.getItem(docKey()); if (!raw) return; const out = {};
+    for (const [pg, l] of Object.entries(JSON.parse(raw))) out[pg] = (Array.isArray(l) ? l : []).map(cleanItem).filter(Boolean);
+    annots = out; annotSig = ''; if (hasAnnots()) notify('Restored your saved annotations for this file.', 'info', 3500);
+  } catch (_) {}
+}
+function importAnnots(file) {
+  file.text().then(t => {
+    try {
+      const d = JSON.parse(t); if (d.app !== 'coop-reader' || !d.annots) throw 0;
+      if (hasAnnots() && !confirm('Replace the current annotations with the imported ones?')) return;
+      const out = {}; for (const [pg, l] of Object.entries(d.annots)) out[pg] = (Array.isArray(l) ? l : []).map(cleanItem).filter(Boolean);
+      annots = out; annotSig = ''; scheduleAnnotSave(); if (isHost) broadcast({ type:'ANNOT_ALL', all: annots });
+      notify(`Imported ${Object.values(out).reduce((n, l) => n + l.length, 0)} annotations` + (d.file && d.file !== cachedFilename ? ` (made for “${d.file}”)` : ''), 'success', 4500);
+    } catch (_) { notify('That is not a coop-reader annotations file.', 'error'); }
+  });
 }
 function hasAnnots() { return Object.values(annots).some(l => l && l.length); }
 async function loadPdfLib() {
@@ -1172,6 +1201,40 @@ async function loadPdfLib() {
 }
 const pdfSafe = t => String(t).replace(/[^\x20-\x7E\u00A0-\u00FF]/g, '?');
 function wrapText(t, n) { const out = []; let cur = ''; for (const w of t.split(/\s+/)) { if ((cur + ' ' + w).length > n && cur) { out.push(cur); cur = w; } else cur = cur ? cur + ' ' + w : w; } if (cur) out.push(cur); return out; }
+const FONT_SUBSETS = [['devanagari', /[\u0900-\u097F]/], ['cyrillic', /[\u0400-\u052F]/], ['greek', /[\u0370-\u03FF\u1F00-\u1FFF]/], ['vietnamese', /[\u0102\u0103\u0110\u0111\u0128\u0129\u0168\u0169\u01A0\u01A1\u01AF\u01B0\u1EA0-\u1EF9]/], ['latin-ext', /[\u0100-\u024F\u1E00-\u1EFF\u2C60-\u2C7F\uA720-\uA7FF]/], ['latin', /[\u0020-\u007E\u00A0-\u00FF\u2010-\u2027\u20AC\u2122]/]];
+const fontCache = {};
+function subsetOf(ch) { for (const [n, re] of FONT_SUBSETS) if (re.test(ch)) return n; return null; }
+async function unicodeFonts(doc, text, fallback) {
+  const need = new Set(['latin']); for (const ch of text) { const n = subsetOf(ch); if (n) need.add(n); }
+  const fonts = {};
+  try {
+    if (!window.fontkit) await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js'; sc.onload = res; sc.onerror = rej; document.head.appendChild(sc); });
+    doc.registerFontkit(window.fontkit);
+    for (const n of need) {
+      try {
+        if (!fontCache[n]) { const r = await fetch(`https://cdn.jsdelivr.net/fontsource/fonts/noto-sans@latest/${n}-400-normal.woff`); if (!r.ok) throw 0; fontCache[n] = await r.arrayBuffer(); }
+        fonts[n] = await doc.embedFont(fontCache[n], { subset: true });
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return { fonts, fallback };   // anything without a font prints as "?"
+}
+function runsOf(U, text) {
+  const runs = [];
+  for (const ch of text.replace(/[\r\n\t]+/g, ' ')) {
+    const n = subsetOf(ch); let f = n && U.fonts[n], c = ch;
+    if (!f) { f = U.fonts.latin || U.fallback; if (!/[\x20-\x7E\u00A0-\u00FF]/.test(ch)) c = '?'; }
+    const last = runs[runs.length - 1]; if (last && last.f === f) last.t += c; else runs.push({ f, t: c });
+  }
+  return runs;
+}
+const runsWidth = (U, t, size) => runsOf(U, t).reduce((w, r) => w + r.f.widthOfTextAtSize(r.t, size), 0);
+function wrapRuns(U, text, size, maxW) {
+  const out = []; let cur = '';
+  for (const w of text.split(/\s+/)) { const t = cur ? cur + ' ' + w : w; if (cur && runsWidth(U, t, size) > maxW) { out.push(cur); cur = w; } else cur = t; }
+  if (cur) out.push(cur); return out;
+}
+function drawRuns(pg, U, text, x, y, size) { for (const r of runsOf(U, text)) { pg.drawText(r.t, { x, y, size, font: r.f }); x += r.f.widthOfTextAtSize(r.t, size); } }
 async function exportAnnotatedPdf() {
   await loadPdfLib(); const { PDFDocument, rgb, StandardFonts } = PDFLib;
   const doc = await PDFDocument.load(cachedFileBytes.slice(0), { ignoreEncryption: true });
@@ -1194,9 +1257,10 @@ async function exportAnnotatedPdf() {
     }
   }
   if (comments.length) {
-    let pg = doc.addPage([595, 842]), y = 800; pg.drawText('Comments', { x: 40, y, size: 16, font }); y -= 26;
+    const U = await unicodeFonts(doc, comments.map(c => (c.by || '') + c.text).join(''), font);
+    let pg = doc.addPage([595, 842]), y = 800; drawRuns(pg, U, 'Comments', 40, y, 16); y -= 26;
     for (const c of comments) {
-      for (const l of wrapText(pdfSafe(`${c.n}. [p.${c.pg}] ${c.by || 'peer'}: ${c.text}`), 90)) { if (y < 50) { pg = doc.addPage([595, 842]); y = 800; } pg.drawText(l, { x: 40, y, size: 10, font }); y -= 14; }
+      for (const l of wrapRuns(U, `${c.n}. [p.${c.pg}] ${c.by || 'peer'}: ${c.text}`, 10, 515)) { if (y < 50) { pg = doc.addPage([595, 842]); y = 800; } drawRuns(pg, U, l, 40, y, 10); y -= 14; }
       y -= 4;
     }
   }
@@ -1205,7 +1269,7 @@ async function exportAnnotatedPdf() {
 function exportAnnotatedImage() {
   const img = document.getElementById('image-view'), W = img.naturalWidth, H = img.naturalHeight, lw = Math.max(2, W / 300);
   const notes = (annots[1] || []).filter(a => a.t === 'note'), fs = Math.max(14, Math.round(W / 60)), pad = fs * 1.4;
-  const lines = []; notes.forEach((a, i) => wrapText(pdfSafe(`${i+1}. ${a.name || 'peer'}: ${a.text}`), Math.max(30, Math.floor(W / (fs * .55)))).forEach(l => lines.push(l)));
+  const lines = []; notes.forEach((a, i) => wrapText(`${i+1}. ${a.name || 'peer'}: ${a.text}`, Math.max(30, Math.floor(W / (fs * .55)))).forEach(l => lines.push(l)));
   const legendH = lines.length ? Math.round((lines.length + 1) * pad) : 0, cv = document.createElement('canvas'); cv.width = W; cv.height = H + legendH;
   const g = cv.getContext('2d'); g.drawImage(img, 0, 0);
   let n = 0;
@@ -1227,6 +1291,7 @@ function annotationsReport() {
   return out.join('\n');
 }
 function chooseDownload(opts) {
+  opts = [...opts, { id: 'json', label: 'Annotations data (.json)', sub: 'Save now, re-import later with Import' }];
   return new Promise(res => {
     const o = document.createElement('div'); o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:12px';
     o.innerHTML = `<div style="background:var(--surface);color:inherit;padding:16px;border-radius:14px;max-width:380px;width:100%"><h3 style="margin:0 0 10px">Download</h3>${opts.map(x => `<button class="secondary" data-id="${x.id}" style="display:block;width:100%;text-align:left;margin-bottom:8px;white-space:normal"><b>${x.label}</b><br><small>${x.sub}</small></button>`).join('')}<div style="text-align:right"><button class="secondary" id="dl-x">Cancel</button></div></div>`;
@@ -1235,7 +1300,7 @@ function chooseDownload(opts) {
   });
 }
 async function downloadFile() {
-  if (!state.downloadAllowed || !cachedFileBytes || !cachedFilename) return;
+  if (!canDownload() || !cachedFileBytes || !cachedFilename) return;
   try {
     let mode = 'orig';
     if (hasAnnots()) {
@@ -1251,6 +1316,7 @@ async function downloadFile() {
       if (state.fileType === 'pdf') { blob = new Blob([await exportAnnotatedPdf()], { type: 'application/pdf' }); name = name.replace(/(\.pdf)?$/i, '-annotated.pdf'); }
       else { blob = await exportAnnotatedImage(); name = name.replace(/\.[^.]+$/, '') + '-annotated.png'; }
     } else if (mode === 'report') { blob = new Blob([annotationsReport()], { type: 'text/markdown' }); name = name.replace(/\.[^.]+$/, '') + '-annotations.md'; }
+    else if (mode === 'json') { blob = new Blob([JSON.stringify({ app: 'coop-reader', file: cachedFilename, size: cachedFileBytes.byteLength, annots })], { type: 'application/json' }); name = name.replace(/\.[^.]+$/, '') + '-annotations.json'; }
     else blob = new Blob([cachedFileBytes], { type: 'application/octet-stream' });
     saveBlob(blob, name); notify(`Downloading ${name}…`, 'success');
   } catch (e) { notify(`Download failed: ${e.message || e}`, 'error'); }
@@ -1898,7 +1964,7 @@ async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
   updateDownloadButton();
   await renderCurrentPage();
   loadToc();
-  annots = {}; annotSig = '';
+  annots = {}; annotSig = ''; loadSavedAnnots();
   if (!isHost) { const hc = connections.find(c => c.open); if (hc) try { hc.send({ type:'ANNOT_REQ' }); } catch (_) {} }
   if (isHost) broadcast({ type:'SYNC', state });
 }
@@ -2289,11 +2355,13 @@ function updateHostSettings() {
 let annots = {}, tool = null, drawing = null, annotSig = '';
 const asvg = document.getElementById('annot-svg');
 const annotColor = () => document.getElementById('annot-color').value;
-function canAnnotate() { return isHost || (!!lastJoinCode && hostSettings.peerAnnotate); }
-function updateAnnotUI() { document.getElementById('viewer-toolbar').style.display = cachedFileBytes ? 'flex' : 'none'; const ok = canAnnotate(); document.getElementById('annot-group').style.display = ok ? '' : 'none'; if (!ok && tool) setTool(null); }
+function canAnnotate() { return isHost || !lastJoinCode || !!hostSettings.peerAnnotate; }
+function updateAnnotUI() { updateDownloadButton(); document.getElementById('viewer-toolbar').style.display = cachedFileBytes ? 'flex' : 'none'; const ok = canAnnotate(); document.getElementById('annot-group').style.display = ok ? '' : 'none'; document.getElementById('annot-off').style.display = (!ok && cachedFileBytes) ? '' : 'none'; if (!ok && tool) setTool(null); }
 setInterval(updateAnnotUI, 1000);
+let embedNoteShown = false;
 function setTool(t) {
   tool = (tool === t) ? null : t;
+  if (tool && state.fileType === 'other' && !embedNoteShown) { embedNoteShown = true; notify('Annotations work on this file type too. They can’t be embedded in its download, but you can save an annotations report (.md).', 'info', 6000); }
   document.querySelectorAll('[data-tool]').forEach(b => b.style.outline = b.dataset.tool === tool ? '2px solid var(--primary)' : '');
   const draw = tool === 'pen' || tool === 'hl' || tool === 'note';
   asvg.style.pointerEvents = draw ? 'auto' : 'none'; asvg.style.touchAction = draw ? 'none' : ''; asvg.classList.toggle('erase', tool === 'erase');
@@ -2313,7 +2381,7 @@ function applyAnnot(op, page, item, id) {
   if (op === 'add') { const it = cleanItem(item); if (it) (annots[page] = annots[page] || []).push(it); }
   else if (op === 'del') annots[page] = (annots[page] || []).filter(a => a.id !== id);
   else if (op === 'clear') annots[page] = [];
-  annotSig = '';
+  annotSig = ''; scheduleAnnotSave();
 }
 function commitItem(item) {
   item.id = (myPeerId || 'me').replace(/[^\w-]/g, '') + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
@@ -2325,12 +2393,18 @@ function delAnnot(id) {
   if (!isHost && it.by !== (myPeerId || '').replace(/[^\w-]/g, '')) return notify('You can only erase your own annotations.', 'warning', 2500);
   applyAnnot('del', state.currentPage, null, id); broadcast({ type:'ANNOT', op:'del', page: state.currentPage, id });
 }
-function clearPageAnnots() { if (!isHost || !confirm('Clear all annotations on this page?')) return; applyAnnot('clear', state.currentPage); broadcast({ type:'ANNOT', op:'clear', page: state.currentPage }); }
+function clearPageAnnots() { if ((!isHost && lastJoinCode) || !confirm('Clear all annotations on this page?')) return; applyAnnot('clear', state.currentPage); broadcast({ type:'ANNOT', op:'clear', page: state.currentPage }); }
+function thinPts(p) {   // drop near-duplicate points, round to 4 decimals: far smaller to sync/store
+  const out = [p[0]]; let last = p[0];
+  for (let i = 1; i < p.length - 1; i++) if (Math.hypot(p[i][0] - last[0], p[i][1] - last[1]) > 0.004) { out.push(p[i]); last = p[i]; }
+  out.push(p[p.length - 1]); return out.map(q => [Math.round(q[0] * 1e4) / 1e4, Math.round(q[1] * 1e4) / 1e4]);
+}
 function contentRel(e) { const r = contentEl().getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; }
-asvg.addEventListener('pointerdown', e => {
+asvg.addEventListener('pointerdown', async e => {
   if (!tool || !canAnnotate() || tool === 'erase') return;
+  if (e.target.closest && e.target.closest('.note')) return;   // a tap on an existing comment opens it
   const p = contentRel(e);
-  if (tool === 'note') { const text = prompt('Comment:'); if (text && text.trim()) commitItem({ t:'note', c: annotColor(), x: p[0], y: p[1], text: text.trim() }); return; }
+  if (tool === 'note') { e.preventDefault(); const text = await askComment(); if (text) commitItem({ t:'note', c: annotColor(), x: p[0], y: p[1], text }); return; }
   drawing = { t: tool, c: annotColor(), pts: [p], r: [p[0], p[1], 0, 0], p0: p };
   try { asvg.setPointerCapture(e.pointerId); } catch (_) {} e.preventDefault();
 });
@@ -2342,7 +2416,7 @@ asvg.addEventListener('pointermove', e => {
 });
 asvg.addEventListener('pointerup', () => {
   if (!drawing) return; const d = drawing; drawing = null;
-  if (d.t === 'pen' && d.pts.length > 1) commitItem({ t:'pen', c: d.c, pts: d.pts });
+  if (d.t === 'pen' && d.pts.length > 1) commitItem({ t:'pen', c: d.c, pts: thinPts(d.pts) });
   else if (d.t === 'hl' && d.r[2] > 0.005 && d.r[3] > 0.005) commitItem({ t:'hl', c: d.c, r: d.r });
   annotSig = '';
 });
@@ -2356,31 +2430,47 @@ function hideNotePop() { const p = document.getElementById('note-pop'); if (p) p
 function showNotePop(g, x, y) {
   hideNotePop(); const p = document.createElement('div'); p.id = 'note-pop';
   p.style.cssText = `position:fixed;z-index:500;max-width:min(280px,90vw);left:${Math.max(8, Math.min(x, innerWidth - 290))}px;top:${Math.min(y + 14, innerHeight - 120)}px;background:#fff8d6;color:#222;border:1px solid #c9a800;border-radius:10px;padding:10px 12px;box-shadow:0 6px 20px rgba(0,0,0,.35);font-size:.9rem;white-space:pre-wrap;word-break:break-word`;
-  p.innerHTML = `<b style="display:block;margin-bottom:4px">${escapeHtml(g.dataset.by || 'Someone')}</b>${escapeHtml(g.dataset.text || '')}`;
+  const it = (annots[state.currentPage] || []).find(a => a.id === g.dataset.id);
+  const mine = !!it && canAnnotate() && (isHost || !lastJoinCode || it.by === (myPeerId || '').replace(/[^\w-]/g, ''));
+  p.innerHTML = `<b style="display:block;margin-bottom:4px">${escapeHtml(g.dataset.by || 'Someone')}</b>${escapeHtml(g.dataset.text || '')}${mine ? '<div style="text-align:right;margin-top:8px"><button id="np-del" class="secondary" style="min-height:32px">Delete</button></div>' : ''}`;
   document.body.appendChild(p);
+  const d = p.querySelector('#np-del'); if (d) d.onclick = () => { delAnnot(g.dataset.id); hideNotePop(); };
+}
+function askComment() {
+  return new Promise(res => {
+    const o = document.createElement('div'); o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:12px';
+    o.innerHTML = '<div style="background:var(--surface);color:inherit;padding:16px;border-radius:14px;max-width:380px;width:100%"><h3 style="margin:0 0 10px">New comment</h3><textarea id="cm-ta" rows="4" maxlength="500" style="width:100%" placeholder="Write a comment…"></textarea><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="secondary" id="cm-cancel">Cancel</button><button id="cm-save">Add</button></div></div>';
+    document.body.appendChild(o); const ta = o.querySelector('#cm-ta'); ta.focus();
+    const done = v => { o.remove(); res(v); };
+    o.querySelector('#cm-save').onclick = () => done(ta.value.trim()); o.querySelector('#cm-cancel').onclick = () => done('');
+    ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) done(ta.value.trim()); });
+  });
 }
 function showComments() {
   const items = []; for (const [pg, list] of Object.entries(annots)) (list || []).filter(a => a.t === 'note').forEach(a => items.push({ pg: +pg, a }));
   items.sort((x, y) => x.pg - y.pg);
   const o = document.createElement('div'); o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:12px';
-  o.innerHTML = `<div style="background:var(--surface);color:inherit;padding:16px;border-radius:14px;max-width:460px;width:100%;max-height:85vh;overflow:auto"><h3 style="margin:0 0 10px">Comments (${items.length})</h3>${items.length ? items.map(it => `<button class="secondary" data-pg="${it.pg}" style="display:block;width:100%;text-align:left;margin-bottom:6px;white-space:normal"><small>Page ${it.pg} · ${escapeHtml(it.a.name || 'someone')}</small><br>${escapeHtml(it.a.text)}</button>`).join('') : '<p style="opacity:.7">No comments yet.</p>'}<div style="text-align:right;margin-top:8px"><button class="secondary" id="cm-x">Close</button></div></div>`;
+  o.innerHTML = `<div style="background:var(--surface);color:inherit;padding:16px;border-radius:14px;max-width:460px;width:100%;max-height:85vh;overflow:auto"><h3 style="margin:0 0 10px">Comments (${items.length})</h3>${items.length ? items.map(it => `<button class="secondary" data-pg="${it.pg}" style="display:block;width:100%;text-align:left;margin-bottom:6px;white-space:normal"><small>#${items.indexOf(it) + 1} · Page ${it.pg} · ${escapeHtml(it.a.name || 'someone')}</small><br>${escapeHtml(it.a.text)}</button>`).join('') : '<p style="opacity:.7">No comments yet.</p>'}<div style="text-align:right;margin-top:8px"><button class="secondary" id="cm-x">Close</button></div></div>`;
   document.body.appendChild(o);
   o.onclick = e => { const b = e.target.closest('[data-pg]'); if (b) { goToPage(+b.dataset.pg); o.remove(); } else if (e.target === o || e.target.id === 'cm-x') o.remove(); };
 }
+function notesBefore() { let c = 0; for (const pg of Object.keys(annots)) if (+pg < state.currentPage) c += (annots[pg] || []).filter(a => a.t === 'note').length; return c; }
 function redrawAnnots() {
+  if (document.hidden || !cachedFileBytes) return;
+  if (!asvg.firstChild && !drawing && !hasAnnots()) return;   // nothing to draw or clear
   const el = contentEl(); if (!el) return;
   const r = el.getBoundingClientRect(), w = document.getElementById('viewer-wrap').getBoundingClientRect(), c = viewerContainer.getBoundingClientRect();
   const list = annots[state.currentPage] || [];
-  const sig = [r.left|0, r.top|0, r.width|0, r.height|0, state.currentPage, list.length, drawing ? drawing.pts.length + drawing.r[2] : 0].join(',');
+  const sig = [r.left|0, r.top|0, r.width|0, r.height|0, state.currentPage, list.length, drawing ? drawing.pts.length + drawing.r[2] : 0, notesBefore()].join(',');
   if (sig === annotSig) return; annotSig = sig;
   asvg.style.clipPath = `inset(${c.top-w.top}px ${w.right-c.right}px ${w.bottom-c.bottom}px ${c.left-w.left}px)`;
   const X = x => (r.left - w.left + x * r.width).toFixed(1), Y = y => (r.top - w.top + y * r.height).toFixed(1);
   const all = drawing ? [...list, { id:'', t: drawing.t, c: drawing.c, pts: drawing.pts, r: drawing.r }] : list;
-  let nn = 0;
+  let nn = notesBefore();
   asvg.innerHTML = all.map(a => {
     if (a.t === 'pen' && a.pts.length > 1) return `<polyline data-id="${a.id}" data-by="${escapeHtml(a.name||'')}" points="${a.pts.map(p => X(p[0]) + ',' + Y(p[1])).join(' ')}" fill="none" stroke="${a.c}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`;
     if (a.t === 'hl' && a.r) return `<rect data-id="${a.id}" x="${X(a.r[0])}" y="${Y(a.r[1])}" width="${(a.r[2]*r.width).toFixed(1)}" height="${(a.r[3]*r.height).toFixed(1)}" fill="${a.c}" fill-opacity=".35"/>`;
-    if (a.t === 'note') { const n = ++nn; return `<g class="note" data-id="${a.id}" data-text="${escapeHtml(a.text)}" data-by="${escapeHtml(a.name||'')}" transform="translate(${X(a.x)},${Y(a.y)})"><circle r="13" fill="#ffd933" stroke="#8a6d00" stroke-width="1.5"/><text text-anchor="middle" dy=".35em" font-size="13" font-weight="700" fill="#000">${n}</text></g>`; }
+    if (a.t === 'note') { const n = ++nn; return `<g class="note" data-id="${a.id}" data-text="${escapeHtml(a.text)}" data-by="${escapeHtml(a.name||'')}" transform="translate(${X(a.x)},${Y(a.y)})"><title>${escapeHtml((a.name || '') + ': ' + a.text)}</title><circle r="13" fill="#ffd933" stroke="#8a6d00" stroke-width="1.5"/><text text-anchor="middle" dy=".35em" font-size="13" font-weight="700" fill="#000">${n}</text></g>`; }
     return '';
   }).join('');
 }
@@ -2605,6 +2695,8 @@ function openNetwork() {
     else notify('Saved. Applies to your next session.', 'success', 3500);
   };
 }
+
+document.getElementById('annot-import').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) importAnnots(f); });
 
 // ==================== INIT ====================
 updateDownloadButton();
