@@ -372,7 +372,7 @@ let sessionAuth = { required: false, salt: null, hash: null };
 let pendingAuthHash = null;
 let cachedFileBytes = null, cachedFilename = '';
 let pdfDoc = null, currentZoom = 1, hasFitted = false, userZoomed = false;
-let lastJoinCode = null, lastAuthHash = null, rejoinTimer = null, rejoinAttempts = 0, detached = false, syncedPage = 1, tocItems = [];
+let lastJoinCode = null, lastAuthHash = null, rejoinTimer = null, rejoinAttempts = 0, preAuthDrops = 0, detached = false, syncedPage = 1, tocItems = [];
 let remoteCursors = {};
 const incomingTransfers = new Map(), outgoingTransfers = new Map();
 
@@ -768,7 +768,11 @@ function attachConnectionHandlers(conn) {
     removeRemoteAudio(conn.peer);
     voicePeers.delete(conn.peer);
     updateVoiceUI(); updatePeerListUI(); updateChatAvailability();
-    if (!isHost && connections.length===0) { notify('Disconnected — reconnecting…','warning'); scheduleRejoin(); }
+    if (!isHost && connections.length===0) {
+      if (!conn._synced) preAuthDrops++; else preAuthDrops = 0;
+      if (preAuthDrops >= 3) { lastJoinCode = null; notify('Could not finish joining — the host closed the connection before authentication completed. Enter the password in the Join form and press Join.','error',12000); setStatus('Not connected','error'); }
+      else { notify('Disconnected — reconnecting…','warning'); scheduleRejoin(); }
+    }
     else notify(`Peer ${String(conn.peer).substring(0,6)}… disconnected`,'warning');
     updateDiagnosticsUI();
   });
@@ -993,7 +997,7 @@ async function startHost() {
         if (conn.open && !conn._authenticated) {
           try { conn.close(); } catch (_) {}
         }
-      }, 15000);
+      }, 120000);
       conn.on('close', () => { if (authTimeout) clearTimeout(authTimeout); });
     }
 
@@ -1018,7 +1022,7 @@ function joinSession(targetCode, isRetry) {
   const code = (targetCode || document.getElementById('join-code').value || '').trim();
   if (!code) return notify('Enter a host code first.','warning');
   if (code === myPeerId) return notify('You cannot join your own session.','warning');
-  lastJoinCode = code; if (!isRetry) rejoinAttempts = 0; clearTimeout(rejoinTimer); rejoinTimer = null;
+  lastJoinCode = code; if (!isRetry) { rejoinAttempts = 0; preAuthDrops = 0; } clearTimeout(rejoinTimer); rejoinTimer = null;
   try { sessionStorage.setItem('coop-session', code); } catch (_) {}
   if (!window.RTCPeerConnection) { showError({type:'browser-incompatible'}); return; }
   connectionGeneration++;
@@ -1070,7 +1074,7 @@ function joinSession(targetCode, isRetry) {
     connections.push(conn);
     updatePeerListUI(); updateChatAvailability();
     conn.on('open', () => {
-      clearTimeout(timeout); rejoinAttempts = 0;
+      clearTimeout(timeout);
       hideError();
       setStatus('Connected — awaiting session data…','info');
       sendProfile(); reportPage();
@@ -1485,6 +1489,19 @@ function updateTransferProgress(filename, received, total, done=false) {
 }
 
 // ==================== MESSAGE DISPATCH ====================
+function askPassword() {
+  return new Promise(res => {
+    const o = document.createElement('div');
+    o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px';
+    o.innerHTML = '<div style="background:var(--surface);color:inherit;padding:18px;border-radius:12px;max-width:340px;width:100%;box-shadow:0 8px 30px rgba(0,0,0,.4)"><h3 style="margin:0 0 10px">Session password</h3><input id="pw-ask" type="password" autocomplete="current-password" style="width:100%;margin-bottom:12px" /><div style="display:flex;gap:8px;justify-content:flex-end"><button class="secondary" id="pw-cancel">Cancel</button><button id="pw-ok">Join</button></div></div>';
+    document.body.appendChild(o);
+    const i = o.querySelector('#pw-ask'); i.focus();
+    const done = v => { o.remove(); res(v); };
+    o.querySelector('#pw-ok').onclick = () => done(i.value.trim());
+    o.querySelector('#pw-cancel').onclick = () => done('');
+    i.addEventListener('keydown', e => { if (e.key === 'Enter') done(i.value.trim()); });
+  });
+}
 async function handleNetworkMessage(conn, data) {
   if (!data || typeof data !== 'object') return;
   conn._lastPong = Date.now();   // any traffic proves liveness
@@ -1493,7 +1510,7 @@ async function handleNetworkMessage(conn, data) {
     let hash = pendingAuthHash;
     if (!hash) {
       let pw = document.getElementById('join-password').value.trim();
-      if (!pw) pw = prompt('This session is password protected. Enter the password:') || '';
+      if (!pw) pw = await askPassword();
       if (!pw) { lastJoinCode = null; notify('Password required.','error',6000); try{conn.close()}catch(_){} return; }
       try { hash = await hashPassword(pw, data.salt); }
       catch(e) { notify('Auth failed: '+(e.message||e),'error'); try{conn.close()}catch(_){} return; }
@@ -1575,6 +1592,7 @@ async function handleNetworkMessage(conn, data) {
     const keepPage = state.currentPage; syncedPage = (data.state && data.state.currentPage) || syncedPage;
     state = { ...state, ...(data.state||{}) }; if (detached) state.currentPage = keepPage;
     conn._authenticated = true;
+    if (!conn._synced) { conn._synced = true; preAuthDrops = 0; rejoinAttempts = 0; sendProfile(); reportPage(); }   // profile/page were dropped by the host before auth
     updateDownloadButton();
     if (isHost) document.getElementById('download-perm-toggle').checked = !!state.downloadAllowed;
     if (cachedFileBytes) renderCurrentPage();
