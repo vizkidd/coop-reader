@@ -46,6 +46,11 @@
     input[type="text"],input[type="number"],input[type="password"]{min-height:var(--touch);padding:0 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);outline:none;transition:border-color .15s}
     input[type="text"]:focus,input[type="number"]:focus,input[type="password"]:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.15)}
     input[type="checkbox"]{width:20px;height:20px;accent-color:var(--primary)}
+    :root{color-scheme:light dark}
+    textarea,input:not([type]){padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);outline:none;resize:vertical;max-width:100%}
+    input:not([type]){min-height:var(--touch);padding:0 12px}
+    textarea:focus,input:not([type]):focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.15)}
+    textarea::placeholder,input::placeholder{color:var(--text-muted)}
     .badge{position:absolute;top:2px;right:2px;background:var(--error);color:#fff;border-radius:999px;font-size:10px;font-weight:700;min-width:16px;height:16px;padding:0 4px;display:inline-flex;align-items:center;justify-content:center;pointer-events:none}
     .app-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 16px;padding-top:calc(10px + env(safe-area-inset-top,0px));background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:50;box-shadow:var(--shadow-sm)}
     .app-title-wrap{display:flex;align-items:baseline;gap:10px;min-width:0;flex:1}
