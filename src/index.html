@@ -103,6 +103,9 @@
     #diagnostics .diag-actions{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
     #viewer-wrap{position:relative;margin:0 16px}
     #viewer-container{position:relative;margin:0;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-sm);min-height:55vh;display:flex;align-items:flex-start;overflow:auto;touch-action:pan-x pan-y;-webkit-overflow-scrolling:touch}
+    .net-opt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;cursor:pointer}
+    .net-opt small{display:block;opacity:.7;font-weight:400;margin-top:2px}.net-opt input{margin-top:4px;flex-shrink:0}
+    .net-card h4{margin:14px 0 6px}.net-row{display:flex;gap:8px;align-items:center}.net-row input{flex:1;min-width:0}
     #annot-svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:3}
     #annot-svg [data-id]{pointer-events:none}
     #annot-svg.erase [data-id],#annot-svg .note{pointer-events:all;cursor:pointer}
@@ -232,7 +235,7 @@
     <button class="secondary" onclick="openDiagnostics()">Connection Info</button>
     <button class="secondary" onclick="testNetwork()">Test Network</button>
     <button class="secondary host-only" onclick="openServerConfig()">Signaling Server</button>
-    <button class="secondary" onclick="configureIce()">TURN</button>
+    <button class="secondary" onclick="openNetwork()">🌐 Network</button>
   </div>
   <div class="menu-group host-only" id="download-perm-group" style="display:none;">
     <span class="menu-label">Sharing</span>
@@ -483,7 +486,7 @@ function updateDiagnosticsUI() {
     <span class="diag-label">Auth</span><span>${sessionAuth.required?'<span class="ok">password required</span>':'open'}</span>
     <span class="diag-label">WebRTC</span><span>${window.RTCPeerConnection?'<span class="ok">available</span>':'<span class="bad">unavailable</span>'}</span>
     <span class="diag-label">Online</span><span>${navigator.onLine?'<span class="ok">yes</span>':'<span class="bad">no</span>'}</span>
-    <span class="diag-label">TURN</span><span>${window.__iceResolved?'<span class="ok">custom ('+window.__iceResolved.filter(x=>/turns?:/.test([].concat(x.urls).join())).length+' relays)</span>':'<span class="warn">public default (unreliable) — tap TURN to set up</span>'}</span>
+    <span class="diag-label">TURN</span><span>${window.__iceResolved?'<span class="ok">custom ('+window.__iceResolved.filter(x=>/turns?:/.test([].concat(x.urls).join())).length+' relays)</span>':'<span class="warn">public default (unreliable) — tap Network to set up</span>'}</span>
   </div>`;
   if (connections.length) {
     html += '<div class="diag-section"><h4>Peer Connections</h4>';
@@ -496,7 +499,7 @@ function updateDiagnosticsUI() {
         <div><strong>${escapeHtml(String(conn.peer).substring(0,10))}…</strong>
         <span class="${cls}">(${escapeHtml(ice)})</span>
         ${conn._authenticated===false?' <span class="bad">unauth</span>':''}
-        ${conn._peerInVoice?' 🎤':''}${conn._virtual?' 🔗 via peer':''}${actBadge(conn.peer)}</div>
+        ${conn._peerInVoice?' 🎤':''}${conn._virtual?(conn._ws?' 🌐 relay server':' 🔗 via peer'):''}${actBadge(conn.peer)}</div>
         <div>PC: ${escapeHtml(conn._pcState||'—')} • ICE: ${escapeHtml(candStr)}</div>
         ${conn._stats?.rtt!=null?`<div>RTT: ${conn._stats.rtt.toFixed(0)} ms • Bytes: ${conn._stats.bytesReceived??0}</div>`:''}
         ${conn._isRelay?'<div class="warn">⚠ Relayed via TURN</div>':''}
@@ -579,7 +582,7 @@ function resetServerConfig() { localStorage.removeItem('coop-server-config'); cl
 function getIceServers() { return window.__iceResolved || CONFIG.iceServers; }
 function peerOptions() {
   const saved = JSON.parse(localStorage.getItem('coop-server-config') || '{}');
-  const opts = { config: { iceServers: getIceServers(), iceCandidatePoolSize: 10 } };
+  const opts = { config: { iceServers: getIceServers(), iceCandidatePoolSize: 10, iceTransportPolicy: getNet().priv ? 'relay' : 'all' } };
   if (saved.host) opts.host = saved.host;
   if (saved.port) opts.port = saved.port;
   if (saved.path) opts.path = saved.path;
@@ -647,6 +650,7 @@ function resetWorker() {
 // Pyodide is now lazy: loaded on first non-PDF/image file (saves ~10MB+ and iOS memory).
 setStatus('Ready.', 'success');
 (function () { const p = new URLSearchParams(location.hash.slice(1)).get('ice'); if (p) { try { localStorage.setItem('coop-ice-servers', p); } catch (_) {} notify('Using the host\'s network (TURN) settings.', 'info', 3000); } })();
+(function () { const r = new URLSearchParams(location.hash.slice(1)).get('relay'); if (r && /^wss?:\/\//i.test(r)) { try { localStorage.setItem('coop-net', JSON.stringify({ ...getStoredNet(), relay: r })); } catch (_) {} notify("Using the host's relay server.", 'info', 3000); } })();
 resolveIce().finally(checkForAutoJoin);
 tryRestoreFromOPFS();
 
@@ -803,7 +807,7 @@ function attachConnectionHandlers(conn) {
     });
     pc.addEventListener('iceconnectionstatechange', () => {
       conn._iceState = pc.iceConnectionState;
-      if (pc.iceConnectionState==='failed') notify('No network route between you and the other device. Different networks (Wi-Fi vs mobile data) need a TURN relay: open the menu → TURN to set one up.','error',10000);
+      if (pc.iceConnectionState==='failed') notify('No network route between you and the other device. Different networks (Wi-Fi vs mobile data) need a TURN relay: open the menu → Network to set one up.','error',10000);
       clearTimeout(conn._dcTimer);
       if (pc.iceConnectionState==='disconnected' || pc.iceConnectionState==='failed') {
         conn._dcTimer = setTimeout(() => {
@@ -1030,6 +1034,7 @@ function joinSession(targetCode, isRetry) {
   if (code === myPeerId) return notify('You cannot join your own session.','warning');
   lastJoinCode = code; if (!isRetry) { rejoinAttempts = 0; preAuthDrops = 0; } clearTimeout(rejoinTimer); rejoinTimer = null;
   try { sessionStorage.setItem('coop-session', code); } catch (_) {}
+  if (relayV) { const old = relayV; relayV = null; try { old._sock.close(); } catch (_) {} }
   if (!window.RTCPeerConnection) { showError({type:'browser-incompatible'}); return; }
   connectionGeneration++;
   cleanupVoice();
@@ -1075,8 +1080,9 @@ function joinSession(targetCode, isRetry) {
     const conn = peer.connect(code, { reliable: true });
     conn._authenticated = false;
     peer.on('connection', c => acceptBridge(c, conn));
+    scheduleRelayJoin(conn);
     const timeout = setTimeout(() => {
-      if (!conn.open && !bridgeV) { showError({type:'peer-unavailable'}); try{conn.close()}catch(_){} scheduleRejoin(); }
+      if (!conn.open && !bridgeV && !relayV) { showError({type:'peer-unavailable'}); try{conn.close()}catch(_){} scheduleRejoin(); }
     }, CONFIG.connectTimeout);
     connections.push(conn);
     updatePeerListUI(); updateChatAvailability();
@@ -1096,6 +1102,7 @@ function buildShareUrl(code, includeHash=false) {
   let url = `${window.location.origin}${base}/${encodeURIComponent(code)}`;
   if (includeHash && sessionAuth.required && sessionAuth.hash) url += '#pw=' + encodeURIComponent(sessionAuth.hash);
   if (shareIceRaw) url += (url.includes('#') ? '&' : '#') + 'ice=' + encodeURIComponent(shareIceRaw);
+  if (getStoredNet().relay) url += (url.includes('#') ? '&' : '#') + 'relay=' + encodeURIComponent(getStoredNet().relay);
   return url;
 }
 function copyShareLink() {
@@ -2212,7 +2219,7 @@ function refreshPeers() {
     const p = profiles[c.peer] || {}, nm = p.name || String(c.peer).substring(0, 6);
     const face = AVATAR_RE.test(p.avatar || '') ? `<img class="avatar" src="${p.avatar}" alt="">` : `<span class="avatar">${escapeHtml(nm[0] || '?').toUpperCase()}</span>`;
     const id = escapeHtml(c.peer);
-    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">${face}<div style="flex:1;min-width:0"><b>${escapeHtml(nm)}</b><span>${actBadge(c.peer)}</span><br><small style="color:var(--text-muted)">${c.open ? 'page ' + (c._page || '?') + ' / ' + state.totalPages + (c._detached ? ' · detached' : '') : 'connecting…'}</small></div>
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">${face}<div style="flex:1;min-width:0"><b>${escapeHtml(nm)}</b><span>${actBadge(c.peer)}</span><br><small style="color:var(--text-muted)">${c.open ? routeLabel(c) + ' · page ' + (c._page || '?') + ' / ' + state.totalPages + (c._detached ? ' · detached' : '') : 'connecting…'}</small></div>
       <button class="secondary" onclick="hostCmd('${id}','HOST_MUTE')">Mute</button><button class="secondary" onclick="hostCmd('${id}','HOST_PING')">Ping</button><button class="secondary" onclick="hostCmd('${id}','HOST_KICK')">Kick</button></div>`;
   });
   document.getElementById('peers-list').innerHTML = rows.join('') || '<p style="color:var(--text-muted)">No peers connected.</p>';
@@ -2397,6 +2404,148 @@ setInterval(() => {   // host: drop relayed peers whose relay peer vanished
   connections = connections.filter(c => !(c._virtual && !c._via.open));
   if (connections.length !== n) { updatePeerListUI(); updateChatAvailability(); }
 }, 3000);
+
+// ---- WebSocket relay fallback + network settings
+const wsToken = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now()).replace(/-/g, '');
+let relayV = null, hostWs = null, hostWsFor = null;
+const DEFAULT_RELAY = 'wss://coop-relay.coop-reader.workers.dev';
+var defaultRelayOk = false, relayProbe = null;   // var: safe to read before this line runs
+function getStoredNet() { try { return { mode: 'auto', priv: false, relay: '', ...JSON.parse(localStorage.getItem('coop-net') || '{}') }; } catch (_) { return { mode: 'auto', priv: false, relay: '' }; } }
+function getNet() { const n = getStoredNet(); if (!n.relay && defaultRelayOk) n.relay = DEFAULT_RELAY; return n; }   // default is used only once it has answered
+function probeRelay(url) {
+  return new Promise(res => {
+    let ws, done = false; const fin = ok => { if (done) return; done = true; try { ws.close(); } catch (_) {} res(ok); };
+    try { ws = new WebSocket(`${url}/room/_test?id=p${Date.now()}&t=${wsToken}`); } catch (_) { return res(false); }
+    ws.onopen = () => fin(true); ws.onerror = () => fin(false); setTimeout(() => fin(false), 6000);
+  });
+}
+// probed lazily (only when hosting/joining and no custom relay is set), so merely opening the app never contacts it
+function ensureRelayProbe() {
+  if (getStoredNet().relay) return Promise.resolve();
+  if (!relayProbe) relayProbe = probeRelay(DEFAULT_RELAY).then(ok => { defaultRelayOk = ok; if (!ok) setTimeout(() => { relayProbe = null; }, 60000); });
+  return relayProbe;
+}
+function routeLabel(c) { return c._ws ? '🌐 relay server' : c._virtual ? '🔗 via peer' : c._isRelay ? '🔒 TURN' : '⚡ direct'; }
+const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+const wsReplacer = (k, v) => v instanceof ArrayBuffer ? { __b: b64(new Uint8Array(v)) } : ArrayBuffer.isView(v) ? { __b: b64(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) } : v;
+const wsRevive = (k, v) => v && typeof v === 'object' && typeof v.__b === 'string' ? Uint8Array.from(atob(v.__b), ch => ch.charCodeAt(0)) : v;
+const wsSend = (ws, to, p) => ws.send(JSON.stringify({ to, p }, wsReplacer));
+const relayUrl = (room, id) => `${getNet().relay.replace(/\/$/, '')}/room/${encodeURIComponent(room)}?id=${encodeURIComponent(id)}&t=${wsToken}`;
+const wsStub = ws => ({ get bufferedAmount() { return ws ? ws.bufferedAmount : 0; }, addEventListener() {}, removeEventListener() {} });
+
+// peer side: use the relay when the direct route isn't up in time (or immediately in "relay server only" mode)
+function scheduleRelayJoin(direct) {
+  const delay = getNet().mode === 'ws' ? 300 : 8000;
+  setTimeout(async () => {
+    if (isHost || direct.open || bridgeV || relayV || !connections.includes(direct)) return;
+    await ensureRelayProbe();
+    if (isHost || direct.open || bridgeV || relayV || !connections.includes(direct)) return;
+    startRelayJoin(direct);
+  }, delay);
+}
+function startRelayJoin(direct) {
+  const hostId = lastJoinCode, myId = myPeerId;
+  if (!getNet().relay) { notify('Direct connection is slow or blocked. Add a relay server under menu → Network for a reliable fallback.', 'warning', 9000); return; }
+  if (!hostId || !myId) return;
+  let ws; try { ws = new WebSocket(relayUrl(hostId, myId)); } catch (_) { notify('Relay server address is invalid.', 'error'); return; }
+  setStatus('Connecting through the relay server…', 'info');
+  ws.onopen = () => {
+    if (direct.open) { ws.close(); return; }
+    const v = { peer: hostId, open: true, _virtual: true, _ws: true, _sock: ws, _authenticated: false, dataChannel: wsStub(ws),
+      send(m) { if (ws.readyState === 1) wsSend(ws, hostId, m); }, close() { try { ws.close(); } catch (_) {} }, on() {} };
+    relayV = v; connections = connections.filter(x => x !== direct); connections.push(v);
+    try { direct.close(); } catch (_) {}
+    wsSend(ws, hostId, { type: 'RELAY_HELLO' });
+    hideError(); setStatus('Connected through the relay server — awaiting session data…', 'info'); updatePeerListUI(); updateChatAvailability();
+  };
+  ws.onmessage = e => {
+    let m; try { m = JSON.parse(e.data, wsRevive); } catch (_) { return; }
+    if (m.err === 'gone') { notify('The host is not reachable through the relay server.', 'warning', 5000); return; }
+    if (m.from !== hostId) return;
+    if (m.left || (m.p && m.p.type === 'RELAY_CLOSE')) { try { ws.close(); } catch (_) {} return; }
+    if (relayV && relayV._sock === ws && m.p) handleNetworkMessage(relayV, m.p);
+  };
+  ws.onclose = () => {
+    if (relayV && relayV._sock === ws) { connections = connections.filter(x => x !== relayV); relayV = null; updatePeerListUI(); notify('Relay connection lost — reconnecting…', 'warning'); scheduleRejoin(); }
+    else if (!relayV) notify('Could not reach the relay server.', 'error', 5000);
+  };
+}
+// host side: stay connected to the relay room so peers can always reach us
+function dropWsConns() { const n = connections.length; connections = connections.filter(c => !c._ws); if (n !== connections.length) { updatePeerListUI(); updateChatAvailability(); } }
+function openHostRelay() {
+  const id = myPeerId; let ws; try { ws = new WebSocket(relayUrl(id, id)); } catch (_) { return; }
+  hostWs = ws; hostWsFor = id;
+  ws.onmessage = e => { let m; try { m = JSON.parse(e.data, wsRevive); } catch (_) { return; } hostRelayMsg(m); };
+  ws.onclose = () => { if (hostWs === ws) { hostWs = null; dropWsConns(); } };
+}
+function hostRelayMsg(m) {
+  if (!isHost || !m.from) return;
+  const X = String(m.from);
+  if (m.left) { const n = connections.length; connections = connections.filter(c => !(c._ws && c.peer === X)); if (n !== connections.length) { updatePeerListUI(); updateChatAvailability(); } return; }
+  const p = m.p; if (!p || typeof p !== 'object') return;
+  let v = connections.find(c => c._ws && c.peer === X);
+  if (p.type === 'RELAY_HELLO') {
+    if (v) return;
+    connections = connections.filter(c => !(c.peer === X && !c.open));
+    v = { peer: X, open: true, _virtual: true, _ws: true, _authenticated: !sessionAuth.required, dataChannel: wsStub(null),
+      send(msg) { if (hostWs && hostWs.readyState === 1) wsSend(hostWs, X, msg); },
+      close() { try { if (hostWs && hostWs.readyState === 1) wsSend(hostWs, X, { type: 'RELAY_CLOSE' }); } catch (_) {} connections = connections.filter(c => c !== v); updatePeerListUI(); updateChatAvailability(); }, on() {} };
+    Object.defineProperty(v.dataChannel, 'bufferedAmount', { get: () => hostWs ? hostWs.bufferedAmount : 0 });
+    connections.push(v); updatePeerListUI(); updateChatAvailability();
+    notify(`Peer ${X.substring(0, 6)}… connected through the relay server`, 'info', 4000);
+    if (sessionAuth.required) v.send({ type: 'AUTH_REQUIRED', salt: sessionAuth.salt }); else sendInitialDataToConn(v);
+    return;
+  }
+  if (v) handleNetworkMessage(v, p);
+}
+setInterval(() => {
+  if (isHost && myPeerId) ensureRelayProbe();
+  const want = isHost && myPeerId && getNet().relay;
+  if (hostWs && (!want || hostWsFor !== myPeerId || hostWs.readyState > 1)) { const w = hostWs; hostWs = null; try { w.close(); } catch (_) {} dropWsConns(); }
+  if (want && !hostWs) openHostRelay();
+}, 3000);
+
+// friendly settings dialog
+function openNetwork() {
+  const n = getNet(), o = document.createElement('div');
+  o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:12px;overflow:auto';
+  const state = isHost ? (hostWs && hostWs.readyState === 1 ? '✅ connected' : (n.relay ? '⏳ connecting…' : 'not set up')) : (relayV ? '✅ in use' : (n.relay ? 'standby (used if direct fails)' : 'not set up'));
+  o.innerHTML = `<div class="net-card" style="background:var(--surface);color:inherit;padding:18px;border-radius:14px;max-width:460px;width:100%;box-shadow:0 8px 30px rgba(0,0,0,.4);max-height:92vh;overflow:auto">
+    <h3 style="margin:0">Network &amp; privacy</h3><p style="margin:4px 0 12px;font-size:.85rem;opacity:.75">How you connect to others. Changes apply the next time you create or join a session.</p>
+    <label class="net-opt"><input type="radio" name="net-mode" value="auto"><span><b>Automatic</b> · recommended<small>Direct first, then a helper peer, then your relay server (if set).</small></span></label>
+    <label class="net-opt"><input type="radio" name="net-mode" value="ws"><span><b>Relay server only</b><small>Works on any network or firewall. Voice chat may not work.</small></span></label>
+    <label class="net-opt"><input type="checkbox" id="net-priv"><span><b>Private mode</b><small>Hides your IP address from other participants by sending all direct traffic through a TURN relay. Needs a TURN server below; connections fail without one.</small></span></label>
+    <h4>Relay server <span style="font-weight:400;opacity:.7;font-size:.8rem">· ${state}${!getStoredNet().relay && n.relay ? ' · default server' : ''}</span></h4>
+    <div class="net-row"><input id="net-relay" placeholder="Default: coop-relay.coop-reader.workers.dev" autocapitalize="off" spellcheck="false"><button class="secondary" id="net-test">Test</button></div>
+    <div id="net-test-res" style="font-size:.8rem;min-height:1.2em;margin-top:4px"></div>
+    <small style="opacity:.65">The relay passes messages between devices. Whoever runs it can see session traffic.</small>
+    <h4>TURN relay <span style="font-weight:400;opacity:.7;font-size:.8rem">· advanced</span></h4>
+    <textarea id="ice-ta" rows="3" style="width:100%;font-family:monospace;font-size:.8rem" placeholder="Credentials URL or iceServers JSON"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="secondary" id="net-x">Cancel</button><button id="net-save">Save</button></div></div>`;
+  document.body.appendChild(o);
+  o.querySelector(`input[name=net-mode][value=${n.mode === 'ws' ? 'ws' : 'auto'}]`).checked = true;
+  o.querySelector('#net-priv').checked = !!n.priv; o.querySelector('#net-relay').value = getStoredNet().relay; o.querySelector('#ice-ta').value = localStorage.getItem('coop-ice-servers') || '';
+  const res = o.querySelector('#net-test-res'), val = () => o.querySelector('#net-relay').value.trim();
+  o.querySelector('#net-x').onclick = () => o.remove();
+  o.querySelector('#net-test').onclick = () => {
+    const u = val() || DEFAULT_RELAY; if (!/^wss?:\/\//i.test(u)) { res.textContent = '⚠️ Enter an address starting with wss://'; return; }
+    res.textContent = 'Testing…'; const t0 = performance.now(); let done = false, ws;
+    const fin = t => { if (!done) { done = true; res.textContent = t; try { ws.close(); } catch (_) {} } };
+    try { ws = new WebSocket(`${u.replace(/\/$/, '')}/room/_test?id=t${Date.now()}&t=${wsToken}`); } catch (_) { return fin('❌ Invalid address'); }
+    ws.onopen = () => fin(`✅ Reachable (${Math.round(performance.now() - t0)} ms)`); ws.onerror = () => fin('❌ Could not connect'); setTimeout(() => fin('❌ Timed out'), 7000);
+  };
+  o.querySelector('#net-save').onclick = async () => {
+    const u = val();
+    if (u && !/^wss?:\/\//i.test(u)) { res.textContent = '⚠️ The relay address must start with wss://'; return; }
+    const net = { mode: o.querySelector('input[name=net-mode]:checked').value, priv: o.querySelector('#net-priv').checked, relay: u };
+    localStorage.setItem('coop-net', JSON.stringify(net));
+    const ice = o.querySelector('#ice-ta').value.trim(); if (ice) localStorage.setItem('coop-ice-servers', ice); else localStorage.removeItem('coop-ice-servers');
+    await resolveIce(); o.remove();
+    if (net.priv && !window.__iceResolved) notify('Private mode needs a TURN server — add one under TURN relay, or connections will fail.', 'warning', 9000);
+    else if (net.mode === 'ws' && !net.relay) notify('Add a relay server address for “Relay server only” mode.', 'warning', 7000);
+    else notify('Saved. Applies to your next session.', 'success', 3500);
+  };
+}
 
 // ==================== INIT ====================
 updateDownloadButton();
