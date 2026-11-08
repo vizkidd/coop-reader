@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Coop Reader (Kindle E-Ink)</title>
+  <link rel="stylesheet" href="kindle-theme.css">
+  <!-- Optional PDF.js (works with local copy or CDN when online) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+
+  <!-- Top Kindle Navigation Bar -->
+  <header class="kindle-bar">
+    <div class="kindle-brand">
+      COOP READER
+      <span id="sync-status" class="sync-status"><span class="kindle-badge">SOLO</span></span>
+    </div>
+    <div class="kindle-header-actions">
+      <span id="battery-status" style="font-size:0.8rem; font-weight:bold; margin-right:4px;"></span>
+      <button id="btn-open-doc-modal" class="btn btn-sm">Docs</button>
+      <button id="btn-open-session-modal" class="btn btn-sm" onclick="document.getElementById('modal-session').classList.add('open')">Session</button>
+      <button id="btn-open-chat" class="btn btn-sm">Chat</button>
+      <button id="btn-open-peers" class="btn btn-sm">Peers</button>
+      <button id="btn-refresh" class="btn btn-sm" title="Clear ghosting with hardware EIPS refresh">Refresh</button>
+    </div>
+  </header>
+
+  <!-- Sub-bar for Document Details & Detach -->
+  <div class="kindle-subbar">
+    <div id="doc-title" class="doc-info">Welcome to Coop Reader</div>
+    <div style="display:flex; align-items:center; gap:6px;">
+      <span id="voice-indicator" class="kindle-badge inverted" style="display:none; font-size:0.75rem;"></span>
+      <button id="btn-sync" class="btn btn-sm" style="display:none;">Follow Host</button>
+      <button id="btn-font-smaller" class="btn btn-sm btn-icon">A-</button>
+      <button id="btn-font-larger" class="btn btn-sm btn-icon">A+</button>
+    </div>
+  </div>
+
+  <!-- Viewport and Reading Area -->
+  <main id="kindle-viewport" class="kindle-viewport">
+    <!-- Touch zones for page turns (standard e-reader UX) -->
+    <div id="zone-prev" class="touch-zone-prev" title="Tap to turn back"></div>
+    <div id="zone-menu" class="touch-zone-menu" title="Tap center to toggle bars"></div>
+    <div id="zone-next" class="touch-zone-next" title="Tap to turn forward"></div>
+
+    <div id="render-container">
+      <div id="text-viewport"></div>
+      <canvas id="pdf-canvas" style="display:none;"></canvas>
+      <canvas id="annot-canvas"></canvas>
+    </div>
+  </main>
+
+  <!-- Bottom Page Turn Controls -->
+  <footer class="kindle-footer">
+    <button id="btn-prev" class="btn">&laquo; Prev</button>
+    <div id="page-indicator" class="page-label">1 / 1</div>
+    <button id="btn-next" class="btn">Next &raquo;</button>
+  </footer>
+
+  <!-- ==================== MODALS ==================== -->
+
+  <!-- Session Modal (Host / Join) -->
+  <div id="modal-session" class="kindle-modal-overlay">
+    <div class="kindle-modal">
+      <div class="kindle-modal-header">
+        <div class="kindle-modal-title">Reading Session</div>
+        <button class="btn btn-sm btn-close-modal">&times;</button>
+      </div>
+      <div class="kindle-modal-body">
+        <div id="session-active-box" style="display:none; margin-bottom:16px;">
+          <h3>Active Session</h3>
+          <div id="session-active-info" style="padding:10px; border:2px solid #000; background:#f0f0f0; margin-bottom:10px;"></div>
+          <button id="btn-disconnect-session" class="btn" style="width:100%;">Leave / End Session</button>
+          <hr style="border:none; border-top:1px solid #000; margin:16px 0;">
+        </div>
+        <div id="session-join-box" style="margin-bottom:16px;">
+          <h3>Join a Session</h3>
+          <p style="font-size:0.88rem;">Enter 4-digit PIN (from Host screen) or full code:</p>
+          <input type="text" id="input-join-code" placeholder="e.g. 4821 or session.key">
+          <button id="btn-join-session" class="btn" style="width:100%;">Connect &amp; Follow</button>
+        </div>
+        <hr style="border:none; border-top:1px solid #000; margin:16px 0;">
+        <div id="session-create-box">
+          <h3>Host a New Session</h3>
+          <p style="font-size:0.88rem;">Start a session from this Kindle so others can join you:</p>
+          <button id="btn-host-session" class="btn" style="width:100%;">Create Session</button>
+          <div id="session-pin-box" style="display:none; margin-top:10px; padding:10px; border:2px solid #000; background:#f0f0f0; text-align:center;">
+            <div style="font-weight:bold; font-size:0.85rem;">SHARE THIS 4-DIGIT PIN:</div>
+            <div id="session-display-pin" style="font-family:monospace; font-weight:900; font-size:2rem; letter-spacing:3px; margin:6px 0;"></div>
+            <div style="font-size:0.8rem;">Others can join from Chrome, phone, or Kindle!</div>
+          </div>
+          <div id="session-info-box" style="display:none; margin-top:10px; padding:8px; border:1px solid #000;">
+            <div style="font-weight:bold; font-size:0.75rem;">FULL CODE:</div>
+            <div id="session-display-code" style="font-family:monospace; word-break:break-all; font-weight:bold; font-size:0.85rem; margin-top:2px;"></div>
+          </div>
+        </div>
+      </div>
+      <div class="kindle-modal-footer">
+        <button class="btn btn-close-modal">Done / Start Reading</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Document Selector Modal -->
+  <div id="modal-doc" class="kindle-modal-overlay">
+    <div class="kindle-modal">
+      <div class="kindle-modal-header">
+        <div class="kindle-modal-title">Choose Document</div>
+        <button class="btn btn-sm btn-close-modal">&times;</button>
+      </div>
+      <div class="kindle-modal-body">
+        <h3>Kindle Storage (/mnt/us/documents)</h3>
+        <div id="local-doc-list" style="margin-bottom:16px; border:1px solid #000; max-height:220px; overflow-y:auto;">
+          <div style="padding:10px;">Scanning Kindle documents...</div>
+        </div>
+        <h3>Open From Browser / Device</h3>
+        <input type="file" id="file-picker-input" accept=".pdf,.epub,.mobi,.azw3,.txt,.md,.docx,.xlsx" style="margin-top:6px;">
+      </div>
+      <div class="kindle-modal-footer">
+        <button class="btn btn-close-modal">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chat Modal -->
+  <div id="modal-chat" class="kindle-modal-overlay">
+    <div class="kindle-modal">
+      <div class="kindle-modal-header">
+        <div class="kindle-modal-title">Session Chat</div>
+        <button class="btn btn-sm btn-close-modal">&times;</button>
+      </div>
+      <div class="kindle-modal-body">
+        <div id="chat-list" class="chat-list"></div>
+        <div style="display:flex; gap:6px;">
+          <input type="text" id="chat-input" placeholder="Type a message..." style="margin-bottom:0;">
+          <button id="btn-send-chat" class="btn">Send</button>
+        </div>
+      </div>
+      <div class="kindle-modal-footer">
+        <button class="btn btn-close-modal">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Peers & Host Controls Modal -->
+  <div id="modal-peers" class="kindle-modal-overlay">
+    <div class="kindle-modal">
+      <div class="kindle-modal-header">
+        <div class="kindle-modal-title">Reading Group</div>
+        <button class="btn btn-sm btn-close-modal">&times;</button>
+      </div>
+      <div class="kindle-modal-body">
+        <h3>Participants</h3>
+        <div id="peers-list-container"></div>
+      </div>
+      <div class="kindle-modal-footer">
+        <button class="btn btn-close-modal">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="kindle-app.js"></script>
+</body>
+</html>
+

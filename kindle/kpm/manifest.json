@@ -1,0 +1,13 @@
+{
+  "manifest_version": 2,
+  "id": "coop-reader",
+  "name": "Coop Reader",
+  "version": [1, 0, 0],
+  "author": "coop-reader team",
+  "description": "Collaborative real-time document reader for jailbroken Kindles with page sync, annotations, chat, and host controls",
+  "supported_platforms": ["kindle", "kindle5", "kindlepw2", "kindlehf"],
+  "category": "Applications",
+  "homepage": "https://github.com",
+  "license": "MIT"
+}
+

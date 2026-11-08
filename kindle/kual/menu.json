@@ -1,0 +1,20 @@
+{
+  "items": [
+    {
+      "name": "Launch Coop Reader",
+      "priority": 1,
+      "action": "bin/launch.sh"
+    },
+    {
+      "name": "Quick Clear Ghosting (EIPS)",
+      "priority": 2,
+      "action": "bin/refresh.sh"
+    },
+    {
+      "name": "Stop Coop Reader & Sleep Normal",
+      "priority": 3,
+      "action": "bin/stop.sh"
+    }
+  ]
+}
+

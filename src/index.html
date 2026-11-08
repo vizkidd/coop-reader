@@ -251,6 +251,12 @@
     <button class="secondary" onclick="copyShareLink()">Copy link</button>
     <button class="secondary" onclick="copyHostCode()">Copy code</button>
   </div>
+  <div class="menu-group host-only" id="kindle-share-group" style="display:none; align-items:center; gap:8px;">
+    <span class="menu-label">Kindle Easy Join</span>
+    <span style="font-size:0.88rem; font-weight:700;">PIN:</span>
+    <span id="kindle-pin-badge" style="font-family:monospace; font-weight:bold; font-size:1.15rem; background:var(--surface-alt); padding:3px 10px; border:1.5px solid var(--border); border-radius:6px; letter-spacing:1px;">—</span>
+    <button class="secondary" onclick="copyKindlePin()" style="min-height:32px; padding:0 8px; font-size:0.82rem;">Copy PIN</button>
+  </div>
   <div class="menu-group">
     <label class="check-label"><input type="checkbox" id="gestures-toggle" checked />Gestures &amp; keys</label>
     <button id="restore-btn" class="secondary hidden host-only" onclick="restoreLastFile()">Restore last</button>
@@ -976,8 +982,10 @@ async function startHost() {
       notify(`Session created${sessionAuth.required?' (password protected)':''}.`,'success');
       const url = buildShareUrl(id);
       navigator.clipboard?.writeText(url).then(() => notify('Link copied.','info',3000)).catch(()=>{});
+      registerKindlePin(id, relayKeyB64);
     } else {
       setStatus(`Hosting — reconnected`, 'success');
+      registerKindlePin(id, relayKeyB64);
     }
     updateHostUI(); updateDiagnosticsUI();
     
@@ -1144,6 +1152,56 @@ function copyHostCode() {
   );
 }
 
+let currentKindlePin = '';
+async function registerKindlePin(roomId, key) {
+  currentKindlePin = '';
+  updateKindlePinUI();
+  try {
+    const relayHttp = (getNet().relay || DEFAULT_RELAY).replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+    const res = await fetch(`${relayHttp}/pin/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room: roomId, key: key || '' })
+    });
+    const data = await res.json();
+    if (data && data.ok && data.pin) {
+      currentKindlePin = data.pin;
+      updateKindlePinUI();
+      return;
+    }
+  } catch (_) {}
+  // Fallback short PIN (numeric hash of room ID)
+  let sum = 0;
+  for (let i = 0; i < roomId.length; i++) sum = (sum * 31 + roomId.charCodeAt(i)) % 9000;
+  currentKindlePin = String(1000 + Math.abs(sum));
+  updateKindlePinUI();
+}
+
+function updateKindlePinUI() {
+  const pinEl = document.getElementById('kindle-pin-badge');
+  if (pinEl) pinEl.innerText = currentKindlePin || '...';
+  const group = document.getElementById('kindle-share-group');
+  if (group) group.style.display = (isHost && myPeerId) ? 'flex' : 'none';
+}
+
+function copyKindlePin() {
+  if (!currentKindlePin) return;
+  navigator.clipboard?.writeText(currentKindlePin).then(
+    () => notify(`Kindle PIN ${currentKindlePin} copied!`, 'success'),
+    () => notify('Copy failed', 'error')
+  );
+}
+
+function syncHttpRelayPage(page) {
+  if (!isHost || !myPeerId) return;
+  const relayHttp = (getNet().relay || DEFAULT_RELAY).replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+  fetch(`${relayHttp}/room/${encodeURIComponent(myPeerId)}/sync?page=${page}&from=host`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ page: page, from: 'host' })
+  }).catch(() => {});
+}
+
 function updatePeerListUI() {
   refreshPeers();
   const n = connections.length;
@@ -1154,6 +1212,7 @@ function updateHostUI() {
   const visible = (isHost && peer && myPeerId) ? '' : 'none';
   document.getElementById('download-perm-group').style.display = visible;
   document.getElementById('share-group').style.display = visible;
+  updateKindlePinUI();
   const pwCheckbox = document.getElementById('share-include-pw');
   if (pwCheckbox) {
     const hasPw = !!(sessionAuth.required && sessionAuth.hash);
@@ -2211,7 +2270,7 @@ window.addEventListener('orientationchange', onViewportChange);
 
 function emitPage() {
   sendActivity('interact');
-  if (!detached) { syncedPage = state.currentPage; broadcast({ type:'PAGE_CHANGE', page: state.currentPage }); }
+  if (!detached) { syncedPage = state.currentPage; broadcast({ type:'PAGE_CHANGE', page: state.currentPage }); syncHttpRelayPage(state.currentPage); }
   updateDetachUI();
 }
 function updateDetachUI() {
@@ -2223,7 +2282,7 @@ function updateDetachUI() {
 function setDetached(v) {
   detached = !!v;
   if (!detached && state.totalPages > 0) {
-    if (isHost) broadcast({ type:'PAGE_CHANGE', page: state.currentPage });
+    if (isHost) { broadcast({ type:'PAGE_CHANGE', page: state.currentPage }); syncHttpRelayPage(state.currentPage); }
     else { const hc = connections.find(c => c.open); if (hc) try { hc.send({ type:'REQ_SYNC' }); } catch (_) {} }   // ask the HOST for its page
   }
   updateDetachUI(); reportPage();

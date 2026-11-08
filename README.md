@@ -78,6 +78,13 @@ Screen stays awake during a session, password entry uses an in-page dialog, and 
 
 ---
 
+## Kindle Edition (Jailbroken Kindles)
+`coop-reader` is ported to jailbroken Amazon Kindles for synchronised reading across e-ink devices:
+- **Kindle Package Manager (KPM)**: `dist/coop-reader.kpkg` installable via `;kpm install coop-reader.kpkg`.
+- **KUAL Extension**: `dist/coop-reader-kual.zip` for direct USB extraction to `/mnt/us/extensions/`.
+- **KOReader Plugin**: `dist/coopreader.koplugin.zip` for reading directly inside KOReader.
+- See [`kindle/README.md`](kindle/README.md) for full instructions, E-Ink optimizations, and hardware button configuration.
+
 ## Files
 ```text
 index.html        the app (all UI and networking)
