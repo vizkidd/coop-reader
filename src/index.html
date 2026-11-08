@@ -330,7 +330,7 @@
 <div id="toast-container" aria-live="polite"></div>
 <div id="audio-container" aria-hidden="true"></div>
 
-<div id="peers-modal" class="modal" onclick="if(event.target===this)closeModal('peers-modal')"><div class="modal-content"><h3>Peers</h3><div id="peers-list"></div>
+<div id="peers-modal" class="modal" onclick="if(event.target===this)closeModal('peers-modal')"><div class="modal-content"><h3>Peers</h3><div id="peers-list"></div><input type="file" id="peer-file-input" hidden />
   <h3 style="margin-top:14px">Indicators &amp; permissions</h3>
   <label class="check-label"><input type="checkbox" id="hs-speaking" onchange="updateHostSettings()" />Show who is speaking</label>
   <label class="check-label"><input type="checkbox" id="hs-typing" onchange="updateHostSettings()" />Show who is typing</label>
@@ -755,6 +755,8 @@ function clearAllRemoteCursors() { for (const id of Object.keys(remoteCursors)) 
 function checkForAutoJoin() {
   const hashParams = new URLSearchParams(location.hash.slice(1));
   const pwHashFromUrl = hashParams.get('pw');
+  const rkFromUrl = hashParams.get('rk');
+  if (rkFromUrl && KEY_RE.test(rkFromUrl)) { peerRelayKey = rkFromUrl; try { sessionStorage.setItem('coop-rk', rkFromUrl); } catch (_) {} }
   if (pwHashFromUrl) {
     pendingAuthHash = pwHashFromUrl;
     try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {}
@@ -763,7 +765,7 @@ function checkForAutoJoin() {
   let sessionId = null;
   if (params.has('p')) sessionId = params.get('p').replace(/^\/+/, '').trim();
   else { const segs = window.location.pathname.split('/').filter(Boolean); if (segs.length>1) sessionId = segs[1]; }
-  if (!sessionId) { try { sessionId = sessionStorage.getItem('coop-session'); if (!pendingAuthHash) pendingAuthHash = sessionStorage.getItem('coop-auth'); } catch (_) {} }
+  if (!sessionId) { try { sessionId = sessionStorage.getItem('coop-session'); if (!pendingAuthHash) pendingAuthHash = sessionStorage.getItem('coop-auth'); if (!peerRelayKey) peerRelayKey = sessionStorage.getItem('coop-rk') || ''; } catch (_) {} }
   if (sessionId && !window.__autoJoined) {
     window.__autoJoined = true;
     try { history.replaceState(null, '', location.pathname); } catch (_) {}
@@ -948,6 +950,7 @@ async function startHost() {
   if (peer) { try{peer.destroy()}catch(_){} }
   connections = [];
   isHost = true; myPeerId = null; document.body.classList.remove('peer-mode');
+  relayKeyB64 = b64u(crypto.getRandomValues(new Uint8Array(32)));
   lastJoinCode = null; clearTimeout(rejoinTimer); rejoinTimer = null; try { sessionStorage.removeItem('coop-session'); } catch (_) {}
   state.downloadAllowed = false;
   document.getElementById('download-perm-toggle').checked = false;
@@ -1040,7 +1043,9 @@ function scheduleRejoin() {
 }
 function joinSession(targetCode, isRetry) {
   hideError();
-  const code = (targetCode || document.getElementById('join-code').value || '').trim();
+  const rawCode = (targetCode || document.getElementById('join-code').value || '').trim();
+  const dot = rawCode.indexOf('.'), code = dot > 0 ? rawCode.slice(0, dot) : rawCode;   // host code may be "id.key"
+  if (dot > 0 && KEY_RE.test(rawCode.slice(dot + 1))) { peerRelayKey = rawCode.slice(dot + 1); try { sessionStorage.setItem('coop-rk', peerRelayKey); } catch (_) {} }
   if (!code) return notify('Enter a host code first.','warning');
   if (code === myPeerId) return notify('You cannot join your own session.','warning');
   lastJoinCode = code; if (!isRetry) { rejoinAttempts = 0; preAuthDrops = 0; } clearTimeout(rejoinTimer); rejoinTimer = null;
@@ -1114,6 +1119,7 @@ function buildShareUrl(code, includeHash=false) {
   if (includeHash && sessionAuth.required && sessionAuth.hash) url += '#pw=' + encodeURIComponent(sessionAuth.hash);
   if (shareIceRaw) url += (url.includes('#') ? '&' : '#') + 'ice=' + encodeURIComponent(shareIceRaw);
   if (getStoredNet().relay) url += (url.includes('#') ? '&' : '#') + 'relay=' + encodeURIComponent(getStoredNet().relay);
+  if (relayKeyB64) url += (url.includes('#') ? '&' : '#') + 'rk=' + relayKeyB64;
   return url;
 }
 function copyShareLink() {
@@ -1129,8 +1135,8 @@ function copyShareLink() {
 }
 function copyHostCode() {
   if (!myPeerId) return;
-  navigator.clipboard?.writeText(myPeerId).then(
-    () => notify('Host code copied.','success'),
+  navigator.clipboard?.writeText(myPeerId + (relayKeyB64 ? '.' + relayKeyB64 : '')).then(
+    () => notify('Host code copied (includes the relay encryption key).','success'),
     () => notify('Copy failed','error')
   );
 }
@@ -1805,6 +1811,7 @@ async function handleNetworkMessage(conn, data) {
     incomingTransfers.set(conn.peer, {
       filename: data.filename, totalSize: data.totalSize, totalChunks: data.totalChunks,
       chunks: new Array(data.totalChunks), received: 0, startedAt: Date.now(), lastAt: Date.now(),
+      priv: !isHost && data.private === true && conn.peer === lastJoinCode,
     });
     notify(`Receiving ${data.filename}…`,'info',2500);
     updateTransferProgress(data.filename, 0, data.totalChunks);
@@ -1847,6 +1854,7 @@ async function handleNetworkMessage(conn, data) {
     updateTransferProgress(t.filename, t.totalChunks, t.totalChunks, true);
     hideError();
     notify(`Received ${t.filename}`,'success',3000);
+    if (t.priv) { offerPrivateFile(t.filename, merged.buffer); updateDiagnosticsUI(); return; }   // personal file: ask, never auto-open
     if (isHost) for (const o of connections) if (o!==conn && o.open && o._authenticated) sendFileToConn(o, t.filename, merged.buffer);
     processAndRenderFileLocally(merged.buffer, t.filename, false).catch(err => { console.error(err); notify('Render failed.','error'); });
     updateDiagnosticsUI();
@@ -1866,7 +1874,7 @@ function broadcast(data) {
 }
 
 // ==================== FILE SEND ====================
-async function sendFileToConn(conn, filename, arrayBuffer) {
+async function sendFileToConn(conn, filename, arrayBuffer, opts) {
   if (!conn.open) return;
   const totalSize = arrayBuffer.byteLength;
   const totalChunks = Math.ceil(totalSize / CONFIG.chunkSize);
@@ -1876,7 +1884,7 @@ async function sendFileToConn(conn, filename, arrayBuffer) {
   outgoingTransfers.set(conn.peer, { sent:0, total: totalChunks, filename });
   
   try {
-    conn.send({ type:'FILE_START', filename, totalSize, totalChunks });
+    conn.send({ type:'FILE_START', filename, totalSize, totalChunks, private: !!(opts && opts.private) });
     const dc = conn.dataChannel;
     for (let i=0; i<totalChunks; i++) {
       while ((i - conn._ackedChunks) > CONFIG.maxInFlightChunks) {
@@ -1893,7 +1901,7 @@ async function sendFileToConn(conn, filename, arrayBuffer) {
       const end = Math.min(start+CONFIG.chunkSize, totalSize);
       conn.send({ type:'FILE_CHUNK', index: i, data: arrayBuffer.slice(start, end) });
       outgoingTransfers.get(conn.peer).sent = i+1;
-      if (i%32===0) updateDiagnosticsUI();
+      if (i%32===0) { updateDiagnosticsUI(); refreshPeers(); }
     }
     conn.send({ type:'FILE_END', filename });
     notify(`Sent ${filename} to ${String(conn.peer).substring(0,6)}…`,'success',3000);
@@ -1902,7 +1910,7 @@ async function sendFileToConn(conn, filename, arrayBuffer) {
     notify(`Transfer failed: ${e.message||e}`,'error',6000);
   } finally {
     outgoingTransfers.delete(conn.peer);
-    updateDiagnosticsUI();
+    updateDiagnosticsUI(); refreshPeers();
   }
 }
 function broadcastFile(filename, arrayBuffer) {
@@ -2332,8 +2340,8 @@ function refreshPeers() {
     const p = profiles[c.peer] || {}, nm = p.name || String(c.peer).substring(0, 6);
     const face = AVATAR_RE.test(p.avatar || '') ? `<img class="avatar" src="${p.avatar}" alt="">` : `<span class="avatar">${escapeHtml(nm[0] || '?').toUpperCase()}</span>`;
     const id = escapeHtml(c.peer);
-    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">${face}<div style="flex:1;min-width:0"><b>${escapeHtml(nm)}</b><span>${actBadge(c.peer)}</span><br><small style="color:var(--text-muted)">${c.open ? routeLabel(c) + ' · page ' + (c._page || '?') + ' / ' + state.totalPages + (c._detached ? ' · detached' : '') : 'connecting…'}</small></div>
-      <button class="secondary" onclick="hostCmd('${id}','HOST_MUTE')">Mute</button><button class="secondary" onclick="hostCmd('${id}','HOST_PING')">Ping</button><button class="secondary" onclick="hostCmd('${id}','HOST_KICK')">Kick</button></div>`;
+    return `<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:10px">${face}<div style="flex:1 1 140px;min-width:0"><b>${escapeHtml(nm)}</b><span>${actBadge(c.peer)}</span><br><small style="color:var(--text-muted)">${c.open ? routeLabel(c) + ' · page ' + (c._page || '?') + ' / ' + state.totalPages + (c._detached ? ' · detached' : '') + (outgoingTransfers.has(c.peer) ? ' · sending ' + Math.round(100 * outgoingTransfers.get(c.peer).sent / outgoingTransfers.get(c.peer).total) + '%' : '') : 'connecting…'}</small></div>
+      <button class="secondary" onclick="pickFileFor('${id}')">Send file</button><button class="secondary" onclick="hostCmd('${id}','HOST_MUTE')">Mute</button><button class="secondary" onclick="hostCmd('${id}','HOST_PING')">Ping</button><button class="secondary" onclick="hostCmd('${id}','HOST_KICK')">Kick</button></div>`;
   });
   document.getElementById('peers-list').innerHTML = rows.join('') || '<p style="color:var(--text-muted)">No peers connected.</p>';
 }
@@ -2583,9 +2591,33 @@ function routeLabel(c) { return c._ws ? '🌐 relay server' : c._virtual ? '🔗
 const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
 const wsReplacer = (k, v) => v instanceof ArrayBuffer ? { __b: b64(new Uint8Array(v)) } : ArrayBuffer.isView(v) ? { __b: b64(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) } : v;
 const wsRevive = (k, v) => v && typeof v === 'object' && typeof v.__b === 'string' ? Uint8Array.from(atob(v.__b), ch => ch.charCodeAt(0)) : v;
-const wsSend = (ws, to, p) => ws.send(JSON.stringify({ to, p }, wsReplacer));
+var peerRelayKey = '', relayKeyB64 = '';
+const b64u = u8 => b64(u8).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64 = t => Uint8Array.from(atob(t), ch => ch.charCodeAt(0));
+const unb64u = t => unb64(t.replace(/-/g, '+').replace(/_/g, '/'));
+const KEY_RE = /^[\w-]{43}$/, keyCache = {};
+const aesKey = k => keyCache[k] || (keyCache[k] = crypto.subtle.importKey('raw', unb64u(k), 'AES-GCM', false, ['encrypt', 'decrypt']));
+// AES-GCM, random 96-bit IV, room id bound as additional data. The key never goes to the relay (it lives in the invite link / host code).
+async function sealMsg(p, k, room) {
+  const iv = crypto.getRandomValues(new Uint8Array(12)), enc = new TextEncoder();
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: enc.encode(room) }, await aesKey(k), enc.encode(JSON.stringify(p, wsReplacer)));
+  return { e: 1, iv: b64(iv), c: b64(new Uint8Array(ct)) };
+}
+async function openMsg(env, k, room) {
+  if (!env || env.e !== 1 || !k) return null;
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(env.iv), additionalData: new TextEncoder().encode(room) }, await aesKey(k), unb64(env.c));
+  return JSON.parse(new TextDecoder().decode(pt), wsRevive);
+}
+const wsBuf = ws => ws ? ws.bufferedAmount + (ws._pending || 0) * 70000 : 0;   // queued-but-unsent frames count toward backpressure
+function wsSend(ws, to, p, key, room) {
+  ws._pending = (ws._pending || 0) + 1;
+  ws._q = (ws._q || Promise.resolve()).then(async () => {   // queue keeps message order despite async encryption
+    try { const env = await sealMsg(p, key, room); if (ws.readyState === 1) ws.send(JSON.stringify({ to, p: env })); } catch (_) {}
+    ws._pending--;
+  });
+}
 const relayUrl = (room, id) => `${getNet().relay.replace(/\/$/, '')}/room/${encodeURIComponent(room)}?id=${encodeURIComponent(id)}&t=${wsToken}`;
-const wsStub = ws => ({ get bufferedAmount() { return ws ? ws.bufferedAmount : 0; }, addEventListener() {}, removeEventListener() {} });
+const wsStub = ws => ({ get bufferedAmount() { return wsBuf(ws); }, addEventListener() {}, removeEventListener() {} });
 
 // peer side: use the relay when the direct route isn't up in time (or immediately in "relay server only" mode)
 function scheduleRelayJoin(direct) {
@@ -2601,23 +2633,30 @@ function startRelayJoin(direct) {
   const hostId = lastJoinCode, myId = myPeerId;
   if (!getNet().relay) { notify('Direct connection is slow or blocked. Add a relay server under menu → Network for a reliable fallback.', 'warning', 9000); return; }
   if (!hostId || !myId) return;
+  if (!peerRelayKey) { notify('The relay needs the full invite link or host code — it carries the encryption key. Ask the host to copy it again.', 'warning', 9000); return; }
   let ws; try { ws = new WebSocket(relayUrl(hostId, myId)); } catch (_) { notify('Relay server address is invalid.', 'error'); return; }
   setStatus('Connecting through the relay server…', 'info');
   ws.onopen = () => {
     if (direct.open) { ws.close(); return; }
     const v = { peer: hostId, open: true, _virtual: true, _ws: true, _sock: ws, _authenticated: false, dataChannel: wsStub(ws),
-      send(m) { if (ws.readyState === 1) wsSend(ws, hostId, m); }, close() { try { ws.close(); } catch (_) {} }, on() {} };
+      send(m) { if (ws.readyState === 1) wsSend(ws, hostId, m, peerRelayKey, hostId); }, close() { try { ws.close(); } catch (_) {} }, on() {} };
     relayV = v; connections = connections.filter(x => x !== direct); connections.push(v);
     try { direct.close(); } catch (_) {}
-    wsSend(ws, hostId, { type: 'RELAY_HELLO' });
+    wsSend(ws, hostId, { type: 'RELAY_HELLO' }, peerRelayKey, hostId);
     hideError(); setStatus('Connected through the relay server — awaiting session data…', 'info'); updatePeerListUI(); updateChatAvailability();
   };
   ws.onmessage = e => {
     let m; try { m = JSON.parse(e.data, wsRevive); } catch (_) { return; }
     if (m.err === 'gone') { notify('The host is not reachable through the relay server.', 'warning', 5000); return; }
     if (m.from !== hostId) return;
-    if (m.left || (m.p && m.p.type === 'RELAY_CLOSE')) { try { ws.close(); } catch (_) {} return; }
-    if (relayV && relayV._sock === ws && m.p) handleNetworkMessage(relayV, m.p);
+    if (m.left) { try { ws.close(); } catch (_) {} return; }
+    if (!m.p) return;
+    ws._rq = (ws._rq || Promise.resolve()).then(async () => {
+      let p; try { p = await openMsg(m.p, peerRelayKey, hostId); } catch (_) { return; }   // wrong key or tampered → dropped
+      if (!p) return;
+      if (p.type === 'RELAY_CLOSE') { try { ws.close(); } catch (_) {} return; }
+      if (relayV && relayV._sock === ws) handleNetworkMessage(relayV, p);
+    });
   };
   ws.onclose = () => {
     if (relayV && relayV._sock === ws) { connections = connections.filter(x => x !== relayV); relayV = null; updatePeerListUI(); notify('Relay connection lost — reconnecting…', 'warning'); scheduleRejoin(); }
@@ -2634,6 +2673,15 @@ function openHostRelay() {
 }
 function hostRelayMsg(m) {
   if (!isHost || !m.from) return;
+  if (m.left || !m.p) return hostRelayPlain(m);
+  const q = hostWs; if (!q) return;
+  q._rq = (q._rq || Promise.resolve()).then(async () => {
+    let p; try { p = await openMsg(m.p, relayKeyB64, myPeerId); } catch (_) { return; }   // peers without the key can't even say hello
+    if (p) hostRelayPlain({ from: m.from, p });
+  });
+}
+function hostRelayPlain(m) {
+  if (!isHost || !m.from) return;
   const X = String(m.from);
   if (m.left) { const n = connections.length; connections = connections.filter(c => !(c._ws && c.peer === X)); if (n !== connections.length) { updatePeerListUI(); updateChatAvailability(); } return; }
   const p = m.p; if (!p || typeof p !== 'object') return;
@@ -2642,9 +2690,9 @@ function hostRelayMsg(m) {
     if (v) return;
     connections = connections.filter(c => !(c.peer === X && !c.open));
     v = { peer: X, open: true, _virtual: true, _ws: true, _authenticated: !sessionAuth.required, dataChannel: wsStub(null),
-      send(msg) { if (hostWs && hostWs.readyState === 1) wsSend(hostWs, X, msg); },
-      close() { try { if (hostWs && hostWs.readyState === 1) wsSend(hostWs, X, { type: 'RELAY_CLOSE' }); } catch (_) {} connections = connections.filter(c => c !== v); updatePeerListUI(); updateChatAvailability(); }, on() {} };
-    Object.defineProperty(v.dataChannel, 'bufferedAmount', { get: () => hostWs ? hostWs.bufferedAmount : 0 });
+      send(msg) { if (hostWs && hostWs.readyState === 1) wsSend(hostWs, X, msg, relayKeyB64, myPeerId); },
+      close() { try { if (hostWs && hostWs.readyState === 1) wsSend(hostWs, X, { type: 'RELAY_CLOSE' }, relayKeyB64, myPeerId); } catch (_) {} connections = connections.filter(c => c !== v); updatePeerListUI(); updateChatAvailability(); }, on() {} };
+    Object.defineProperty(v.dataChannel, 'bufferedAmount', { get: () => wsBuf(hostWs) });
     connections.push(v); updatePeerListUI(); updateChatAvailability();
     notify(`Peer ${X.substring(0, 6)}… connected through the relay server`, 'info', 4000);
     if (sessionAuth.required) v.send({ type: 'AUTH_REQUIRED', salt: sessionAuth.salt }); else sendInitialDataToConn(v);
@@ -2702,6 +2750,27 @@ function openNetwork() {
 }
 
 document.getElementById('annot-import').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) importAnnots(f); });
+
+// ---- send a file to ONE peer (host panel)
+let sendTarget = null;
+function pickFileFor(pid) { if (!isHost) return; sendTarget = pid; document.getElementById('peer-file-input').click(); }
+document.getElementById('peer-file-input').addEventListener('change', async e => {
+  const f = e.target.files[0]; e.target.value = ''; const pid = sendTarget; sendTarget = null; if (!f || !pid) return;
+  const c = connections.find(x => x.peer === pid && x.open && x._authenticated !== false);
+  if (!c) return notify('That peer is no longer connected.', 'warning');
+  if (outgoingTransfers.has(pid)) return notify('Still sending a file to that peer — wait for it to finish.', 'warning');
+  const name = (profiles[pid] && profiles[pid].name) || String(pid).substring(0, 6);
+  notify(`Sending “${f.name}” to ${name}…`, 'info', 3000);
+  sendFileToConn(c, f.name, await f.arrayBuffer(), { private: true });
+});
+function offerPrivateFile(name, buf) {
+  const o = document.createElement('div'); o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:12px';
+  const mb = (buf.byteLength / 1e6).toFixed(buf.byteLength > 1e6 ? 1 : 2);
+  o.innerHTML = `<div style="background:var(--surface);color:inherit;padding:16px;border-radius:14px;max-width:380px;width:100%"><h3 style="margin:0 0 6px">File from the host</h3><p style="margin:0 0 12px;word-break:break-word"><b>${escapeHtml(name)}</b><br><small>${mb} MB · sent only to you</small></p><div style="display:flex;gap:8px;justify-content:flex-end"><button class="secondary" id="pf-x">Dismiss</button><button id="pf-save">Save to device</button></div></div>`;
+  document.body.appendChild(o);
+  o.querySelector('#pf-save').onclick = () => { saveBlob(new Blob([buf], { type: 'application/octet-stream' }), name.replace(/[\\/:*?"<>|]/g, '_')); o.remove(); };
+  o.querySelector('#pf-x').onclick = () => o.remove();
+}
 
 // ==================== INIT ====================
 updateDownloadButton();

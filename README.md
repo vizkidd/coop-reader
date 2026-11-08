@@ -2,7 +2,7 @@
 
 Read documents together in real time. Everything runs in the browser (static files, no backend of your own required): the host opens a file, shares a link or code, and everyone follows along. Connections are peer-to-peer (WebRTC via PeerJS), with optional relay fallbacks for difficult networks.
 
-> **Privacy note:** the document is sent to each peer's browser. It is not stored on any server. If the optional relay server is used, the document passes *through* it in transit, so whoever runs that relay could see it.
+> **Privacy note:** the document is sent to each peer's browser. It is not stored on any server. If the optional relay server is used, the document passes through it **end-to-end encrypted** (AES-GCM); the relay operator sees only who talks to whom and message sizes, not content.
 
 ---
 
@@ -48,6 +48,7 @@ DOCX, XLSX, EPUB and MOBI/AZW3 are shown as extracted text, not with their origi
 ### Host controls (👥 panel and menu)
 - See each peer's connection route and current page.
 - **Mute**, **ping** and **kick** peers.
+- **Send file** to one peer: it arrives as a private Save / Dismiss prompt and never changes anyone's shared document.
 - Toggle: peers may **download**, **open files**, **annotate and comment**.
 - Toggle speaking / typing / activity indicators for everyone.
 - Peers get a reduced interface (no host or sharing controls). This is a **UI-level** restriction: a peer's browser still receives the file, so download limits are not cryptographically enforced.
@@ -57,7 +58,7 @@ Connections try these routes in order:
 1. **Direct** WebRTC (STUN).
 2. **TURN relay** if you configure one (credentials URL or ICE JSON). Needed across Wi-Fi / mobile data in many cases.
 3. **Peer relay:** another connected peer dials the stuck newcomer and forwards data (one hop; the helper can see the traffic).
-4. **WebSocket relay server:** deploy `relay-worker.js` (below), or rely on the built-in default address, which is used **only if it answers a reachability check**.
+4. **WebSocket relay server** (end-to-end encrypted; the random key travels in the invite link, or in the host code as `id.key`, and is never sent to the relay — joining through the relay needs the full link or code): deploy `relay-worker.js` (below), or rely on the built-in default address, which is used **only if it answers a reachability check**.
 
 Options:
 - **Automatic** (default) or **Relay server only** mode.
@@ -71,7 +72,7 @@ Screen stays awake during a session, password entry uses an in-page dialog, and 
 
 ## Not implemented
 - Editing XLSX, DOCX or PDF forms.
-- Voice through relay routes; end-to-end encryption of relay traffic.
+- Voice through relay routes.
 - Original layout for DOCX / EPUB / MOBI.
 
 ---
