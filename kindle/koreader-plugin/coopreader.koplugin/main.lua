@@ -25,6 +25,7 @@ pcall(function() NetworkMgr = require("ui/network/manager") end)
 
 local CoopReader = WidgetContainer:extend{
     name = "coopreader",
+    is_doc_only = false,
     session_id = nil,
     relay_base_url = "https://coop-relay.coop-reader.workers.dev",
     daemon_base_url = "http://127.0.0.1:8765",
@@ -44,9 +45,7 @@ local CoopReader = WidgetContainer:extend{
 function CoopReader:init()
     self:loadSettings()
     self:logDebug("Plugin initialized (Relay: " .. tostring(self.relay_base_url) .. ")")
-    pcall(function()
-        self.ui.menu:registerToMainMenu(self)
-    end)
+    self.ui.menu:registerToMainMenu(self)
 end
 
 function CoopReader:loadSettings()
@@ -126,6 +125,7 @@ end
 function CoopReader:addToMainMenu(menu_items)
     menu_items.coop_reader = {
         text = "Coop Reader Sync",
+        sorting_hint = "tools",
         sub_item_table = {
             {
                 text = "Host New Session (Create PIN)...",
@@ -498,10 +498,6 @@ function CoopReader:startHostingSession()
         end
         local viewer = TextViewer:new{
             title = relay_registered and "Coop Reader — Hosting Session" or "Coop Reader — Relay Warning",
-            text = info_text,
-        }
-        UIManager:show(viewer)
-    end)
             text = info_text,
         }
         UIManager:show(viewer)
