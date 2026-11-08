@@ -40,6 +40,13 @@ def html_to_text(raw):
     raw = re.sub(r'(?i)</?(p|div|br|li|h[1-6]|tr|section|article)[^>]*>', '\\n', raw)
     return _html.unescape(re.sub(r'<[^>]+>', '', raw))
 
+def clean_epub_html(raw):
+    raw = re.sub(r'(?is)<(script|style)[^>]*>.*?</\\1>', '', raw)
+    raw = re.sub(r'(?i)\s+on[a-z]+\s*=\s*(["\'][^"\']*["\']|[^\s>]+)', '', raw)
+    m = re.search(r'(?is)<body[^>]*>(.*?)</body>', raw)
+    if m: raw = m.group(1)
+    return raw.strip()
+
 def epub_pages(z):
     order = []
     try:
@@ -58,7 +65,11 @@ def epub_pages(z):
         if name in z.namelist():
             raw = z.read(name).decode('utf-8', errors='ignore')
             m = re.search(r'(?is)<h[1-3][^>]*>(.*?)</h[1-3]>', raw)
-            add_section(html_to_text(m.group(1)).strip() if m else posixpath.basename(name), html_to_text(raw))
+            title = html_to_text(m.group(1)).strip() if m else posixpath.basename(name)
+            cleaned = clean_epub_html(raw)
+            if cleaned:
+                doc_toc.append({'t': title[:120], 'p': len(doc_pages)})
+                doc_pages.append(cleaned)
     return doc_pages
 
 def parse_document(file_bytes_js, filename):
@@ -76,22 +87,54 @@ def parse_document(file_bytes_js, filename):
             import docx
             from docx.table import Table
             from docx.text.paragraph import Paragraph
-            d = docx.Document(bio); title = 'Start'; lines = []
+            d = docx.Document(bio); title = 'Start'
+            cur_html = []
             for child in d.element.body.iterchildren():
                 if child.tag.endswith('}p'):
                     para = Paragraph(child, d)
-                    if (para.style.name or '').lower().startswith('heading') and para.text.strip():
-                        add_section(title, '\\n'.join(lines)); title = para.text.strip(); lines = [title]
-                    else: lines.append(para.text)
+                    p_text = _html.escape(para.text)
+                    style = (para.style.name or '').lower()
+                    if style.startswith('heading 1'):
+                        if cur_html:
+                            doc_toc.append({'t': title[:120], 'p': len(doc_pages)})
+                            doc_pages.append(''.join(cur_html)); cur_html = []
+                        title = para.text.strip() or 'Heading'
+                        cur_html.append(f'<h1 class="docx-h1">{p_text}</h1>')
+                    elif style.startswith('heading 2'):
+                        cur_html.append(f'<h2 class="docx-h2">{p_text}</h2>')
+                    elif style.startswith('heading 3'):
+                        cur_html.append(f'<h3 class="docx-h3">{p_text}</h3>')
+                    else:
+                        if p_text.strip():
+                            cur_html.append(f'<p class="docx-p">{p_text}</p>')
                 elif child.tag.endswith('}tbl'):
-                    for row in Table(child, d).rows: lines.append(' | '.join(c.text.strip() for c in row.cells))
-            add_section(title, '\\n'.join(lines))
+                    tbl_rows = []
+                    for row in Table(child, d).rows:
+                        tbl_cells = ''.join(f'<td class="docx-td" contenteditable="true">{_html.escape(c.text.strip())}</td>' for c in row.cells)
+                        tbl_rows.append(f'<tr>{tbl_cells}</tr>')
+                    cur_html.append(f'<table class="docx-table">{"".join(tbl_rows)}</table>')
+            if cur_html:
+                doc_toc.append({'t': title[:120], 'p': len(doc_pages)})
+                doc_pages.append(''.join(cur_html))
         elif fname.endswith('.xlsx'):
             import openpyxl
-            wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
-            for sheet in wb.sheetnames:
-                rows = [' | '.join('' if c is None else str(c) for c in r) for r in wb[sheet].iter_rows(values_only=True)]
-                add_section(sheet, f'--- Sheet: {sheet} ---\\n' + '\\n'.join(rows))
+            wb = openpyxl.load_workbook(bio, data_only=True)
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                html_rows = []
+                r_idx = 0
+                for row in ws.iter_rows(values_only=True):
+                    if not any(c is not None for c in row): continue
+                    cells = []
+                    for c_idx, val in enumerate(row):
+                        cell_str = '' if val is None else _html.escape(str(val))
+                        tag = 'th' if r_idx == 0 else 'td'
+                        cells.append(f'<{tag} contenteditable="true" data-row="{r_idx}" data-col="{c_idx}" class="xlsx-cell">{cell_str}</{tag}>')
+                    html_rows.append('<tr>' + ''.join(cells) + '</tr>')
+                    r_idx += 1
+                table_html = f'<div class="xlsx-sheet"><h3>Sheet: {_html.escape(sheet_name)}</h3><div class="table-scroll"><table class="xlsx-table" data-sheet="{_html.escape(sheet_name)}">' + ''.join(html_rows) + '</table></div></div>'
+                doc_toc.append({'t': sheet_name[:120], 'p': len(doc_pages)})
+                doc_pages.append(table_html)
         elif fname.endswith('.epub') or (fname.endswith(('.azw3', '.mobi')) and zipfile.is_zipfile(bio)):
             with zipfile.ZipFile(bio) as z: doc_pages = epub_pages(z)
         elif fname.endswith(('.azw3', '.mobi')):

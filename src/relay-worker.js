@@ -92,7 +92,7 @@ export class Room {
     if (url.pathname.endsWith('/sync') && req.method === 'POST') {
       try {
         let page = 1;
-        let from = 'http-peer';
+        let from = 'kindle';
         if (req.headers.get('Content-Type')?.includes('application/json')) {
           const b = await req.json();
           page = parseInt(b.page, 10) || 1;
@@ -102,11 +102,13 @@ export class Room {
           from = url.searchParams.get('from') || from;
         }
 
+        const roomMatch = url.pathname.match(/^\/room\/([\w-]{1,64})/);
+        const roomId = roomMatch ? roomMatch[1] : '';
         this.latestState = { page, updated: Date.now() };
 
         // Broadcast to all active WebSocket clients in this room (Chrome on MacOS)
         const frame = JSON.stringify({
-          from,
+          from: roomId || from,
           p: { type: 'PAGE_CHANGE', page },
         });
 
@@ -154,7 +156,17 @@ export class Room {
       if (t) {
         try { t.send(JSON.stringify({ from: id, p: m.p })); } catch {}
       } else {
-        server.send(JSON.stringify({ err: 'gone', to: m.to }));
+        // If target is the room ID itself, or a Kindle HTTP host not on WebSocket, broadcast to other clients in room
+        const isRoomTarget = (m.to === roomId || m.to.startsWith('kroom') || m.to === '*' || m.to === 'broadcast');
+        if (isRoomTarget) {
+          for (const [cid, ws] of this.clients.entries()) {
+            if (cid !== id) {
+              try { ws.send(JSON.stringify({ from: id, p: m.p })); } catch {}
+            }
+          }
+        } else {
+          server.send(JSON.stringify({ err: 'gone', to: m.to }));
+        }
       }
     });
 

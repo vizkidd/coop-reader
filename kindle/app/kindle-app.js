@@ -959,6 +959,77 @@
       }
     });
 
+    // ==================== BUY ME A COFFEE (BMC) ====================
+    var bmcTimer = null;
+    var bmcSecondsRemaining = 0;
+    var bmcHalftime = 0;
+
+    function showBmcModal(mode) {
+      try {
+        if (sessionStorage.getItem('coop_bmc_donated') === 'true') return;
+      } catch (_) {}
+
+      var isHostCreate = (mode === 'create' || mode === 'host');
+      var totalSeconds = isHostCreate ? 120 : 60;
+      bmcHalftime = isHostCreate ? 60 : 30;
+      bmcSecondsRemaining = totalSeconds;
+
+      var modal = document.getElementById('modal-bmc');
+      var closeBtn = document.getElementById('bmc-modal-close');
+      var statusEl = document.getElementById('bmc-timer-status');
+      var titleEl = document.getElementById('bmc-modal-title');
+      if (!modal) return;
+
+      if (titleEl) {
+        titleEl.innerText = isHostCreate ? 'Starting Session — Support Coop Reader 📖' : 'Joining Session — Support Coop Reader 📖';
+      }
+
+      if (closeBtn) closeBtn.style.display = 'none';
+
+      function updateStatus() {
+        if (bmcSecondsRemaining > bmcHalftime) {
+          var waitSecs = bmcSecondsRemaining - bmcHalftime;
+          if (statusEl) statusEl.innerText = 'Close button available in ' + waitSecs + 's (' + bmcSecondsRemaining + 's total)';
+          if (closeBtn) closeBtn.style.display = 'none';
+        } else {
+          if (statusEl) statusEl.innerText = 'Auto-closing in ' + bmcSecondsRemaining + 's';
+          if (closeBtn) {
+            closeBtn.style.display = 'inline-block';
+            closeBtn.innerText = 'Continue to Reader';
+          }
+        }
+      }
+
+      updateStatus();
+      modal.classList.add('open');
+
+      if (bmcTimer) clearInterval(bmcTimer);
+      bmcTimer = setInterval(function () {
+        bmcSecondsRemaining--;
+        updateStatus();
+        if (bmcSecondsRemaining <= 0) {
+          closeBmcModal();
+        }
+      }, 1000);
+    }
+
+    function closeBmcModal() {
+      if (bmcTimer) { clearInterval(bmcTimer); bmcTimer = null; }
+      var modal = document.getElementById('modal-bmc');
+      if (modal) modal.classList.remove('open');
+    }
+    window.closeBmcModal = closeBmcModal;
+
+    var bmcBtn = document.getElementById('bmc-btn-link');
+    if (bmcBtn) {
+      bmcBtn.addEventListener('click', function () {
+        try {
+          sessionStorage.setItem('coop_bmc_donated', 'true');
+        } catch (_) {}
+        closeBmcModal();
+      });
+    }
+
     // Session Host / Join Actions
     function connectToRoom(roomId, key) {
       state.sessionId = roomId;
@@ -969,6 +1040,7 @@
     }
 
     document.getElementById('btn-host-session').addEventListener('click', function () {
+      showBmcModal('create');
       state.isHost = true;
       state.sessionId = generateId('kroom');
       var keyBytes = new Uint8Array(32);
@@ -1024,6 +1096,7 @@
     document.getElementById('btn-join-session').addEventListener('click', function () {
       var code = (document.getElementById('input-join-code').value || '').trim();
       if (!code) return;
+      showBmcModal('join');
 
       var isShortPin = code.length <= 8 && code.indexOf('.') === -1 && code.indexOf('-') === -1;
       if (isShortPin) {
@@ -1092,6 +1165,10 @@
 
   // ==================== INITIALIZATION ====================
   function init() {
+    try {
+      sessionStorage.removeItem('coop_bmc_donated');
+      localStorage.removeItem('coop_bmc_donated');
+    } catch (_) {}
     cacheElements();
     state.myPeerId = generateId('k');
     document.body.classList.add('font-scale-' + state.fontScale);

@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="kindle-theme.css">
   <!-- Optional PDF.js (works with local copy or CDN when online) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script data-name="BMC-Widget" data-cfasync="false" src="https://cdnjs.buymeacoffee.com/1.0.0/widget.prod.min.js" data-id="vishveshkac" data-description="Support me on Buy me a coffee!" data-message="" data-color="#FF813F" data-position="Right" data-x_margin="18" data-y_margin="18"></script>
 </head>
 <body>
 
@@ -139,6 +140,27 @@
       </div>
       <div class="kindle-modal-footer">
         <button class="btn btn-close-modal">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Buy Me A Coffee Modal -->
+  <div id="modal-bmc" class="kindle-modal-overlay">
+    <div class="kindle-modal" style="text-align:center;">
+      <div class="kindle-modal-header">
+        <div class="kindle-modal-title" id="bmc-modal-title">Support Coop Reader 📖</div>
+      </div>
+      <div class="kindle-modal-body">
+        <p style="font-size:0.9rem; margin-bottom:12px;">Coop Reader is free and open-source. Consider buying a coffee to support development and server costs!</p>
+        <div style="margin:16px 0;">
+          <a href="https://buymeacoffee.com/vishveshkac" target="_blank" id="bmc-btn-link">
+            <img src="https://img.buymeacoffee.com/button-api/?text=Donate&emoji=📖&slug=vishveshkac&button_colour=FFDD00&font_colour=000000&font_family=Lato&outline_colour=000000&coffee_colour=ffffff" alt="Donate" style="max-width:100%; height:auto;">
+          </a>
+        </div>
+        <div id="bmc-timer-status" style="font-size:0.85rem; font-style:italic; margin-top:8px;"></div>
+      </div>
+      <div class="kindle-modal-footer" style="justify-content:center;">
+        <button id="bmc-modal-close" class="btn" style="display:none;" onclick="closeBmcModal()">Continue Reading</button>
       </div>
     </div>
   </div>

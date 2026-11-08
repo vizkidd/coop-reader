@@ -12,6 +12,8 @@
   <link rel="preconnect" href="https://cdnjs.cloudflare.com">
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.2/dist/docx-preview.min.js"></script>
+  <script data-name="BMC-Widget" data-cfasync="false" src="https://cdnjs.buymeacoffee.com/1.0.0/widget.prod.min.js" data-id="vishveshkac" data-description="Support me on Buy me a coffee!" data-message="" data-color="#FF813F" data-position="Right" data-x_margin="18" data-y_margin="18"></script>
   <style>
     :root {
       --primary:#2563eb; --primary-hover:#1d4ed8; --primary-soft:#eff6ff;
@@ -128,6 +130,28 @@
     #image-view{display:none;box-shadow:var(--shadow-md);border-radius:4px;height:auto;max-width:100%;margin:0 auto;flex-shrink:0}
     #viewer-container.pseudo-fs{position:fixed;inset:0;z-index:300;border-radius:0;min-height:100dvh;margin:0}
     #text-content{width:100%;white-space:pre-wrap;line-height:1.7;font-size:1rem;color:var(--text)}
+    #text-content.book-layout{font-family:Georgia,"Times New Roman",serif;font-size:1.12rem;line-height:1.78;max-width:820px;margin:0 auto;padding:24px 32px;white-space:normal;background:var(--surface);border-radius:var(--radius-sm);box-shadow:var(--shadow-sm);word-break:break-word}
+    #text-content.book-layout p{margin:0 0 1.15em 0;text-indent:1.5em;text-align:justify}
+    #text-content.book-layout p:first-of-type,#text-content.book-layout h1+p,#text-content.book-layout h2+p{text-indent:0}
+    #text-content.book-layout h1,#text-content.book-layout h2,#text-content.book-layout h3{font-family:system-ui,-apple-system,sans-serif;margin-top:1.4em;margin-bottom:0.5em;line-height:1.3}
+    #text-content.book-layout blockquote{border-left:3px solid var(--border);margin:1.2em 0 1.2em 1.5em;padding-left:1em;font-style:italic;color:var(--text-muted)}
+    #text-content.book-layout img{max-width:100%;height:auto;display:block;margin:16px auto}
+    #docx-view{width:100%;max-width:900px;margin:0 auto;background:#fff;color:#111;padding:32px;box-shadow:var(--shadow-md);border-radius:4px;overflow-x:auto;min-height:60vh}
+    .docx-wrapper{background:transparent !important;padding:0 !important}
+    .docx-wrapper>section.docx{box-shadow:none !important;margin:0 !important;padding:0 !important;width:100% !important}
+    .xlsx-sheet{width:100%;margin-bottom:24px}
+    .xlsx-table,.docx-table{width:100%;border-collapse:collapse;margin:12px 0;font-size:0.9rem}
+    .xlsx-table th,.xlsx-table td,.docx-table td{border:1px solid var(--border);padding:6px 10px;text-align:left}
+    .xlsx-table th{background:var(--surface-alt);font-weight:600}
+    .xlsx-cell[contenteditable="true"]:focus,.docx-td[contenteditable="true"]:focus,.editable-mode [contenteditable="true"]:focus{outline:2px solid var(--primary);background:rgba(37,99,235,0.06)}
+    .cell-flash{animation:flashYellow 0.6s ease}
+    @keyframes flashYellow{0%,100%{background:transparent}50%{background:#fef08a}}
+    #pdf-form-layer{position:absolute;inset:0;pointer-events:none;z-index:4}
+    .pdf-form-field{pointer-events:auto;box-sizing:border-box;background:rgba(239,246,255,0.75);border:1px solid rgba(37,99,235,0.5);font-size:13px;color:#1e293b;padding:2px 4px;border-radius:2px}
+    .pdf-form-field:focus{outline:2px solid #2563eb;background:#fff}
+    input[type="checkbox"].pdf-form-field{accent-color:#2563eb;cursor:pointer}
+    .edit-mode-active{border:2px dashed var(--warning) !important;position:relative}
+    button.icon-btn.editing-active{background:var(--warning);color:#fff;border-color:var(--warning)}
     .remote-cursor{position:absolute;width:14px;height:14px;background:var(--error);border:2px solid #fff;border-radius:50%;pointer-events:none;transform:translate(-50%,-50%);transition:left .05s linear,top .05s linear;z-index:1000;box-shadow:0 2px 6px rgba(0,0,0,.25)}
     .remote-cursor::after{content:attr(data-peer);position:absolute;left:18px;top:-4px;background:rgba(15,23,42,.9);color:#fff;padding:2px 6px;font-size:10px;font-weight:600;border-radius:4px;white-space:nowrap}
     #bottom-nav{position:fixed;bottom:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 16px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));background:var(--surface);border-top:1px solid var(--border);box-shadow:0 -4px 12px rgba(0,0,0,.06);z-index:45}
@@ -178,6 +202,7 @@
     <span id="current-file" class="current-file"></span>
   </div>
   <div class="app-actions">
+    <button id="btn-edit-mode" class="icon-btn" aria-label="Toggle edit mode" title="Edit DOCX/XLSX or Form" onclick="toggleEditMode()">✏️</button>
     <button id="btn-peers" class="icon-btn host-only" aria-label="Peers" title="Peers" onclick="openPeers()">👥</button>
     <button id="btn-chat" class="icon-btn" aria-label="Chat" title="Chat">💬<span id="chat-badge" class="badge hidden">0</span></button>
     <button id="btn-voice" class="icon-btn" aria-label="Toggle voice chat" title="Voice chat">🎤</button>
@@ -187,16 +212,17 @@
 </header>
 
 <div id="menu-panel" class="menu-panel">
-  <div class="menu-group host-only">
+  <div class="menu-group" id="session-create-group">
     <span class="menu-label">Session</span>
-    <button onclick="startHost()">Create</button>
+    <button id="btn-create-session" onclick="startHost()">Create</button>
     <input type="password" id="host-password" placeholder="Host password (optional)" autocomplete="new-password" />
+    <button id="btn-leave-session" class="secondary" onclick="resetToSolo()" style="display:none">Leave Session</button>
   </div>
-  <div class="menu-group">
+  <div class="menu-group" id="session-join-group">
     <span class="menu-label">Join</span>
-    <input type="text" id="join-code" placeholder="Host code" autocomplete="off" />
+    <input type="text" id="join-code" placeholder="Host code or PIN" autocomplete="off" />
     <input type="password" id="join-password" placeholder="Password (if required)" autocomplete="off" />
-    <button onclick="joinSession()">Join</button>
+    <button id="btn-join-action" onclick="joinSession()">Join</button>
   </div>
   <div class="menu-group">
     <span class="menu-label">You</span>
@@ -304,6 +330,8 @@
 <div id="viewer-wrap">
   <main id="viewer-container">
     <canvas id="pdf-canvas"></canvas>
+    <div id="pdf-form-layer"></div>
+    <div id="docx-view" class="hidden"></div>
     <img id="image-view" alt="Loaded image" />
     <div id="text-content">Load a file or connect to a session to start reading securely in the WASM sandbox…</div>
   </main>
@@ -337,6 +365,24 @@
 <div id="activity-strip" aria-hidden="true"></div>
 <div id="toast-container" aria-live="polite"></div>
 <div id="audio-container" aria-hidden="true"></div>
+
+<div id="bmc-modal" class="modal">
+  <div class="modal-content" style="text-align:center;max-width:440px;">
+    <h3 id="bmc-modal-title" style="margin-bottom:8px;">Support Coop Reader 📖</h3>
+    <p id="bmc-modal-desc" style="color:var(--text-muted);font-size:0.92rem;line-height:1.45;margin-bottom:18px;">
+      Coop Reader is free &amp; open source. If you find it helpful, please consider donating to support development and server costs!
+    </p>
+    <div style="margin:20px 0;">
+      <a href="https://buymeacoffee.com/vishveshkac" target="_blank" rel="noopener" id="bmc-modal-btn">
+        <img src="https://img.buymeacoffee.com/button-api/?text=Donate&emoji=📖&slug=vishveshkac&button_colour=FFDD00&font_colour=000000&font_family=Lato&outline_colour=000000&coffee_colour=ffffff" alt="Donate" style="max-width:100%;height:auto;cursor:pointer;" />
+      </a>
+    </div>
+    <div id="bmc-timer-status" style="font-size:0.84rem;color:var(--text-muted);margin-top:12px;"></div>
+    <div class="modal-actions" style="justify-content:center;margin-top:16px;">
+      <button id="bmc-modal-close" class="secondary" style="display:none;" onclick="closeBmcModal()">Continue Reading</button>
+    </div>
+  </div>
+</div>
 
 <div id="peers-modal" class="modal" onclick="if(event.target===this)closeModal('peers-modal')"><div class="modal-content"><h3>Peers</h3><div id="peers-list"></div><input type="file" id="peer-file-input" hidden />
   <h3 style="margin-top:14px">Indicators &amp; permissions</h3>
@@ -759,8 +805,19 @@ function removeRemoteCursor(peerId) {
 }
 function clearAllRemoteCursors() { for (const id of Object.keys(remoteCursors)) removeRemoteCursor(id); }
 
-// ==================== AUTO-JOIN ====================
+// ==================== AUTO-JOIN & BMC RESET ====================
+let httpSyncInterval = null;
+
+function resetBmcStorage() {
+  try {
+    sessionStorage.removeItem('coop_bmc_donated');
+    localStorage.removeItem('coop_bmc_donated');
+  } catch (_) {}
+}
+
 function checkForAutoJoin() {
+  resetBmcStorage();
+
   const hashParams = new URLSearchParams(location.hash.slice(1));
   const pwHashFromUrl = hashParams.get('pw');
   const rkFromUrl = hashParams.get('rk');
@@ -772,13 +829,71 @@ function checkForAutoJoin() {
   const params = new URLSearchParams(window.location.search);
   let sessionId = null;
   if (params.has('p')) sessionId = params.get('p').replace(/^\/+/, '').trim();
-  else { const segs = window.location.pathname.split('/').filter(Boolean); if (segs.length>1) sessionId = segs[1]; }
-  if (!sessionId) { try { sessionId = sessionStorage.getItem('coop-session'); if (!pendingAuthHash) pendingAuthHash = sessionStorage.getItem('coop-auth'); if (!peerRelayKey) peerRelayKey = sessionStorage.getItem('coop-rk') || ''; } catch (_) {} }
+  else {
+    const segs = window.location.pathname.split('/').filter(Boolean);
+    if (segs.length > 1 && segs[segs.length - 1] !== 'index.html' && segs[segs.length - 1] !== 'coop-reader') {
+      sessionId = segs[segs.length - 1];
+    }
+  }
+
+  // If no explicit URL parameters, clean up stale session storage so reload stays in fresh solo mode
+  if (!sessionId) {
+    try {
+      sessionStorage.removeItem('coop-session');
+      sessionStorage.removeItem('coop-auth');
+      sessionStorage.removeItem('coop-rk');
+    } catch (_) {}
+    document.body.classList.remove('peer-mode');
+    updateHostUI();
+    return;
+  }
+
   if (sessionId && !window.__autoJoined) {
     window.__autoJoined = true;
     try { history.replaceState(null, '', location.pathname); } catch (_) {}
-    document.getElementById('join-code').value = sessionId; setTimeout(() => joinSession(sessionId), 400);
+    document.getElementById('join-code').value = sessionId;
+    setTimeout(() => joinSession(sessionId), 400);
   }
+}
+
+function resetToSolo() {
+  clearTimeout(rejoinTimer);
+  rejoinTimer = null;
+  rejoinAttempts = 0;
+  lastJoinCode = null;
+  pendingAuthHash = null;
+  peerRelayKey = '';
+  if (httpSyncInterval) { clearInterval(httpSyncInterval); httpSyncInterval = null; }
+  stopRelayVoice();
+  try {
+    sessionStorage.removeItem('coop-session');
+    sessionStorage.removeItem('coop-auth');
+    sessionStorage.removeItem('coop-rk');
+  } catch (_) {}
+  if (relayV) {
+    try { relayV._sock.close(); } catch (_) {}
+    relayV = null;
+  }
+  if (hostWs) {
+    try { hostWs.close(); } catch (_) {}
+    hostWs = null;
+  }
+  if (peer) {
+    try { peer.destroy(); } catch (_) {}
+    peer = null;
+  }
+  connections = [];
+  cleanupVoice();
+  isHost = false;
+  myPeerId = null;
+  document.body.classList.remove('peer-mode');
+  hideError();
+  setStatus('Solo reading', 'info');
+  updateHostUI();
+  updatePeerListUI();
+  updateChatAvailability();
+  updateDownloadButton();
+  notify('Returned to solo mode.', 'info', 2500);
 }
 
 // ==================== CONNECTION HANDLERS ====================
@@ -970,6 +1085,7 @@ async function startHost() {
   else sessionAuth = { required:false, salt:null, hash:null };
 
   setStatus('Creating session…','info');
+  showBmcModal('create');
   peer = new Peer(peerOptions());
   attachPeerMediaHandlers();
   
@@ -1052,12 +1168,34 @@ function scheduleRejoin() {
   setStatus(`Reconnecting (${rejoinAttempts})…`, 'warning');
   rejoinTimer = setTimeout(() => { rejoinTimer = null; pendingAuthHash = lastAuthHash; joinSession(lastJoinCode, true); }, delay);
 }
-function joinSession(targetCode, isRetry) {
+let targetIsKindleRoom = false;
+
+async function joinSession(targetCode, isRetry) {
   hideError();
   const rawCode = (targetCode || document.getElementById('join-code').value || '').trim();
-  const dot = rawCode.indexOf('.'), code = dot > 0 ? rawCode.slice(0, dot) : rawCode;   // host code may be "id.key"
+  const dot = rawCode.indexOf('.');
+  if (!rawCode) return notify('Enter a host code first.','warning');
+
+  if (!isRetry) showBmcModal('join');
+
+  // Resolve short PIN if entered on desktop (e.g. 4-digit Kindle PIN)
+  if (dot === -1 && /^\w{3,8}$/.test(rawCode)) {
+    try {
+      const relayHttp = (getNet().relay || DEFAULT_RELAY).replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+      const res = await fetch(`${relayHttp}/pin/${encodeURIComponent(rawCode)}`);
+      const data = await res.json();
+      if (data && data.ok && data.room) {
+        targetIsKindleRoom = true;
+        if (data.key) { peerRelayKey = data.key; try { sessionStorage.setItem('coop-rk', peerRelayKey); } catch (_) {} }
+        notify(`Resolved PIN ${rawCode}`, 'info', 2000);
+        return joinSession(data.room + (data.key ? '.' + data.key : ''), isRetry);
+      }
+    } catch (_) {}
+  }
+
+  const code = dot > 0 ? rawCode.slice(0, dot) : rawCode;   // host code may be "id.key"
+  if (code.startsWith('kroom') || code.startsWith('kindle')) targetIsKindleRoom = true;
   if (dot > 0 && KEY_RE.test(rawCode.slice(dot + 1))) { peerRelayKey = rawCode.slice(dot + 1); try { sessionStorage.setItem('coop-rk', peerRelayKey); } catch (_) {} }
-  if (!code) return notify('Enter a host code first.','warning');
   if (code === myPeerId) return notify('You cannot join your own session.','warning');
   lastJoinCode = code; if (!isRetry) { rejoinAttempts = 0; preAuthDrops = 0; } clearTimeout(rejoinTimer); rejoinTimer = null;
   try { sessionStorage.setItem('coop-session', code); } catch (_) {}
@@ -1067,7 +1205,7 @@ function joinSession(targetCode, isRetry) {
   cleanupVoice();
   if (peer) { try{peer.destroy()}catch(_){} }
   connections = [];
-  isHost = false; myPeerId = null; document.body.classList.add('peer-mode');
+  isHost = false; myPeerId = null;
   updateHostUI(); updateDownloadButton();
 
   setStatus(`Connecting to ${code}…`,'info');
@@ -1116,6 +1254,8 @@ function joinSession(targetCode, isRetry) {
     conn.on('open', () => {
       clearTimeout(timeout);
       hideError();
+      document.body.classList.add('peer-mode');
+      updateHostUI();
       setStatus('Connected — awaiting session data…','info');
       sendProfile(); reportPage();
       if (getMediaStreamForCall() && !audioCalls.has(conn.peer)) startOutgoingCall(conn.peer);
@@ -1220,6 +1360,24 @@ function updateHostUI() {
     const label = pwCheckbox.closest('label');
     if (label) label.style.opacity = hasPw ? '1' : '0.5';
     pwCheckbox.title = hasPw ? '' : 'Set a password to enable this';
+  }
+
+  const isConnectedPeer = document.body.classList.contains('peer-mode') && connections.some(c => c.open);
+  const btnCreate = document.getElementById('btn-create-session');
+  const hostPw = document.getElementById('host-password');
+  const btnLeave = document.getElementById('btn-leave-session');
+  const joinGroup = document.getElementById('session-join-group');
+
+  if (isConnectedPeer) {
+    if (btnCreate) btnCreate.style.display = 'none';
+    if (hostPw) hostPw.style.display = 'none';
+    if (btnLeave) btnLeave.style.display = '';
+    if (joinGroup) joinGroup.style.display = 'none';
+  } else {
+    if (btnCreate) btnCreate.style.display = '';
+    if (hostPw) hostPw.style.display = '';
+    if (btnLeave) btnLeave.style.display = 'none';
+    if (joinGroup) joinGroup.style.display = '';
   }
 }
 
@@ -1497,6 +1655,7 @@ function announceVoiceOn() {
   for (const conn of connections) if (conn.open && !audioCalls.has(conn.peer)) startOutgoingCall(conn.peer);
 }
 async function disableVoice() {
+  stopRelayVoice();
   if (localStream) { localStream.getTracks().forEach(t => { try{t.stop()}catch(_){} }); localStream=null; }
   listenOnly = false;
   removeSpeakerAnalyser('local');
@@ -1507,6 +1666,7 @@ async function disableVoice() {
   notify('Voice chat disabled.','info',2000);
 }
 function cleanupVoice() {
+  stopRelayVoice();
   if (localStream) { localStream.getTracks().forEach(t => { try{t.stop()}catch(_){} }); localStream=null; }
   listenOnly = false;
   for (const [peerId, call] of audioCalls) { try{call.close()}catch(_){} }
@@ -1525,13 +1685,14 @@ function requestCall(peerId) {
 function startOutgoingCall(peerId) {
   if (!peer || peer.disconnected || audioCalls.has(peerId)) return;
   if (isHost && !connections.some(c => c.open && c.peer === peerId)) return;
-  if (isHost ? connections.some(c => c.peer === peerId && c._virtual) : connections.some(c => c.open && c._virtual)) { voiceRelayWarn(); return; }
+  const isVirtual = isHost ? connections.some(c => c.peer === peerId && c._virtual) : connections.some(c => c.open && c._virtual);
+  if (isVirtual) { startRelayVoice(); return; }
   const stream = getMediaStreamForCall();
   if (!stream) return;
   if (myPeerId && myPeerId > peerId) { requestCall(peerId); return; }   // smaller ID always initiates
   try {
     const call = peer.call(peerId, stream);
-    if (!call) return;
+    if (!call) { startRelayVoice(); return; }
     call._initiator = myPeerId; call._outgoing = true;
     bindCallCleanup(call, peerId);
     call.on('stream', (rs) => attachRemoteAudio(peerId, rs));
@@ -1823,9 +1984,29 @@ async function handleNetworkMessage(conn, data) {
   }
   if (data.type==='PAGE_CHANGE') {
     const pg = parseInt(data.page, 10);
-    if (!(pg >= 1 && pg <= state.totalPages)) return;
+    if (!pg || pg < 1) return;
     syncedPage = pg;
     if (detached) updateDetachUI(); else { state.currentPage = pg; renderCurrentPage(); }
+    if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
+    return;
+  }
+  if (data.type==='RELAY_VOICE_CHUNK') {
+    handleRelayVoiceChunk(data.peerId, data.data, data.mime);
+    if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
+    return;
+  }
+  if (data.type==='FORM_FIELD_CHANGE') {
+    handleRemoteFormField(data);
+    if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
+    return;
+  }
+  if (data.type==='XLSX_CELL_CHANGE') {
+    handleRemoteXlsxCell(data);
+    if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
+    return;
+  }
+  if (data.type==='DOCX_CONTENT_CHANGE') {
+    handleRemoteDocxContent(data);
     if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
     return;
   }
@@ -1998,12 +2179,18 @@ async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
   cachedFilename = filename; cachedFileBytes = arrayBuffer.slice(0);
   setCurrentFileLabel(filename);
   const fname = filename.toLowerCase();
+  const docxView = document.getElementById('docx-view');
+
   if (fname.endsWith('.pdf')) state.fileType = 'pdf';
   else if (/\.(png|jpe?g|gif|webp)$/.test(fname)) state.fileType = 'image';
+  else if (fname.endsWith('.docx') && window.docx && window.docx.renderAsync) state.fileType = 'docx';
   else state.fileType = 'other';
+
   document.getElementById('pdf-canvas').style.display = state.fileType==='pdf'?'block':'none';
   document.getElementById('image-view').style.display = state.fileType==='image'?'block':'none';
   document.getElementById('text-content').style.display = state.fileType==='other'?'block':'none';
+  if (docxView) docxView.classList.toggle('hidden', state.fileType !== 'docx');
+
   if (state.fileType==='pdf') {
     try {
       pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
@@ -2020,7 +2207,28 @@ async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
       applyImageZoom();
     };
     img.src = url;
-  } else {
+  } else if (state.fileType==='docx') {
+    state.totalPages = 1;
+    docxView.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Rendering Word document with original layout…</div>';
+    try {
+      docxView.innerHTML = '';
+      await window.docx.renderAsync(arrayBuffer.slice(0), docxView, null, {
+        inWrapper: true,
+        ignoreWidth: false,
+        ignoreHeight: false,
+        experimental: true
+      });
+      setStatus('DOCX rendered with original layout.', 'success');
+      docxView.addEventListener('input', () => {
+        broadcast({ type: 'DOCX_CONTENT_CHANGE', page: state.currentPage, content: docxView.innerHTML });
+      });
+    } catch (e) {
+      console.warn('docx-preview failed, fallback to worker', e);
+      state.fileType = 'other';
+    }
+  }
+  
+  if (state.fileType==='other') {
     setStatus('Parsing document in worker…','info');
     try {
       const copy = arrayBuffer.slice(0);
@@ -2055,14 +2263,50 @@ function applyImageZoom() {
 async function renderCurrentPage() {
   updatePageUI(); reportPage();
   clearAllRemoteCursors();
-  if (state.fileType==='pdf' && pdfDoc) await renderPdfPage();
-  else if (state.fileType==='image') applyImageZoom();
-  else if (state.fileType==='other' && pyodideWorker) {
+  const docxView = document.getElementById('docx-view');
+  const pdfCanvas = document.getElementById('pdf-canvas');
+  const pdfFormLayer = document.getElementById('pdf-form-layer');
+  const imageView = document.getElementById('image-view');
+  const textContent = document.getElementById('text-content');
+
+  if (state.fileType==='pdf' && pdfDoc) {
+    if (docxView) docxView.classList.add('hidden');
+    textContent.style.display = 'none';
+    imageView.style.display = 'none';
+    pdfCanvas.style.display = 'block';
+    if (pdfFormLayer) pdfFormLayer.style.display = 'block';
+    await renderPdfPage();
+  } else if (state.fileType==='image') {
+    if (docxView) docxView.classList.add('hidden');
+    if (pdfFormLayer) pdfFormLayer.style.display = 'none';
+    pdfCanvas.style.display = 'none';
+    textContent.style.display = 'none';
+    imageView.style.display = 'block';
+    applyImageZoom();
+  } else if (state.fileType==='docx') {
+    pdfCanvas.style.display = 'none';
+    if (pdfFormLayer) pdfFormLayer.style.display = 'none';
+    imageView.style.display = 'none';
+    textContent.style.display = 'none';
+    if (docxView) docxView.classList.remove('hidden');
+  } else if (state.fileType==='other' && pyodideWorker) {
+    pdfCanvas.style.display = 'none';
+    if (pdfFormLayer) pdfFormLayer.style.display = 'none';
+    imageView.style.display = 'none';
+    if (docxView) docxView.classList.add('hidden');
+    textContent.style.display = 'block';
     try {
       const result = await workerCall('getPage', { index: state.currentPage - 1 });
-      document.getElementById('text-content').textContent = result.content || 'Document loaded or page empty.';
+      const rawContent = result.content || '';
+      if (/<[a-z][\s\S]*>/i.test(rawContent)) {
+        textContent.classList.add('book-layout');
+        textContent.innerHTML = rawContent;
+      } else {
+        textContent.classList.remove('book-layout');
+        textContent.textContent = rawContent || 'Document loaded or page empty.';
+      }
     } catch (err) {
-      document.getElementById('text-content').textContent = 'Failed to load page: ' + (err.message||err);
+      textContent.textContent = 'Failed to load page: ' + (err.message||err);
     }
   }
 }
@@ -2094,6 +2338,7 @@ async function renderPdfPageInner() {
   canvas.style.width = Math.floor(cssW)+'px'; canvas.style.height = Math.floor(cssH)+'px';
   pdfRenderTask = page.render({ canvasContext: ctx, viewport: renderViewport });
   await pdfRenderTask.promise;
+  await renderPdfForms(page, renderViewport, cssW, cssH);
 }
 
 // ==================== NAVIGATION ====================
@@ -2660,16 +2905,34 @@ const unb64 = t => Uint8Array.from(atob(t), ch => ch.charCodeAt(0));
 const unb64u = t => unb64(t.replace(/-/g, '+').replace(/_/g, '/'));
 const KEY_RE = /^[\w-]{43}$/, keyCache = {};
 const aesKey = k => keyCache[k] || (keyCache[k] = crypto.subtle.importKey('raw', unb64u(k), 'AES-GCM', false, ['encrypt', 'decrypt']));
-// AES-GCM, random 96-bit IV, room id bound as additional data. The key never goes to the relay (it lives in the invite link / host code).
+// AES-GCM, random 96-bit IV, room id bound as additional data. Plain fallback for Kindle/KOReader.
 async function sealMsg(p, k, room) {
-  const iv = crypto.getRandomValues(new Uint8Array(12)), enc = new TextEncoder();
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: enc.encode(room) }, await aesKey(k), enc.encode(JSON.stringify(p, wsReplacer)));
-  return { e: 1, iv: b64(iv), c: b64(new Uint8Array(ct)) };
+  if (!k || !crypto?.subtle) {
+    return { raw: JSON.stringify(p, wsReplacer) };
+  }
+  try {
+    const iv = crypto.getRandomValues(new Uint8Array(12)), enc = new TextEncoder();
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: enc.encode(room) }, await aesKey(k), enc.encode(JSON.stringify(p, wsReplacer)));
+    return { e: 1, iv: b64(iv), c: b64(new Uint8Array(ct)) };
+  } catch (_) {
+    return { raw: JSON.stringify(p, wsReplacer) };
+  }
 }
 async function openMsg(env, k, room) {
-  if (!env || env.e !== 1 || !k) return null;
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(env.iv), additionalData: new TextEncoder().encode(room) }, await aesKey(k), unb64(env.c));
-  return JSON.parse(new TextDecoder().decode(pt), wsRevive);
+  if (!env) return null;
+  if (env.type) return env;
+  if (env.raw) {
+    try { return JSON.parse(env.raw, wsRevive); } catch (_) { return null; }
+  }
+  if (env.e === 1 && k && crypto?.subtle) {
+    try {
+      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(env.iv), additionalData: new TextEncoder().encode(room) }, await aesKey(k), unb64(env.c));
+      return JSON.parse(new TextDecoder().decode(pt), wsRevive);
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
 }
 const wsBuf = ws => ws ? ws.bufferedAmount + (ws._pending || 0) * 70000 : 0;   // queued-but-unsent frames count toward backpressure
 function wsSend(ws, to, p, key, room) {
@@ -2679,12 +2942,13 @@ function wsSend(ws, to, p, key, room) {
     ws._pending--;
   });
 }
-const relayUrl = (room, id) => `${getNet().relay.replace(/\/$/, '')}/room/${encodeURIComponent(room)}?id=${encodeURIComponent(id)}&t=${wsToken}`;
+const relayUrl = (room, id) => `${(getNet().relay || DEFAULT_RELAY).replace(/\/$/, '')}/room/${encodeURIComponent(room)}?id=${encodeURIComponent(id)}&t=${wsToken}`;
 const wsStub = ws => ({ get bufferedAmount() { return wsBuf(ws); }, addEventListener() {}, removeEventListener() {} });
 
 // peer side: use the relay when the direct route isn't up in time (or immediately in "relay server only" mode)
 function scheduleRelayJoin(direct) {
-  const delay = getNet().mode === 'ws' ? 300 : 8000;
+  const isKindle = targetIsKindleRoom || (lastJoinCode && (lastJoinCode.startsWith('kroom') || lastJoinCode.startsWith('kindle')));
+  const delay = (getNet().mode === 'ws' || isKindle) ? 50 : 8000;
   setTimeout(async () => {
     if (isHost || direct.open || bridgeV || relayV || !connections.includes(direct)) return;
     await ensureRelayProbe();
@@ -2694,32 +2958,63 @@ function scheduleRelayJoin(direct) {
 }
 function startRelayJoin(direct) {
   const hostId = lastJoinCode, myId = myPeerId;
-  if (!getNet().relay) { notify('Direct connection is slow or blocked. Add a relay server under menu → Network for a reliable fallback.', 'warning', 9000); return; }
+  const relayEndpoint = getNet().relay || DEFAULT_RELAY;
+  if (!relayEndpoint) { notify('Direct connection is slow or blocked. Add a relay server under menu → Network for a reliable fallback.', 'warning', 9000); return; }
   if (!hostId || !myId) return;
-  if (!peerRelayKey) { notify('The relay needs the full invite link or host code — it carries the encryption key. Ask the host to copy it again.', 'warning', 9000); return; }
   let ws; try { ws = new WebSocket(relayUrl(hostId, myId)); } catch (_) { notify('Relay server address is invalid.', 'error'); return; }
   setStatus('Connecting through the relay server…', 'info');
   ws.onopen = () => {
     if (direct.open) { ws.close(); return; }
-    const v = { peer: hostId, get open() { return ws.readyState === 1; }, _lastPong: Date.now(), _virtual: true, _ws: true, _sock: ws, _authenticated: false, dataChannel: wsStub(ws),
+    document.body.classList.add('peer-mode');
+    updateHostUI();
+    const v = { peer: hostId, get open() { return ws.readyState === 1; }, _lastPong: Date.now(), _virtual: true, _ws: true, _sock: ws, _authenticated: true, dataChannel: wsStub(ws),
       send(m) { if (ws.readyState === 1) wsSend(ws, hostId, m, peerRelayKey, hostId); }, close() { try { ws.close(); } catch (_) {} }, on() {} };
     relayV = v; connections = connections.filter(x => x !== direct); connections.push(v);
     try { direct.close(); } catch (_) {}
     wsSend(ws, hostId, { type: 'RELAY_HELLO' }, peerRelayKey, hostId);
+    wsSend(ws, hostId, { type: 'REQ_SYNC' }, peerRelayKey, hostId);
     netLog('relay socket open');
     relayWatchdog(v, () => relayV === v, () => { notify('Relay connection went quiet — reconnecting…', 'warning'); try { ws.close(); } catch (_) {} });
-    hideError(); setStatus('Connected through the relay server — awaiting session data…', 'info'); updatePeerListUI(); updateChatAvailability();
+    hideError(); setStatus('Connected through relay server — awaiting session data…', 'info'); updatePeerListUI(); updateChatAvailability();
+
+    // Query room state via HTTP to immediately sync with host (Kindle / KOReader)
+    const relayHttp = relayEndpoint.replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+    fetch(`${relayHttp}/room/${encodeURIComponent(hostId)}/state`)
+      .then(r => r.json())
+      .then(st => {
+        if (st && st.ok && st.page != null) {
+          const pg = parseInt(st.page, 10);
+          if (pg && pg >= 1) {
+            syncedPage = pg;
+            if (!detached) { state.currentPage = pg; renderCurrentPage(); }
+            setStatus(`Connected to Kindle host — Page ${pg}`, 'success');
+          }
+        }
+      }).catch(() => {});
+
+    startHttpSyncPolling(hostId);
   };
   ws.onmessage = e => {
     let m; try { m = JSON.parse(e.data, wsRevive); } catch (_) { return; }
-    if (m.err === 'gone') { notify('The host is not reachable through the relay server.', 'warning', 5000); return; }
-    if (m.from !== hostId) return;
-    if (m.left) { try { ws.close(); } catch (_) {} return; }
+    if (m.err === 'gone') {
+      if (hostId.startsWith('kroom') || hostId.startsWith('kindle') || targetIsKindleRoom) return;
+      notify('The host is not reachable through the relay server.', 'warning', 5000);
+      return;
+    }
+    if (m.left && m.from === hostId) { try { ws.close(); } catch (_) {} return; }
     if (!m.p) return;
     ws._rq = (ws._rq || Promise.resolve()).then(async () => {
-      let p; try { p = await openMsg(m.p, peerRelayKey, hostId); } catch (_) { return; }   // wrong key or tampered → dropped
+      let p; try { p = await openMsg(m.p, peerRelayKey, hostId); } catch (_) { return; }
       if (!p) return;
       if (p.type === 'RELAY_CLOSE') { try { ws.close(); } catch (_) {} return; }
+      if (p.type === 'PAGE_CHANGE') {
+        const pg = parseInt(p.page, 10);
+        if (pg && pg >= 1) {
+          syncedPage = pg;
+          if (!detached) { state.currentPage = pg; renderCurrentPage(); }
+          setStatus(`Kindle turned to page ${pg}`, 'info', 2000);
+        }
+      }
       if (relayV && relayV._sock === ws) handleNetworkMessage(relayV, p);
     });
   };
@@ -2858,8 +3153,8 @@ function healthItems() {
   if (peer && peer.disconnected && !peer.destroyed) it.push({ k: 'sig', t: '📡 Signaling server unreachable — current connections keep working, but new people and voice calls can’t connect. Retrying…', label: 'Retry now', fn: () => netChanged(true) });
   if (isHost && myPeerId && getNet().relay && !(hostWs && hostWs.readyState === 1)) it.push({ k: 'relay', t: '🌐 Relay server not connected — peers on strict networks can’t join right now.', label: 'Network settings', fn: () => openNetwork() });
   if (!isHost && lastJoinCode && !anyOpen) it.push({ k: 'conn', t: `🔌 Not connected to the host — reconnecting (attempt ${rejoinAttempts || 1})…`, label: 'Reconnect now', fn: () => netChanged(true) });
-  if (!isHost && connections.some(c => c.open && c._virtual)) it.push({ k: 'route', t: 'ℹ️ You’re connected through a relay: voice chat isn’t available on this route.' });
-  if (isHost && connections.some(c => c._virtual)) it.push({ k: 'hroute', t: 'ℹ️ Some peers are connected through a relay: voice chat isn’t available with them.' });
+  if (!isHost && connections.some(c => c.open && c._virtual)) it.push({ k: 'route', t: 'ℹ️ Connected through a relay route: audio is streamed via data frames.' });
+  if (isHost && connections.some(c => c._virtual)) it.push({ k: 'hroute', t: 'ℹ️ Some peers are connected through a relay route.' });
   if (getNet().priv && !window.__iceResolved) it.push({ k: 'priv', t: '🔒 Private mode is on but no TURN server is set — connections will fail.', label: 'Set up', fn: () => openNetwork() });
   return it;
 }
@@ -2897,6 +3192,280 @@ function showNetLog() {
   o.querySelector('#nl-x').onclick = () => o.remove();
   o.querySelector('#nl-copy').onclick = () => { navigator.clipboard && navigator.clipboard.writeText(text).then(() => notify('Log copied.', 'success', 1500)); };
 }
+
+// ==================== BUY ME A COFFEE (BMC) ====================
+let bmcTimer = null;
+let bmcSecondsRemaining = 0;
+let bmcHalftime = 0;
+
+function showBmcModal(mode) {
+  try {
+    if (sessionStorage.getItem('coop_bmc_donated') === 'true') return;
+  } catch (_) {}
+
+  const isHostCreate = (mode === 'create' || mode === 'host');
+  const totalSeconds = isHostCreate ? 120 : 60; // 2 minutes for create, 1 minute for join
+  bmcHalftime = isHostCreate ? 60 : 30; // close button available at halftime
+  bmcSecondsRemaining = totalSeconds;
+
+  const modal = document.getElementById('bmc-modal');
+  const closeBtn = document.getElementById('bmc-modal-close');
+  const statusEl = document.getElementById('bmc-timer-status');
+  const titleEl = document.getElementById('bmc-modal-title');
+  if (!modal) return;
+
+  if (titleEl) {
+    titleEl.textContent = isHostCreate ? 'Starting Session — Support Coop Reader 📖' : 'Joining Session — Support Coop Reader 📖';
+  }
+
+  if (closeBtn) closeBtn.style.display = 'none';
+
+  function updateStatus() {
+    if (bmcSecondsRemaining > bmcHalftime) {
+      const waitSecs = bmcSecondsRemaining - bmcHalftime;
+      if (statusEl) statusEl.textContent = `Close button available in ${waitSecs}s (${bmcSecondsRemaining}s total)`;
+      if (closeBtn) closeBtn.style.display = 'none';
+    } else {
+      if (statusEl) statusEl.textContent = `Auto-closing in ${bmcSecondsRemaining}s`;
+      if (closeBtn) {
+        closeBtn.style.display = 'inline-block';
+        closeBtn.textContent = 'Continue to Reader';
+      }
+    }
+  }
+
+  updateStatus();
+  modal.classList.add('open');
+
+  if (bmcTimer) clearInterval(bmcTimer);
+  bmcTimer = setInterval(() => {
+    bmcSecondsRemaining--;
+    updateStatus();
+    if (bmcSecondsRemaining <= 0) {
+      closeBmcModal();
+    }
+  }, 1000);
+}
+
+function closeBmcModal() {
+  if (bmcTimer) { clearInterval(bmcTimer); bmcTimer = null; }
+  const modal = document.getElementById('bmc-modal');
+  if (modal) modal.classList.remove('open');
+}
+
+function onBmcBtnClick() {
+  try {
+    sessionStorage.setItem('coop_bmc_donated', 'true');
+  } catch (_) {}
+  closeBmcModal();
+}
+document.getElementById('bmc-modal-btn')?.addEventListener('click', onBmcBtnClick);
+
+// ==================== VOICE THROUGH RELAY ROUTES ====================
+let relayVoiceRecorder = null;
+let relayVoiceActive = false;
+
+function startRelayVoice() {
+  const stream = getMediaStreamForCall();
+  if (!stream) return;
+  if (relayVoiceActive) return;
+  relayVoiceActive = true;
+  try {
+    let mime = 'audio/webm;codecs=opus';
+    if (!window.MediaRecorder || !MediaRecorder.isTypeSupported(mime)) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) mime = 'audio/ogg;codecs=opus';
+      else if (window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm')) mime = 'audio/webm';
+      else mime = '';
+    }
+    relayVoiceRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    relayVoiceRecorder.ondataavailable = async (e) => {
+      if (!relayVoiceActive || !e.data || e.data.size === 0) return;
+      const buf = await e.data.arrayBuffer();
+      const b64data = b64(new Uint8Array(buf));
+      broadcast({ type: 'RELAY_VOICE_CHUNK', peerId: myPeerId, data: b64data, mime: relayVoiceRecorder.mimeType });
+    };
+    relayVoiceRecorder.start(300);
+    notify('Voice streaming via relay route.', 'success', 3000);
+    updateVoiceUI();
+  } catch (err) {
+    console.warn('Relay voice recorder init failed', err);
+  }
+}
+
+function stopRelayVoice() {
+  relayVoiceActive = false;
+  if (relayVoiceRecorder) {
+    try { relayVoiceRecorder.stop(); } catch (_) {}
+    relayVoiceRecorder = null;
+  }
+}
+
+function handleRelayVoiceChunk(peerId, b64data, mime) {
+  if (peerId === myPeerId || !b64data) return;
+  try {
+    const bytes = unb64(b64data);
+    const blob = new Blob([bytes], { type: mime || 'audio/webm' });
+    const audioUrl = URL.createObjectURL(blob);
+    const audio = new Audio(audioUrl);
+    audio.volume = 1.0;
+    audio.play().catch(() => {});
+    audio.onended = () => { URL.revokeObjectURL(audioUrl); };
+    highlightRemoteSpeaker(peerId);
+  } catch (_) {}
+}
+
+// ==================== EDIT MODE & FORMS (PDF / XLSX / DOCX) ====================
+let isEditMode = false;
+const pdfFormState = {}; // `p${page}_${id}` -> value
+
+function toggleEditMode() {
+  isEditMode = !isEditMode;
+  const btn = document.getElementById('btn-edit-mode');
+  if (btn) btn.classList.toggle('editing-active', isEditMode);
+
+  const docxView = document.getElementById('docx-view');
+  if (docxView) {
+    docxView.contentEditable = isEditMode ? 'true' : 'false';
+    docxView.classList.toggle('edit-mode-active', isEditMode);
+  }
+
+  const textContent = document.getElementById('text-content');
+  if (textContent && state.fileType !== 'pdf') {
+    textContent.contentEditable = isEditMode ? 'true' : 'false';
+    textContent.classList.toggle('edit-mode-active', isEditMode);
+  }
+
+  notify(isEditMode ? 'Edit Mode ON: Changes sync to peers.' : 'Edit Mode OFF.', isEditMode ? 'warning' : 'info', 2000);
+}
+
+// PDF Form Fields
+async function renderPdfForms(page, viewport, cssW, cssH) {
+  const layer = document.getElementById('pdf-form-layer');
+  if (!layer) return;
+  layer.innerHTML = '';
+  layer.style.width = Math.floor(cssW) + 'px';
+  layer.style.height = Math.floor(cssH) + 'px';
+
+  let annotations = [];
+  try {
+    annotations = await page.getAnnotations({ intent: 'display' });
+  } catch (_) { return; }
+
+  const widgetAnnots = annotations.filter(a => a.subtype === 'Widget');
+  for (const annot of widgetAnnots) {
+    const rect = viewport.convertToViewportRectangle(annot.rect);
+    const scaleX = cssW / viewport.width;
+    const scaleY = cssH / viewport.height;
+    const left = Math.min(rect[0], rect[2]) * scaleX;
+    const top = Math.min(rect[1], rect[3]) * scaleY;
+    const width = Math.abs(rect[2] - rect[0]) * scaleX;
+    const height = Math.abs(rect[3] - rect[1]) * scaleY;
+
+    const key = `p${state.currentPage}_${annot.id}`;
+    const savedVal = pdfFormState[key] !== undefined ? pdfFormState[key] : (annot.fieldValue || '');
+
+    let el;
+    if (annot.checkBox) {
+      el = document.createElement('input');
+      el.type = 'checkbox';
+      el.className = 'pdf-form-field';
+      el.checked = !!savedVal;
+      el.addEventListener('change', () => {
+        pdfFormState[key] = el.checked;
+        broadcast({ type: 'FORM_FIELD_CHANGE', page: state.currentPage, key, val: el.checked, isCheck: true });
+      });
+    } else if (annot.options && annot.options.length) {
+      el = document.createElement('select');
+      el.className = 'pdf-form-field';
+      annot.options.forEach(opt => {
+        const op = document.createElement('option');
+        op.value = opt.exportValue || opt.displayValue;
+        op.textContent = opt.displayValue;
+        if (op.value === savedVal) op.selected = true;
+        el.appendChild(op);
+      });
+      el.addEventListener('change', () => {
+        pdfFormState[key] = el.value;
+        broadcast({ type: 'FORM_FIELD_CHANGE', page: state.currentPage, key, val: el.value });
+      });
+    } else {
+      el = document.createElement('input');
+      el.type = 'text';
+      el.className = 'pdf-form-field';
+      el.value = savedVal;
+      el.placeholder = annot.alternativeText || '';
+      el.addEventListener('input', () => {
+        pdfFormState[key] = el.value;
+        broadcast({ type: 'FORM_FIELD_CHANGE', page: state.currentPage, key, val: el.value });
+      });
+    }
+
+    el.setAttribute('data-form-key', key);
+    el.style.position = 'absolute';
+    el.style.left = Math.round(left) + 'px';
+    el.style.top = Math.round(top) + 'px';
+    el.style.width = Math.max(18, Math.round(width)) + 'px';
+    el.style.height = Math.max(18, Math.round(height)) + 'px';
+    layer.appendChild(el);
+  }
+}
+
+function handleRemoteFormField(data) {
+  if (!data || !data.key) return;
+  pdfFormState[data.key] = data.val;
+  if (data.page === state.currentPage) {
+    const el = document.querySelector(`[data-form-key="${data.key}"]`);
+    if (el) {
+      if (data.isCheck || el.type === 'checkbox') el.checked = !!data.val;
+      else el.value = data.val || '';
+    }
+  }
+}
+
+function handleRemoteXlsxCell(data) {
+  if (!data) return;
+  if (data.page === state.currentPage) {
+    const cell = document.querySelector(`.xlsx-cell[data-row="${data.row}"][data-col="${data.col}"]`);
+    if (cell && cell !== document.activeElement) {
+      cell.innerText = data.val || '';
+      cell.classList.add('cell-flash');
+      setTimeout(() => cell.classList.remove('cell-flash'), 600);
+    }
+  }
+}
+
+function handleRemoteDocxContent(data) {
+  if (!data) return;
+  if (data.page === state.currentPage) {
+    const docxView = document.getElementById('docx-view');
+    if (docxView && !docxView.classList.contains('hidden') && docxView !== document.activeElement) {
+      docxView.innerHTML = data.content || '';
+    }
+    const textContent = document.getElementById('text-content');
+    if (textContent && textContent !== document.activeElement && state.fileType !== 'pdf') {
+      textContent.innerHTML = data.content || '';
+    }
+  }
+}
+
+// XLSX cell edit listener
+document.getElementById('text-content')?.addEventListener('blur', (e) => {
+  if (e.target.classList.contains('xlsx-cell')) {
+    const table = e.target.closest('table');
+    const sheet = table ? table.dataset.sheet : '';
+    const row = e.target.dataset.row;
+    const col = e.target.dataset.col;
+    const val = e.target.innerText;
+    broadcast({ type: 'XLSX_CELL_CHANGE', page: state.currentPage, sheet, row, col, val });
+  }
+}, true);
+
+// DOCX / Text content edit listener
+document.getElementById('text-content')?.addEventListener('input', (e) => {
+  if (isEditMode && state.fileType !== 'pdf') {
+    broadcast({ type: 'DOCX_CONTENT_CHANGE', page: state.currentPage, content: document.getElementById('text-content').innerHTML });
+  }
+});
 
 // ==================== INIT ====================
 updateDownloadButton();
