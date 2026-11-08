@@ -232,6 +232,7 @@
     <button class="secondary" onclick="testNetwork()">Test Network</button>
     <button class="secondary host-only" onclick="openServerConfig()">Signaling Server</button>
     <button class="secondary" onclick="openNetwork()">🌐 Network</button>
+    <button class="secondary" onclick="showNetLog()">Log</button>
   </div>
   <div class="menu-group host-only" id="download-perm-group" style="display:none;">
     <span class="menu-label">Sharing</span>
@@ -278,6 +279,7 @@
   <div id="diag-body"><p style="color:var(--text-muted)">No session active.</p></div>
 </div>
 
+<div id="health-bar" style="display:none;margin:0 16px 8px"></div>
 <div id="viewer-toolbar" style="display:none">
   <button class="secondary" id="btn-toc" onclick="openToc()">📑 Contents</button>
   <button class="secondary" id="btn-comments" onclick="showComments()">💬 Comments</button>
@@ -791,6 +793,7 @@ function attachConnectionHandlers(conn) {
     voicePeers.delete(conn.peer);
     updateVoiceUI(); updatePeerListUI(); updateChatAvailability();
     if (!isHost && connections.length===0) {
+      netLog('direct connection to host closed' + (conn._synced ? '' : ' before the handshake finished'));
       if (!conn._synced) preAuthDrops++; else preAuthDrops = 0;
       if (preAuthDrops >= 3) { lastJoinCode = null; notify('Could not finish joining — the host closed the connection before authentication completed. Enter the password in the Join form and press Join.','error',12000); setStatus('Not connected','error'); }
       else { notify('Disconnected — reconnecting…','warning'); scheduleRejoin(); }
@@ -1036,8 +1039,8 @@ async function startHost() {
 
 function scheduleRejoin() {
   if (isHost || !lastJoinCode || rejoinTimer) return;
-  if (rejoinAttempts >= 8) { showError({ type: 'webrtc' }); return; }
-  const delay = Math.min(1000 * 2 ** rejoinAttempts, 15000); rejoinAttempts++;
+  if (rejoinAttempts >= 40) { showError({ type: 'webrtc' }); return; }
+  const delay = Math.min(1000 * 2 ** rejoinAttempts, 30000); rejoinAttempts++; netLog('rejoin attempt ' + rejoinAttempts + ' in ' + Math.round(delay / 1000) + 's');
   setStatus(`Reconnecting (${rejoinAttempts})…`, 'warning');
   rejoinTimer = setTimeout(() => { rejoinTimer = null; pendingAuthHash = lastAuthHash; joinSession(lastJoinCode, true); }, delay);
 }
@@ -1463,6 +1466,7 @@ function requestCall(peerId) {
 function startOutgoingCall(peerId) {
   if (!peer || peer.disconnected || audioCalls.has(peerId)) return;
   if (isHost && !connections.some(c => c.open && c.peer === peerId)) return;
+  if (isHost ? connections.some(c => c.peer === peerId && c._virtual) : connections.some(c => c.open && c._virtual)) { voiceRelayWarn(); return; }
   const stream = getMediaStreamForCall();
   if (!stream) return;
   if (myPeerId && myPeerId > peerId) { requestCall(peerId); return; }   // smaller ID always initiates
@@ -2638,11 +2642,13 @@ function startRelayJoin(direct) {
   setStatus('Connecting through the relay server…', 'info');
   ws.onopen = () => {
     if (direct.open) { ws.close(); return; }
-    const v = { peer: hostId, open: true, _virtual: true, _ws: true, _sock: ws, _authenticated: false, dataChannel: wsStub(ws),
+    const v = { peer: hostId, get open() { return ws.readyState === 1; }, _lastPong: Date.now(), _virtual: true, _ws: true, _sock: ws, _authenticated: false, dataChannel: wsStub(ws),
       send(m) { if (ws.readyState === 1) wsSend(ws, hostId, m, peerRelayKey, hostId); }, close() { try { ws.close(); } catch (_) {} }, on() {} };
     relayV = v; connections = connections.filter(x => x !== direct); connections.push(v);
     try { direct.close(); } catch (_) {}
     wsSend(ws, hostId, { type: 'RELAY_HELLO' }, peerRelayKey, hostId);
+    netLog('relay socket open');
+    relayWatchdog(v, () => relayV === v, () => { notify('Relay connection went quiet — reconnecting…', 'warning'); try { ws.close(); } catch (_) {} });
     hideError(); setStatus('Connected through the relay server — awaiting session data…', 'info'); updatePeerListUI(); updateChatAvailability();
   };
   ws.onmessage = e => {
@@ -2658,8 +2664,9 @@ function startRelayJoin(direct) {
       if (relayV && relayV._sock === ws) handleNetworkMessage(relayV, p);
     });
   };
-  ws.onclose = () => {
-    if (relayV && relayV._sock === ws) { connections = connections.filter(x => x !== relayV); relayV = null; updatePeerListUI(); notify('Relay connection lost — reconnecting…', 'warning'); scheduleRejoin(); }
+  ws.onclose = (ev) => {
+    netLog('relay socket closed (code ' + ev.code + ')');
+    if (relayV && relayV._sock === ws) { clearInterval(relayV._hb); connections = connections.filter(x => x !== relayV); relayV = null; updatePeerListUI(); notify('Relay connection lost — reconnecting…', 'warning'); scheduleRejoin(); }
     else if (!relayV) notify('Could not reach the relay server.', 'error', 5000);
   };
 }
@@ -2669,7 +2676,7 @@ function openHostRelay() {
   const id = myPeerId; let ws; try { ws = new WebSocket(relayUrl(id, id)); } catch (_) { return; }
   hostWs = ws; hostWsFor = id;
   ws.onmessage = e => { let m; try { m = JSON.parse(e.data, wsRevive); } catch (_) { return; } hostRelayMsg(m); };
-  ws.onclose = () => { if (hostWs === ws) { hostWs = null; dropWsConns(); } };
+  ws.onclose = (ev) => { netLog('host relay socket closed (code ' + ev.code + ')'); if (hostWs === ws) { hostWs = null; dropWsConns(); } };
 }
 function hostRelayMsg(m) {
   if (!isHost || !m.from) return;
@@ -2689,11 +2696,12 @@ function hostRelayPlain(m) {
   if (p.type === 'RELAY_HELLO') {
     if (v) return;
     connections = connections.filter(c => !(c.peer === X && !c.open));
-    v = { peer: X, open: true, _virtual: true, _ws: true, _authenticated: !sessionAuth.required, dataChannel: wsStub(null),
+    v = { peer: X, get open() { return !!hostWs && hostWs.readyState === 1; }, _lastPong: Date.now(), _virtual: true, _ws: true, _authenticated: !sessionAuth.required, dataChannel: wsStub(null),
       send(msg) { if (hostWs && hostWs.readyState === 1) wsSend(hostWs, X, msg, relayKeyB64, myPeerId); },
       close() { try { if (hostWs && hostWs.readyState === 1) wsSend(hostWs, X, { type: 'RELAY_CLOSE' }, relayKeyB64, myPeerId); } catch (_) {} connections = connections.filter(c => c !== v); updatePeerListUI(); updateChatAvailability(); }, on() {} };
     Object.defineProperty(v.dataChannel, 'bufferedAmount', { get: () => wsBuf(hostWs) });
     connections.push(v); updatePeerListUI(); updateChatAvailability();
+    relayWatchdog(v, () => connections.includes(v), () => { netLog('relayed peer went quiet'); v.close(); });
     notify(`Peer ${X.substring(0, 6)}… connected through the relay server`, 'info', 4000);
     if (sessionAuth.required) v.send({ type: 'AUTH_REQUIRED', salt: sessionAuth.salt }); else sendInitialDataToConn(v);
     return;
@@ -2770,6 +2778,65 @@ function offerPrivateFile(name, buf) {
   document.body.appendChild(o);
   o.querySelector('#pf-save').onclick = () => { saveBlob(new Blob([buf], { type: 'application/octet-stream' }), name.replace(/[\\/:*?"<>|]/g, '_')); o.remove(); };
   o.querySelector('#pf-x').onclick = () => o.remove();
+}
+
+// ---- connection health: keepalives, warnings, log
+var netLogBuf = [], voiceWarnAt = 0;
+function netLog(m) { netLogBuf.push(new Date().toISOString().slice(11, 19) + ' ' + m); if (netLogBuf.length > 300) netLogBuf.shift(); }
+function voiceRelayWarn() {
+  netLog('voice blocked: relay route');
+  if (Date.now() - voiceWarnAt > 30000) { voiceWarnAt = Date.now(); notify('Voice chat needs a direct or TURN connection — you are connected through a relay.', 'warning', 6000); }
+}
+function relayWatchdog(v, alive, onDead) {   // ping every 15s; no traffic for 45s = dead. Also keeps NATs/carriers from culling an idle socket
+  v._hb = setInterval(() => {
+    if (!alive()) { clearInterval(v._hb); return; }
+    if (Date.now() - v._lastPong > 45000) { clearInterval(v._hb); netLog('no traffic for 45s — dropping'); onDead(); return; }
+    try { v.send({ type: 'PING', t: Date.now() }); } catch (_) {}
+  }, 15000);
+}
+function healthItems() {
+  const it = [], anyOpen = connections.some(c => c.open);
+  if (peer && peer.disconnected && !peer.destroyed) it.push({ k: 'sig', t: '📡 Signaling server unreachable — current connections keep working, but new people and voice calls can’t connect. Retrying…', label: 'Retry now', fn: () => netChanged(true) });
+  if (isHost && myPeerId && getNet().relay && !(hostWs && hostWs.readyState === 1)) it.push({ k: 'relay', t: '🌐 Relay server not connected — peers on strict networks can’t join right now.', label: 'Network settings', fn: () => openNetwork() });
+  if (!isHost && lastJoinCode && !anyOpen) it.push({ k: 'conn', t: `🔌 Not connected to the host — reconnecting (attempt ${rejoinAttempts || 1})…`, label: 'Reconnect now', fn: () => netChanged(true) });
+  if (!isHost && connections.some(c => c.open && c._virtual)) it.push({ k: 'route', t: 'ℹ️ You’re connected through a relay: voice chat isn’t available on this route.' });
+  if (isHost && connections.some(c => c._virtual)) it.push({ k: 'hroute', t: 'ℹ️ Some peers are connected through a relay: voice chat isn’t available with them.' });
+  if (getNet().priv && !window.__iceResolved) it.push({ k: 'priv', t: '🔒 Private mode is on but no TURN server is set — connections will fail.', label: 'Set up', fn: () => openNetwork() });
+  return it;
+}
+var healthSig = '';
+function renderHealth() {
+  const items = healthItems(), sig = items.map(i => i.k + (i.k === 'conn' ? rejoinAttempts : '')).join('|');
+  if (sig === healthSig) return; healthSig = sig;
+  items.forEach(i => netLog('warning: ' + i.t));
+  const bar = document.getElementById('health-bar'); bar.style.display = items.length ? '' : 'none'; bar.innerHTML = '';
+  items.forEach(i => {
+    const d = document.createElement('div'); d.style.cssText = 'display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 12px;margin-bottom:6px;border-radius:10px;border:1px solid var(--warning);background:rgba(245,158,11,.14);font-size:.85rem';
+    const t = document.createElement('span'); t.textContent = i.t; d.appendChild(t);
+    if (i.fn) { const b = document.createElement('button'); b.className = 'secondary'; b.style.cssText = 'min-height:32px;flex-shrink:0'; b.textContent = i.label; b.onclick = i.fn; d.appendChild(b); }
+    bar.appendChild(d);
+  });
+}
+function netChanged(force) {
+  netLog(force ? 'manual reconnect' : 'network change / back online');
+  if (peer && peer.disconnected && !peer.destroyed) { try { peer.reconnect(); } catch (_) {} }
+  for (const c of connections) if (c._virtual && c.open) try { c.send({ type: 'PING', t: Date.now() }); } catch (_) {}
+  if (!isHost && lastJoinCode && !connections.some(c => c.open)) { rejoinAttempts = 0; clearTimeout(rejoinTimer); rejoinTimer = null; pendingAuthHash = lastAuthHash; joinSession(lastJoinCode, true); }
+}
+setInterval(renderHealth, 2000);
+setInterval(() => { if (peer && peer.disconnected && !peer.destroyed) { netLog('signaling disconnected — reconnecting'); try { peer.reconnect(); } catch (_) {} } }, 6000);
+window.addEventListener('online', () => netChanged(false));
+window.addEventListener('offline', () => netLog('browser offline'));
+if (navigator.connection && navigator.connection.addEventListener) navigator.connection.addEventListener('change', () => netChanged(false));
+function showNetLog() {
+  const hc = connections.find(c => c.open);
+  const info = `role: ${isHost ? 'host' : 'peer'} · route: ${hc ? routeLabel(hc) : 'none'} · network: ${(navigator.connection && navigator.connection.effectiveType) || '?'} · relay: ${getNet().relay ? 'configured' : 'none'} · TURN: ${window.__iceResolved ? 'custom' : 'default'} · private: ${!!getNet().priv}`;
+  const text = info + '\n\n' + (netLogBuf.join('\n') || '(no events yet)');
+  const o = document.createElement('div'); o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:12px';
+  o.innerHTML = `<div style="background:var(--surface);color:inherit;padding:16px;border-radius:14px;max-width:560px;width:100%;max-height:88vh;display:flex;flex-direction:column"><h3 style="margin:0 0 8px">Connection log</h3><pre style="flex:1;overflow:auto;margin:0 0 10px;font-size:.75rem;white-space:pre-wrap;word-break:break-word">${escapeHtml(text)}</pre><div style="display:flex;gap:8px;justify-content:flex-end"><button class="secondary" id="nl-copy">Copy</button><button id="nl-x">Close</button></div></div>`;
+  document.body.appendChild(o);
+  o.querySelector('#nl-x').onclick = () => o.remove();
+  o.querySelector('#nl-copy').onclick = () => { navigator.clipboard && navigator.clipboard.writeText(text).then(() => notify('Log copied.', 'success', 1500)); };
 }
 
 // ==================== INIT ====================

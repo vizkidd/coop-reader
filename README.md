@@ -64,6 +64,7 @@ Options:
 - **Automatic** (default) or **Relay server only** mode.
 - **Private mode:** forces all WebRTC through TURN to hide your IP from other participants (requires TURN; connections fail without it).
 - Peers see how each person is connected: ⚡ direct, 🔒 TURN, 🔗 via peer, 🌐 relay server.
+- **Connection health:** a banner warns about an unreachable signaling server, a disconnected relay, a lost host connection, and relay routes (no voice), with retry buttons. **Log** (in the menu) shows a copyable connection log. Relay connections send keepalives, so silent drops are detected and reconnected.
 
 ### Mobile
 Screen stays awake during a session, password entry uses an in-page dialog, and iPhone/Android quirks (fullscreen, backgrounding, touch panning) are handled.
