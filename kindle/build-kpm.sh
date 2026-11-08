@@ -63,6 +63,7 @@ cd "$ROOT_DIR"
 
 # Cleanup staging
 rm -rf "$BUILD_DIR" "$ROOT_DIR/dist/staging_kual"
+touch "$DIST_DIR/.nojekyll"
 
 echo "=== Build Complete! ==="
 echo "Artifacts generated in dist/:"

@@ -514,17 +514,20 @@ function classifyError(err) {
   const map = {
     'browser-incompatible':{title:'Browser does not support WebRTC',fixes:['Update Chrome/Firefox/Edge/Safari 15.2+.','Ensure WebRTC is not disabled by policy.']},
     'network':{title:'Cannot reach the signaling server',fixes:['Check internet.','Ask IT to allow *.peerjs.com (WSS 443).','Try another network.','Use a self-hosted signaling server.']},
+    'relay-unreachable':{title:'Relay server unreachable',fixes:['Could not connect to the relay server.','Kindle sessions sync through the Cloudflare Worker relay.','Run wrangler deploy to deploy your worker, or set your relay URL under menu ☰ → Network.']},
     'ssl-unavailable':{title:'TLS handshake failed',fixes:['Network may do SSL inspection.','Try a mobile hotspot.','Use a valid cert on self-hosted PeerJS.']},
     'socket-error':{title:'Signaling socket blocked',fixes:['Firewall may block WSS.','Self-host or use another network.']},
     'socket-closed':{title:'Signaling socket closed',fixes:['Retry in a few seconds.','Public PeerJS may be rate-limiting.']},
     'server-error':{title:'Signaling server error',fixes:['Wait and retry.','Self-host a PeerJS server.']},
-    'peer-unavailable':{title:'Host session not found',fixes:['Double-check the host code.','Host may have closed the tab.','Ask host to re-create the session.']},
+    'peer-unavailable': targetIsKindleRoom
+      ? {title:'Cannot connect to Kindle host',fixes:['Verify that the Kindle has an active Wi-Fi connection.','Kindle sessions sync through the Relay Server. Check your Relay URL under menu ☰ → Network.','Verify the Relay URL in KOReader ("Set Relay Server URL...") matches this browser.']}
+      : {title:'Host session not found',fixes:['Double-check the host code.','Host may have closed the tab.','Ask host to re-create the session.']},
     'webrtc':{title:'WebRTC connection failed',fixes:['Network may block UDP/STUN.','Add a TURN server.','Try another network.']},
     'unavailable-id':{title:'Peer ID collision',fixes:['Retry.']},
     'invalid-id':{title:'Invalid host code',fixes:['Host codes are letters/numbers/hyphens.']},
   };
   const info = map[type] || {title:'Connection error',fixes:['Retry.','Open console.','Run Test Network.']};
-  return { type, title: info.title, fixes: info.fixes };
+  return { type, title: (err && err.title) || info.title, fixes: (err && err.fixes) || info.fixes };
 }
 function showError(errOrMessage) {
   const info = (errOrMessage && errOrMessage.type) ? classifyError(errOrMessage) : { title: 'Error', fixes: [String(errOrMessage)] };
@@ -1180,17 +1183,33 @@ async function joinSession(targetCode, isRetry) {
 
   // Resolve short PIN if entered on desktop (e.g. 4-digit Kindle PIN)
   if (dot === -1 && /^\w{3,8}$/.test(rawCode)) {
+    const relayHttp = (getNet().relay || DEFAULT_RELAY).replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
     try {
-      const relayHttp = (getNet().relay || DEFAULT_RELAY).replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
       const res = await fetch(`${relayHttp}/pin/${encodeURIComponent(rawCode)}`);
-      const data = await res.json();
-      if (data && data.ok && data.room) {
-        targetIsKindleRoom = true;
-        if (data.key) { peerRelayKey = data.key; try { sessionStorage.setItem('coop-rk', peerRelayKey); } catch (_) {} }
-        notify(`Resolved PIN ${rawCode}`, 'info', 2000);
-        return joinSession(data.room + (data.key ? '.' + data.key : ''), isRetry);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.ok && data.room) {
+          targetIsKindleRoom = true;
+          if (data.key) { peerRelayKey = data.key; try { sessionStorage.setItem('coop-rk', peerRelayKey); } catch (_) {} }
+          notify(`Resolved PIN ${rawCode}`, 'info', 2000);
+          return joinSession(data.room + (data.key ? '.' + data.key : ''), isRetry);
+        }
+      } else if (res.status === 404) {
+        notify(`PIN ${rawCode} was not found on the relay server. Check that the host is currently hosting.`, 'warning', 6000);
+        return;
       }
-    } catch (_) {}
+    } catch (err) {
+      targetIsKindleRoom = true;
+      showError({
+        type: 'relay-unreachable',
+        fixes: [
+          `Could not connect to relay server at ${relayHttp}.`,
+          'Kindle PIN codes require an active relay server to connect.',
+          'Deploy your Cloudflare Worker relay (npx wrangler deploy) or update your Relay URL under menu ☰ → Network.'
+        ]
+      });
+      return;
+    }
   }
 
   const code = dot > 0 ? rawCode.slice(0, dot) : rawCode;   // host code may be "id.key"
@@ -2951,18 +2970,32 @@ function scheduleRelayJoin(direct) {
   const delay = (getNet().mode === 'ws' || isKindle) ? 50 : 8000;
   setTimeout(async () => {
     if (isHost || direct.open || bridgeV || relayV || !connections.includes(direct)) return;
-    await ensureRelayProbe();
+    if (!isKindle) await ensureRelayProbe();
     if (isHost || direct.open || bridgeV || relayV || !connections.includes(direct)) return;
     startRelayJoin(direct);
   }, delay);
 }
 function startRelayJoin(direct) {
   const hostId = lastJoinCode, myId = myPeerId;
+  const isKindle = targetIsKindleRoom || (hostId && (hostId.startsWith('kroom') || hostId.startsWith('kindle')));
   const relayEndpoint = getNet().relay || DEFAULT_RELAY;
   if (!relayEndpoint) { notify('Direct connection is slow or blocked. Add a relay server under menu → Network for a reliable fallback.', 'warning', 9000); return; }
   if (!hostId || !myId) return;
   let ws; try { ws = new WebSocket(relayUrl(hostId, myId)); } catch (_) { notify('Relay server address is invalid.', 'error'); return; }
   setStatus('Connecting through the relay server…', 'info');
+  ws.onerror = (err) => {
+    console.warn('Relay WebSocket connection error:', err);
+    if (isKindle) {
+      showError({
+        type: 'relay-unreachable',
+        fixes: [
+          `Could not connect to WebSocket relay at ${relayEndpoint}.`,
+          'Kindle co-reading sessions connect through this relay server.',
+          'Deploy your Cloudflare Worker relay (npx wrangler deploy) or update your Relay URL under menu ☰ → Network.'
+        ]
+      });
+    }
+  };
   ws.onopen = () => {
     if (direct.open) { ws.close(); return; }
     document.body.classList.add('peer-mode');

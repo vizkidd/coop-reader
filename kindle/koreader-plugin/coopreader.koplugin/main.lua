@@ -42,10 +42,76 @@ local CoopReader = WidgetContainer:extend{
 -- ==================== INITIALIZATION & MENU ====================
 
 function CoopReader:init()
-    self:logDebug("Plugin initialized")
+    self:loadSettings()
+    self:logDebug("Plugin initialized (Relay: " .. tostring(self.relay_base_url) .. ")")
     pcall(function()
         self.ui.menu:registerToMainMenu(self)
     end)
+end
+
+function CoopReader:loadSettings()
+    local paths = {
+        "/mnt/us/koreader/settings/coopreader.json",
+        "/mnt/us/extensions/coop-reader/settings.json",
+        "/tmp/coopreader_settings.json"
+    }
+    for _, path in ipairs(paths) do
+        local f = io.open(path, "r")
+        if f then
+            local content = f:read("*a")
+            f:close()
+            local ok, data = pcall(function() return json.decode(content) end)
+            if ok and data and type(data) == "table" then
+                if data.relay_base_url and #data.relay_base_url > 0 then
+                    self.relay_base_url = data.relay_base_url
+                    self:logDebug("Loaded relay URL: " .. self.relay_base_url)
+                end
+                return
+            end
+        end
+    end
+end
+
+function CoopReader:saveSettings()
+    local data = { relay_base_url = self.relay_base_url }
+    local content = json.encode(data)
+    local paths = {
+        "/mnt/us/koreader/settings/coopreader.json",
+        "/mnt/us/extensions/coop-reader/settings.json",
+        "/tmp/coopreader_settings.json"
+    }
+    for _, path in ipairs(paths) do
+        local f = io.open(path, "w")
+        if f then
+            f:write(content)
+            f:close()
+            self:logDebug("Saved settings to " .. path)
+            return true
+        end
+    end
+    return false
+end
+
+function CoopReader:getWifiIp()
+    local ip = nil
+    if NetworkMgr then
+        pcall(function()
+            if NetworkMgr.getWifiIp then ip = NetworkMgr:getWifiIp() end
+            if not ip and NetworkMgr.getIp then ip = NetworkMgr:getIp() end
+        end)
+    end
+    if ip and #ip > 0 and ip ~= "127.0.0.1" then return ip end
+
+    local handle = io.popen("ip -4 addr show wlan0 2>/dev/null | grep -o 'inet [0-9.]*' | cut -d' ' -f2 || ifconfig wlan0 2>/dev/null | grep -o 'inet addr:[0-9.]*' | cut -d: -f2")
+    if handle then
+        local out = handle:read("*a")
+        handle:close()
+        if out then
+            out = out:gsub("%s+", "")
+            if #out > 0 then return out end
+        end
+    end
+    return "Wi-Fi (Active)"
 end
 
 function CoopReader:onReaderReady()
@@ -71,6 +137,12 @@ function CoopReader:addToMainMenu(menu_items)
                 text = "Join Reading Session (PIN or Code)...",
                 callback = function()
                     self:promptJoinSession()
+                end,
+            },
+            {
+                text = "Set Relay Server URL...",
+                callback = function()
+                    self:promptSetRelayUrl()
                 end,
             },
             {
@@ -107,6 +179,58 @@ function CoopReader:addToMainMenu(menu_items)
             },
         }
     }
+end
+
+function CoopReader:promptSetRelayUrl()
+    local dialog
+    dialog = InputDialog:new{
+        title = "Set Relay Server URL",
+        input = self.relay_base_url,
+        input_type = "string",
+        description = "Enter Cloudflare Worker HTTPS URL:\n(e.g., https://coop-relay.YOUR_NAME.workers.dev)",
+        buttons = {
+            {
+                {
+                    text = "Reset Default",
+                    callback = function()
+                        self.relay_base_url = "https://coop-relay.coop-reader.workers.dev"
+                        self:saveSettings()
+                        UIManager:close(dialog)
+                        self:logDebug("Reset relay URL to default", true)
+                        self:testConnection()
+                    end,
+                },
+                {
+                    text = "Cancel",
+                    id = "cancel",
+                    callback = function()
+                        UIManager:close(dialog)
+                    end,
+                },
+                {
+                    text = "Save",
+                    is_positive = true,
+                    is_enter_default = true,
+                    callback = function()
+                        local new_url = dialog:getInputText()
+                        UIManager:close(dialog)
+                        if new_url and #new_url > 0 then
+                            new_url = new_url:gsub("%s+", ""):gsub("/+$", "")
+                            if not new_url:find("^https?://") then
+                                new_url = "https://" .. new_url
+                            end
+                            self.relay_base_url = new_url
+                            self:saveSettings()
+                            self:logDebug("Updated Relay Server URL to: " .. self.relay_base_url, true)
+                            self:testConnection()
+                        end
+                    end,
+                },
+            },
+        },
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
 end
 
 -- ==================== LOGGING & DIAGNOSTICS ====================
@@ -158,24 +282,33 @@ function CoopReader:showDebugLog()
 end
 
 function CoopReader:testConnection()
-    self:logDebug("Testing connection to relay server...", true)
+    self:logDebug("Testing connection to: " .. self.relay_base_url, true)
     
     self:ensureNetwork(function()
         local url = self.relay_base_url .. "/room/__test_ping__/state"
-        local res, status, err = self:httpRequest(url, "GET", nil, 4)
+        local res, status, err = self:httpRequest(url, "GET", nil, 5)
         
         if status == 200 or status == 404 or (res and #res > 0) then
-            local msg = string.format("Relay is reachable! (HTTP status: %s)", tostring(status))
+            local msg = string.format("Relay is reachable! (HTTP status: %s)\nURL: %s", tostring(status), self.relay_base_url)
             self:logDebug(msg, true)
+            pcall(function()
+                UIManager:show(InfoMessage:new{ text = "✓ Relay Connected!\n" .. self.relay_base_url, timeout = 4 })
+            end)
         else
             -- Try local daemon fallback
             local d_url = self.daemon_base_url .. "/api/status"
             local d_res, d_status = self:httpRequest(d_url, "GET", nil, 2)
             if d_status == 200 then
                 self:logDebug("Relay unreachable, but local daemon is active on 127.0.0.1:8765", true)
+                pcall(function()
+                    UIManager:show(InfoMessage:new{ text = "Local daemon active (127.0.0.1:8765)\nRelay offline: " .. self.relay_base_url, timeout = 5 })
+                end)
             else
-                local err_msg = string.format("Connection failed: %s (Status: %s). Check Wi-Fi settings.", tostring(err), tostring(status))
+                local err_msg = string.format("Cannot connect to:\n%s\nError: %s (Status: %s)\nUse 'Set Relay Server URL' to update.", self.relay_base_url, tostring(err), tostring(status))
                 self:logDebug(err_msg, true)
+                pcall(function()
+                    UIManager:show(InfoMessage:new{ text = "✗ Relay Unreachable!\n" .. self.relay_base_url .. "\nCheck Wi-Fi or update Relay URL under menu.", timeout = 6 })
+                end)
             end
         end
     end)
@@ -286,6 +419,7 @@ function CoopReader:startHostingSession()
         suffix = suffix .. chars:sub(r, r)
     end
     local room_id = "kroom-" .. suffix
+    local wifi_ip = self:getWifiIp()
 
     -- Register 4-digit PIN on Cloudflare relay
     local pin_create_url = self.relay_base_url .. "/pin/create"
@@ -293,10 +427,12 @@ function CoopReader:startHostingSession()
     local res, status, err = self:httpRequest(pin_create_url, "POST", req_body, 5)
 
     local pin = nil
+    local relay_registered = false
     if res then
         local ok, data = pcall(function() return json.decode(res) end)
         if ok and data and data.ok and data.pin then
             pin = tostring(data.pin)
+            relay_registered = true
         end
     end
 
@@ -322,24 +458,50 @@ function CoopReader:startHostingSession()
     self.is_connected = true
     self.is_syncing = true
 
-    self:logDebug(string.format("Hosting session: %s (PIN: %s)", room_id, pin))
+    self:logDebug(string.format("Hosting session: %s (PIN: %s, Registered: %s)", room_id, pin, tostring(relay_registered)))
 
-    -- Show prominent on-screen dialog with PIN
+    -- Show prominent on-screen dialog with PIN and clear network feedback
     pcall(function()
-        local info_text = string.format(
-            "Session Started Successfully!\n\n" ..
-            "==============================\n" ..
-            "  KINDLE PIN:   %s\n" ..
-            "  Full Code:    %s\n" ..
-            "==============================\n\n" ..
-            "Give this 4-digit PIN to your reading partner.\n" ..
-            "They can enter it on Chrome (vizkidd.github.io/coop-reader),\n" ..
-            "on a mobile phone, or on another Kindle!\n\n" ..
-            "Your page turns will now sync to everyone automatically.",
-            pin, room_id
-        )
+        local info_text
+        if relay_registered then
+            info_text = string.format(
+                "Session Started & Registered!\n\n" ..
+                "==============================\n" ..
+                "  KINDLE PIN:   %s\n" ..
+                "  Full Code:    %s\n" ..
+                "  Wi-Fi IP:     %s\n" ..
+                "==============================\n\n" ..
+                "Give this 4-digit PIN to your reading partner.\n" ..
+                "They can enter it on Chrome (vizkidd.github.io/coop-reader),\n" ..
+                "on a mobile phone, or on another Kindle!\n\n" ..
+                "Relay: %s\n\n" ..
+                "Your page turns will now sync to everyone automatically.",
+                pin, room_id, wifi_ip, self.relay_base_url
+            )
+        else
+            info_text = string.format(
+                "⚠️ Session Started Locally (Relay Offline)\n\n" ..
+                "==============================\n" ..
+                "  KINDLE PIN:   %s\n" ..
+                "  Full Code:    %s\n" ..
+                "  Wi-Fi IP:     %s\n" ..
+                "==============================\n\n" ..
+                "[WARNING] Could not reach Relay Server:\n" ..
+                "%s\n\n" ..
+                "vizkidd.github.io/coop-reader will not be able to find this session until the relay is online.\n\n" ..
+                "To fix:\n" ..
+                "1. Verify Kindle Wi-Fi is connected.\n" ..
+                "2. Tap 'Coop Reader Sync' -> 'Set Relay Server URL...'\n" ..
+                "3. Enter your deployed Cloudflare Worker URL.",
+                pin, room_id, wifi_ip, self.relay_base_url
+            )
+        end
         local viewer = TextViewer:new{
-            title = "Coop Reader — Hosting Session",
+            title = relay_registered and "Coop Reader — Hosting Session" or "Coop Reader — Relay Warning",
+            text = info_text,
+        }
+        UIManager:show(viewer)
+    end)
             text = info_text,
         }
         UIManager:show(viewer)

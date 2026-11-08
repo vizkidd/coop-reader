@@ -8,8 +8,10 @@
   'use strict';
 
   // ==================== CONFIGURATION & STATE ====================
+  var savedRelay = '';
+  try { savedRelay = localStorage.getItem('coop-relay') || ''; } catch (_) {}
   var CONFIG = {
-    defaultRelay: 'wss://coop-relay.coop-reader.workers.dev',
+    defaultRelay: savedRelay || 'wss://coop-relay.coop-reader.workers.dev',
     daemonApi: 'http://127.0.0.1:8765',
     chunkSize: 49152,
     heartbeatInterval: 12000,

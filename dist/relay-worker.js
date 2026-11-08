@@ -30,6 +30,8 @@ export class Room {
 
   async fetch(req) {
     const url = new URL(req.url);
+    const roomMatch = url.pathname.match(/^\/room\/([\w-]{1,64})/);
+    const roomId = roomMatch ? roomMatch[1] : '';
 
     if (req.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -102,8 +104,6 @@ export class Room {
           from = url.searchParams.get('from') || from;
         }
 
-        const roomMatch = url.pathname.match(/^\/room\/([\w-]{1,64})/);
-        const roomId = roomMatch ? roomMatch[1] : '';
         this.latestState = { page, updated: Date.now() };
 
         // Broadcast to all active WebSocket clients in this room (Chrome on MacOS)

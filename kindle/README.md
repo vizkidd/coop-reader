@@ -116,9 +116,26 @@ kindle/
 ### 🐞 Debugging & Diagnostics in KOReader
 If you run into issues while testing or reading:
 1. Tap the top menu in KOReader → **Tools / Network** → **Coop Reader Sync**.
-2. **Test Relay Connection**: Tests end-to-end HTTP/HTTPS reachability to the relay server and reports status code and latency.
-3. **View Debug Log**: Opens an on-screen scrollable log viewer showing timestamped network events, Wi-Fi states, and page sync requests.
-4. Log files are also persisted on device at `/tmp/coopreader_debug.log`.
+2. **Set Relay Server URL...**: Set or update your Cloudflare Worker URL (e.g. `https://coop-relay.YOUR_NAME.workers.dev`). Persisted permanently in settings.
+3. **Test Relay Connection**: Tests end-to-end HTTP/HTTPS reachability to the relay server and reports status code and latency.
+4. **View Debug Log**: Opens an on-screen scrollable log viewer showing timestamped network events, Wi-Fi states, and page sync requests.
+5. Log files are also persisted on device at `/tmp/coopreader_debug.log`.
+
+---
+
+## ☁️ Deploying the Cloudflare Worker Relay
+Because browsers on `https://vizkidd.github.io/coop-reader` enforce HTTPS/WSS security and block mixed insecure HTTP content, real-time sync with Kindle uses a free Cloudflare Worker relay.
+
+To deploy your own relay in 1 minute:
+```bash
+# In the coop-reader project directory:
+npm run deploy:relay
+# or: npx wrangler deploy
+```
+Copy the resulting URL (e.g. `https://coop-relay.YOUR_NAME.workers.dev`):
+1. In KOReader on Kindle: Menu → **Coop Reader Sync** → **Set Relay Server URL...** → enter `https://coop-relay.YOUR_NAME.workers.dev`.
+2. In Chrome on macOS: Menu ☰ → **Network** → **Relay server** → enter `wss://coop-relay.YOUR_NAME.workers.dev`.
+Both devices will now connect and sync page turns immediately with 4-digit PINs!
 
 ---
 
