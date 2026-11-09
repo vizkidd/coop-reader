@@ -28,11 +28,13 @@ import xml.etree.ElementTree as ET
 try:
     # Python 3
     from http.server import HTTPServer, SimpleHTTPRequestHandler
+    from socketserver import ThreadingMixIn
     from urllib.parse import urlparse, parse_qs, unquote
 except ImportError:
     # Python 2 fallback
     from BaseHTTPServer import HTTPServer
     from SimpleHTTPServer import SimpleHTTPRequestHandler
+    from SocketServer import ThreadingMixIn
     from urlparse import urlparse, parse_qs
     from urllib import unquote
 
@@ -47,6 +49,25 @@ LOCAL_PINS = {} # pin -> { "room": room, "key": key, "ts": time }
 ROOM_MAX_MESSAGES = 100
 PAGE_TURN_COUNTER = 0
 AUTO_REFRESH_INTERVAL = 8 # Full eips refresh every 8 page turns
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Allow a document transfer and status/API requests to proceed together."""
+    daemon_threads = True
+    allow_reuse_address = True
+
+def path_is_within(path, root):
+    """Python 2/3 compatible real-path containment check."""
+    path = os.path.realpath(path)
+    root = os.path.realpath(root)
+    try:
+        return os.path.commonpath([path, root]) == root
+    except (AttributeError, ValueError):
+        return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+def is_allowed_document(path):
+    """Only serve files inside the Kindle documents directory."""
+    roots = [DOCUMENTS_DIR, os.path.expanduser("~/documents")]
+    return any(os.path.isdir(root) and path_is_within(path, root) for root in roots)
 
 def get_battery_level():
     """Queries Kindle battery status using LIPC or gasgauge"""
@@ -93,6 +114,8 @@ def list_kindle_documents():
                 if ext in supported_exts:
                     full_path = os.path.join(root, f)
                     try:
+                        if not is_allowed_document(full_path):
+                            continue
                         sz = os.path.getsize(full_path)
                         rel_path = os.path.relpath(full_path, root_dir)
                         docs.append({
@@ -175,12 +198,22 @@ def parse_epub(file_path):
 class KindleRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         self.directory = kwargs.pop('directory', STATIC_ROOT)
-        SimpleHTTPRequestHandler.__init__(self, *args, **kwargs)
+        # Python 3.7+ accepts directory= in the base handler; older Kindle
+        # Python 2.7/3.x builds do not, so keep the already-set attribute and
+        # fall back to the legacy constructor signature.
+        try:
+            SimpleHTTPRequestHandler.__init__(self, *args, directory=self.directory, **kwargs)
+        except TypeError:
+            SimpleHTTPRequestHandler.__init__(self, *args, **kwargs)
 
     def translate_path(self, path):
         parsed = urlparse(path).path
         clean_path = unquote(parsed).lstrip('/')
-        return os.path.join(self.directory, clean_path)
+        root = os.path.realpath(self.directory)
+        candidate = os.path.realpath(os.path.join(root, clean_path))
+        if not path_is_within(candidate, root):
+            return os.path.join(root, "__coop_reader_not_found__")
+        return candidate
 
     def send_json(self, data, status=200):
         body = json.dumps(data).encode('utf-8')
@@ -204,22 +237,28 @@ class KindleRequestHandler(SimpleHTTPRequestHandler):
         # API: Read raw document file
         if parsed.path == '/api/open-doc':
             path = qs.get('path', [''])[0]
-            if not path or not os.path.isfile(path):
-                return self.send_json({"ok": False, "error": "File not found"}, 404)
-            norm = os.path.abspath(path)
+            if not path or not os.path.isfile(path) or not is_allowed_document(path):
+                return self.send_json({"ok": False, "error": "File not found or outside Kindle documents"}, 404)
+            norm = os.path.realpath(path)
             try:
-                with open(norm, 'rb') as f:
-                    content = f.read()
+                size = os.path.getsize(norm)
                 mime, _ = mimetypes.guess_type(norm)
                 if not mime:
                     mime = 'application/octet-stream'
                 self.send_response(200)
                 self.send_header('Content-Type', mime)
-                self.send_header('Content-Length', str(len(content)))
+                self.send_header('Content-Length', str(size))
                 self.send_header('Access-Control-Allow-Origin', '*')
-                self.send_header('Content-Disposition', 'attachment; filename="%s"' % os.path.basename(norm))
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.send_header('Content-Disposition', 'attachment; filename="%s"' % os.path.basename(norm).replace('"', ''))
                 self.end_headers()
-                self.wfile.write(content)
+                # Stream in bounded chunks; never hold a full Kindle book in RAM.
+                with open(norm, 'rb') as f:
+                    while True:
+                        chunk = f.read(64 * 1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
                 return
             except Exception as e:
                 return self.send_json({"ok": False, "error": str(e)}, 500)
@@ -247,9 +286,9 @@ class KindleRequestHandler(SimpleHTTPRequestHandler):
         # API: Fast native EPUB extraction
         if parsed.path == '/api/parse-epub':
             path = qs.get('path', [''])[0]
-            if not path or not os.path.isfile(path):
-                return self.send_json({"ok": False, "error": "File not found"}, 404)
-            res, err = parse_epub(os.path.abspath(path))
+            if not path or not os.path.isfile(path) or not is_allowed_document(path):
+                return self.send_json({"ok": False, "error": "File not found or outside Kindle documents"}, 404)
+            res, err = parse_epub(os.path.realpath(path))
             if err:
                 return self.send_json({"ok": False, "error": err}, 500)
             return self.send_json({"ok": True, "data": res})
@@ -404,10 +443,12 @@ class KindleRequestHandler(SimpleHTTPRequestHandler):
 def run_server(port, root_dir):
     global STATIC_ROOT
     STATIC_ROOT = os.path.abspath(root_dir)
-    server_address = ('0.0.0.0', port)
+    # The daemon has no authentication; expose it only to the local Kindle UI.
+    # Cross-device collaboration uses the authenticated cloud relay instead.
+    server_address = ('127.0.0.1', port)
     handler = lambda *args: KindleRequestHandler(directory=STATIC_ROOT, *args)
-    httpd = HTTPServer(server_address, handler)
-    print("Coop Reader Kindle Daemon listening on port %d (All interfaces)" % port)
+    httpd = ThreadedHTTPServer(server_address, handler)
+    print("Coop Reader Kindle Daemon listening on http://127.0.0.1:%d" % port)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

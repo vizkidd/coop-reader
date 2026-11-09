@@ -6,9 +6,11 @@
     "dev": "npx http-server ./src -p 3000 -c-1",
     "build": "mkdir -p dist && cp -r src/* dist/ && bash ./kindle/build-kpm.sh",
     "build:kindle": "bash ./kindle/build-kpm.sh",
-    "deploy:relay": "wrangler deploy"
+    "deploy:relay": "wrangler deploy",
+    "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "http-server": "^14.1.1"
-  }
+  },
+  "type": "module"
 }

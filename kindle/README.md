@@ -2,7 +2,7 @@
 
 Port of **Coop Reader** for jailbroken Amazon Kindle e-readers. Allows Kindle users to read documents and books together in real time in the same session—with other Kindles, computers, or smartphones.
 
-Packageable and installable directly via **Kindle Package Manager (KPM)**, **KUAL (Kindle Unified Application Launcher)**, or as a **KOReader Sync Plugin**.
+Distributed as a **KUAL extension** for direct USB installation, a **KPM package artifact** for configured KPM repositories, and a **KOReader Sync Plugin**. The GUI build is a local WebKit/browser app launched by KUAL; it is not a native Kindle `.azw2` application.
 
 ---
 
@@ -11,15 +11,15 @@ Packageable and installable directly via **Kindle Package Manager (KPM)**, **KUA
 | Feature | Desktop/Web Coop Reader | Kindle Port Implementation |
 |---|---|---|
 | **Distribution / Package** | Static web files / GitHub Pages | **KPM Package (`.kpkg`)** + **KUAL extension** + **KOReader plugin** |
-| **Sessions & Rooms** | P2P PeerJS + WebSocket Relay | E2E-encrypted WebSocket Relay (`wss://`) + Local daemon bridge |
-| **Room Join / Auth** | Link / Code (`id.key`) + Salted SHA-256 | Code entry dialog with on-screen Kindle keyboard & salted hash |
+| **Sessions & Rooms** | P2P PeerJS + WebSocket Relay | WebSocket relay for the GUI app; authenticated HTTPS mailbox bridge for KOReader |
+| **Room Join / Auth** | Link / Code (`id.key`) + Salted SHA-256 | Full room code and relay PIN; GUI supports password challenges on Web Crypto-capable browsers; KOReader currently supports unprotected rooms only |
 | **Documents Supported** | PDF, EPUB, MOBI, AZW3, DOCX, XLSX, TXT | **Direct Kindle `/mnt/us/documents/` browsing** + remote peer file transfers + PDF.js / text pagination |
-| **Reading Sync** | Real-time page sync & Detach | Bidirectional page sync, **[Follow Host]** re-sync, Kindle hardware button integration |
+| **Reading Sync** | Real-time page sync & Detach | Bidirectional page sync, detached guest page reporting, **[Follow Host]** re-sync |
 | **Turn Navigation** | Mouse click / Swipes | **Kindle Page Buttons** (Oasis/Voyage/K4/K5) + **Left/Right 22% touch zones** |
 | **Ghosting Reduction** | None needed on LCD/OLED | **Hardware EIPS refresh (`/usr/sbin/eips -c`)** + Pure invert flash |
-| **Annotations / Notes** | Canvas drawing + numbered notes | High-contrast E-Ink pin notes with tap-to-read drawer and live sync |
-| **Text Chat** | Web chat drawer | High-contrast E-Ink chat modal with virtual keyboard support |
-| **Voice Chat** | WebRTC audio mesh | **Voice Presence Indicator**: Kindles lack microphone hardware; displays who is speaking in real time with listening mode |
+| **Annotations / Notes** | Canvas drawing + numbered notes | Kindle GUI has E-Ink annotation UI; KOReader plugin annotation transport/rendering is not implemented |
+| **Text Chat** | Web chat drawer | Kindle GUI has a high-contrast chat modal; KOReader plugin chat UI/transport is not implemented |
+| **Voice Chat** | WebRTC audio mesh | Not available on Kindle GUI/KOReader; voice-presence frames are not a substitute for audio transport |
 | **Power Management** | Screen Wake Lock API | **Kindle LIPC power daemon hook (`lipc-set-prop com.lab126.powerd preventScreenSaver 1`)** |
 | **Battery & Health** | Browser battery API | Hardware battery monitoring via LIPC (`battLevel`) / gasgauge |
 
@@ -59,17 +59,17 @@ kindle/
 ## 🚀 Installation Guide
 
 ### Option 1: Install via Kindle Package Manager (KPM)
-*(Recommended for Kindles with KPM installed)*
 
-1. Copy `dist/coop-reader.kpkg` to your Kindle, or install directly using KPM:
-   ```bash
-   ;kpm install /mnt/us/coop-reader.kpkg
+KPM installs **package IDs from configured repositories**. It does not install an arbitrary `.kpkg` by passing a USB path to `;kpm install`. `dist/coop-reader.kpkg` is the package artifact for repository maintainers/publishers.
+
+1. Configure a KPM repository that publishes the Coop Reader package (or ask the repository maintainer to add it).
+2. On Kindle, run:
+   ```text
+   ;kpm install coop-reader
    ```
-   Or via SSH / `kterm`:
-   ```bash
-   kpm install coop-reader.kpkg
-   ```
-2. Launch directly from KPM or via KUAL under **Extensions → Coop Reader → Launch Coop Reader**.
+3. Launch from KPM or KUAL under **Extensions → Coop Reader → Launch Coop Reader**.
+
+For a personal/local USB installation without a KPM repository, use the KUAL ZIP in Option 2. Do not use `;kpm install /mnt/us/coop-reader.kpkg`; that is not a supported local-file install command.
 
 ### Option 2: Install via KUAL (Manual USB Transfer)
 1. Build or download `dist/coop-reader-kual.zip`.
@@ -93,7 +93,7 @@ kindle/
 
 > [!IMPORTANT]
 > **Running via `kterm` (Terminal)**:
-> Kindles mount the USB storage `/mnt/us` with the `noexec` mount flag. Executing `./launch.sh` directly will fail with `Permission denied`. Always prefix with `sh`:
+> Kindles commonly mount USB storage with `noexec`. Execute the script through the shell rather than as a program:
 > ```bash
 > sh /mnt/us/extensions/coop-reader/bin/launch.sh
 > # or from the kpm folder:
@@ -107,14 +107,21 @@ kindle/
 > 3. Check `/mnt/us/kpm_install.log` for any script execution errors.
 
 ### Option 3: KOReader Plugin (For Reading inside KOReader)
-1. Extract `dist/coopreader.koplugin.zip` into:
+1. Extract `dist/coopreader.koplugin.zip` into the KOReader `plugins` directory:
    ```text
-   /mnt/us/koreader/plugins/coopreader.koplugin/
+   /mnt/us/koreader/plugins/
    ```
+   The resulting file must be `/mnt/us/koreader/plugins/coopreader.koplugin/main.lua` (not a nested `coopreader.koplugin/coopreader.koplugin/` folder).
 2. Restart KOReader.
 3. In KOReader, tap the top menu → **Tools / Network** → **Coop Reader Sync** → **Join Reading Session...**.
 
 ---
+
+## 🔄 Cross-device integration and current limits
+
+The WASM client and Kindle GUI use the same relay WebSocket room protocol. KOReader cannot use a browser WebSocket, so it joins as an authenticated HTTP-mailbox peer; page state, peer presence, and host/guest roles are bridged through the same room. The relay PIN registry is durable and refuses to create a PIN until a host is actually online.
+
+KOReader currently synchronizes host page position, reports a guest's own page, and exchanges basic profile/presence messages. It shows room/host/relay information and offers an explicit disconnect action. It does not yet render the WASM chat/annotation UI, transfer books, support voice, or join password-protected rooms. The HTTP mailbox path is protected by HTTPS and a per-session bearer token, but its bridge messages are not end-to-end encrypted; the relay operator can read page/profile/presence metadata. Do not treat that path as a private channel. The Kindle GUI uses the relay WebSocket path and supports password challenges when that Kindle browser provides Web Crypto. Its PDF viewer also depends on the PDF.js CDN unless `pdf.min.js` is supplied locally; offline PDF rendering is therefore not guaranteed.
 
 ## 💡 How to Read Together on Kindle
 
@@ -128,7 +135,7 @@ kindle/
 
 ### Joining a Session (Peer)
 1. Open Coop Reader on your Kindle (via KUAL, KPM, or KOReader).
-2. **Simplified 4-Digit PIN Joining**:
+2. **Simplified PIN Joining**:
    - On the host's screen (Chrome on macOS / `vizkidd.github.io/coop-reader`), locate the **Kindle PIN** (e.g. `4821`).
    - On your Kindle, simply type `4821` on the number pad! No need to type long 80-character base64 session codes or hashes.
    - Alternatively, you can still paste or type full session codes.
@@ -139,7 +146,7 @@ kindle/
 If you run into issues while testing or reading:
 1. Tap the top menu in KOReader → **Tools / Network** → **Coop Reader Sync**.
 2. **Set Relay Server URL...**: Set or update your Cloudflare Worker URL (e.g. `https://coop-relay.YOUR_NAME.workers.dev`). Persisted permanently in settings.
-3. **Test Relay Connection**: Tests end-to-end HTTP/HTTPS reachability to the relay server and reports status code and latency.
+3. **Test Relay Connection**: Tests HTTP/HTTPS reachability to the relay server and reports the response status.
 4. **View Debug Log**: Opens an on-screen scrollable log viewer showing timestamped network events, Wi-Fi states, and page sync requests.
 5. Log files are also persisted on device at `/tmp/coopreader_debug.log`.
 
@@ -157,7 +164,7 @@ npm run deploy:relay
 Copy the resulting URL (e.g. `https://coop-relay.YOUR_NAME.workers.dev`):
 1. In KOReader on Kindle: Menu → **Coop Reader Sync** → **Set Relay Server URL...** → enter `https://coop-relay.YOUR_NAME.workers.dev`.
 2. In Chrome on macOS: Menu ☰ → **Network** → **Relay server** → enter `wss://coop-relay.YOUR_NAME.workers.dev`.
-Both devices will now connect and sync page turns immediately with 4-digit PINs!
+Both devices can then connect through the shared relay. PIN creation is confirmed only after the host has registered; otherwise share the full room code.
 
 ---
 

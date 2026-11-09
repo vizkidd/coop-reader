@@ -1,189 +1,413 @@
-// coop-reader WebSocket & HTTP relay — Cloudflare Worker + Durable Object (free plan works).
-// Deploy:  npx wrangler deploy   → copy the wss:// URL into the app: menu → Network → Relay server.
-// Rooms are keyed by the host's session code; supports both WebSockets (browsers) and HTTP sync (Kindle / KOReader).
+// Coop Reader relay — WebSocket + authenticated HTTP mailbox transport.
+// WebSocket is used by browsers/WASM/Kindle GUI browsers. HTTP mailboxes are
+// used by KOReader, which has HTTP but no browser-style WebSocket support.
 
 const MAX_CLIENTS = 25;
+const MAX_FRAME_CHARS = 600000;
+const HTTP_PEER_TTL_MS = 45000;
+const PIN_TTL_MS = 4 * 60 * 60 * 1000;
+const MAX_MAILBOX_MESSAGES = 250;
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Max-Age': '86400',
 };
 
-function jsonResponse(data, status = 200) {
+function jsonResponse(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: {
-      'Content-Type': 'application/json',
-      ...CORS_HEADERS,
-    },
+    headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS_HEADERS, ...extraHeaders },
   });
+}
+
+async function readJson(req) {
+  const length = Number(req.headers.get('Content-Length') || 0);
+  if (length > MAX_FRAME_CHARS + 2048) throw new Error('request too large');
+  const body = await req.text();
+  if (body.length > MAX_FRAME_CHARS + 2048) throw new Error('request too large');
+  return body ? JSON.parse(body) : {};
+}
+
+function makeToken() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function validId(value) {
+  return typeof value === 'string' && /^[\w-]{1,64}$/.test(value);
 }
 
 export class Room {
   constructor(state, env) {
-    this.clients = new Map();
-    this.tokens = new Map();
-    this.pins = new Map(); // PIN -> { room, key, ts }
+    this.state = state;
+    this.storage = state.storage;
+    this.clients = new Map();       // id -> WebSocket
+    this.tokens = new Map();        // websocket id -> connection token
+    this.httpPeers = new Map();     // id -> { token, role, name, lastSeen, queue }
+    this.hostId = null;
     this.latestState = { page: 1, updated: Date.now() };
-    this.httpClients = new Map();
+    this.ready = this.storage.get('latestState').then(saved => {
+      if (saved && typeof saved === 'object') this.latestState = saved;
+    }).catch(() => {});
+  }
+
+  async persistLatestState() {
+    try { await this.storage.put('latestState', this.latestState); } catch (_) {}
+  }
+
+  getPeerCounts() {
+    return { clients: this.clients.size, httpClients: this.httpPeers.size, totalPeers: this.clients.size + this.httpPeers.size };
+  }
+
+  getRoomState(roomId) {
+    return {
+      ok: true,
+      room: roomId,
+      page: this.latestState.page || 1,
+      updated: this.latestState.updated || Date.now(),
+      hostId: this.hostId,
+      hostOnline: !!(this.hostId && (this.clients.has(this.hostId) || this.httpPeers.has(this.hostId))),
+      ...this.getPeerCounts(),
+      peers: [
+        ...Array.from(this.clients.keys(), id => ({ id, transport: 'websocket', role: id === this.hostId ? 'host' : 'guest' })),
+        ...Array.from(this.httpPeers.entries(), ([id, p]) => ({ id, name: p.name || '', transport: 'http', role: p.role })),
+      ],
+    };
+  }
+
+  queueHttp(id, frame) {
+    const peer = this.httpPeers.get(id);
+    if (!peer) return false;
+    const raw = JSON.stringify(frame);
+    if (raw.length > MAX_FRAME_CHARS) return false;
+    if (peer.queue.length >= MAX_MAILBOX_MESSAGES) peer.queue.splice(0, peer.queue.length - MAX_MAILBOX_MESSAGES + 1);
+    peer.queue.push(frame);
+    // Outbound delivery is not a heartbeat. Only authenticated poll/send calls
+    // refresh lastSeen, so dead HTTP clients cannot stay registered forever.
+    return true;
+  }
+
+  sendFrame(from, to, payload) {
+    const frame = { from, p: payload, transport: this.httpPeers.has(from) ? 'http' : 'websocket' };
+    if (typeof to !== 'string' || !to) return false;
+
+    // Exact peer delivery first (including a Kindle HTTP host whose id is the room id).
+    const ws = this.clients.get(to);
+    if (ws) {
+      try { ws.send(JSON.stringify(frame)); return true; } catch (_) { return false; }
+    }
+    if (this.queueHttp(to, frame)) return true;
+
+    const isBroadcast = to === '*' || to === 'broadcast';
+    // A room target means the host if one is registered. Without a host, fan out
+    // to current room peers so the room can recover when a host is late to join.
+    if (isBroadcast || to === this.roomId) {
+      let sent = false;
+      if (this.hostId && this.hostId !== from) {
+        const hostWs = this.clients.get(this.hostId);
+        if (hostWs) { try { hostWs.send(JSON.stringify(frame)); sent = true; } catch (_) {} }
+        else if (this.queueHttp(this.hostId, frame)) sent = true;
+      }
+      if (!sent || isBroadcast) {
+        for (const [id, client] of this.clients.entries()) {
+          if (id === from || id === this.hostId) continue;
+          try { client.send(JSON.stringify(frame)); sent = true; } catch (_) {}
+        }
+        for (const [id] of this.httpPeers.entries()) {
+          if (id === from || id === this.hostId) continue;
+          if (this.queueHttp(id, frame)) sent = true;
+        }
+      }
+      return sent;
+    }
+    return false;
+  }
+
+  broadcastLeft(id, transport) {
+    const peerTransport = transport || (this.httpPeers.has(id) ? 'http' : 'websocket');
+    const frame = JSON.stringify({ from: id, left: true, transport: peerTransport });
+    for (const [peerId, ws] of this.clients.entries()) {
+      if (peerId === id) continue;
+      try { ws.send(frame); } catch (_) {}
+    }
+    for (const [peerId] of this.httpPeers.entries()) {
+      if (peerId === id) continue;
+      this.queueHttp(peerId, { from: id, left: true, transport: peerTransport });
+    }
+  }
+
+  purgeStaleHttp() {
+    const now = Date.now();
+    for (const [id, peer] of this.httpPeers.entries()) {
+      if (peer.lastSeen < now - HTTP_PEER_TTL_MS) {
+        this.httpPeers.delete(id);
+        if (this.hostId === id) this.hostId = null;
+        this.broadcastLeft(id, 'http');
+      }
+    }
+  }
+
+  async announceExistingPeersToHost() {
+    if (!this.hostId) return;
+    for (const id of this.clients.keys()) {
+      if (id === this.hostId) continue;
+      this.sendFrame(id, this.hostId, { type: 'RELAY_HELLO', peerId: id, transport: 'websocket' });
+    }
+    for (const [id, peer] of this.httpPeers.entries()) {
+      if (id === this.hostId) continue;
+      this.sendFrame(id, this.hostId, { type: 'RELAY_HELLO', peerId: id, name: peer.name || '', transport: 'http' });
+    }
+  }
+
+  async authenticateHttp(req, peerId) {
+    this.purgeStaleHttp();
+    const peer = this.httpPeers.get(peerId);
+    if (!peer) return null;
+    const auth = req.headers.get('Authorization') || '';
+    const token = auth.replace(/^Bearer\s+/i, '') || '';
+    if (!token || token !== peer.token) return null;
+    peer.lastSeen = Date.now();
+    return peer;
   }
 
   async fetch(req) {
+    await this.ready;
     const url = new URL(req.url);
-    const roomMatch = url.pathname.match(/^\/room\/([\w-]{1,64})/);
-    const roomId = roomMatch ? roomMatch[1] : '';
+    const roomMatch = url.pathname.match(/^\/room\/([\w-]{1,64})(\/.*)?$/);
+    this.roomId = roomMatch ? roomMatch[1] : '';
+    const tail = roomMatch ? (roomMatch[2] || '') : '';
 
-    if (req.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
-    }
+    if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
 
-    // 1. PIN Management (Handled by the central __PIN_REGISTRY__ room)
+    // PIN registry is a dedicated Durable Object. Persist PINs rather than keeping
+    // them in a transient Map, so short codes survive DO eviction/restart.
     if (url.pathname === '/pin/create' && req.method === 'POST') {
       try {
-        const body = await req.json();
+        const body = await readJson(req);
         const room = body.room || '';
         const key = body.key || '';
-        if (!room) return jsonResponse({ ok: false, error: 'room required' }, 400);
-
-        // Generate 4-digit numeric PIN (1000 - 9999)
-        let pin = '';
-        for (let i = 0; i < 10; i++) {
-          const candidate = String(Math.floor(1000 + Math.random() * 9000));
-          if (!this.pins.has(candidate)) {
-            pin = candidate;
-            break;
+        if (!validId(room)) return jsonResponse({ ok: false, error: 'valid room required' }, 400);
+        const now = Date.now();
+        const entries = await this.storage.list({ prefix: 'pin:' });
+        for (const [storageKey, value] of entries) {
+          if (!value || value.ts < now - PIN_TTL_MS) await this.storage.delete(storageKey);
+        }
+        for (const [storageKey, value] of entries) {
+          if (value && value.ts >= now - PIN_TTL_MS && value.room === room && (value.key || '') === key) {
+            return jsonResponse({ ok: true, pin: storageKey.slice(4), room, key, expiresAt: value.ts + PIN_TTL_MS });
           }
         }
-        if (!pin) pin = String(Math.floor(100000 + Math.random() * 900000));
-
-        this.pins.set(pin, { room, key, ts: Date.now() });
-
-        // Clean up PINs older than 4 hours
-        const fourHoursAgo = Date.now() - 4 * 60 * 60 * 1000;
-        for (const [k, v] of this.pins.entries()) {
-          if (v.ts < fourHoursAgo) this.pins.delete(k);
+        let pin = '';
+        for (let i = 0; i < 100; i++) {
+          const candidate = String(1000 + crypto.getRandomValues(new Uint32Array(1))[0] % 9000);
+          if (!(await this.storage.get('pin:' + candidate))) { pin = candidate; break; }
         }
-
-        return jsonResponse({ ok: true, pin, room, key });
+        if (!pin) pin = String(100000 + crypto.getRandomValues(new Uint32Array(1))[0] % 900000);
+        await this.storage.put('pin:' + pin, { room, key, ts: now });
+        return jsonResponse({ ok: true, pin, room, key, expiresAt: now + PIN_TTL_MS });
       } catch (e) {
-        return jsonResponse({ ok: false, error: e.message }, 500);
+        return jsonResponse({ ok: false, error: String(e.message || e) }, 500);
       }
     }
 
     const pinMatch = url.pathname.match(/^\/pin\/([0-9a-zA-Z_-]{3,12})$/);
-    if (pinMatch) {
+    if (pinMatch && req.method === 'GET') {
       const pin = pinMatch[1];
-      const entry = this.pins.get(pin);
-      if (entry) {
-        return jsonResponse({ ok: true, pin, room: entry.room, key: entry.key });
+      const entry = await this.storage.get('pin:' + pin);
+      if (entry && entry.ts >= Date.now() - PIN_TTL_MS) {
+        return jsonResponse({ ok: true, pin, room: entry.room, key: entry.key || '', expiresAt: entry.ts + PIN_TTL_MS });
       }
+      if (entry) await this.storage.delete('pin:' + pin);
       return jsonResponse({ ok: false, error: 'PIN not found or expired' }, 404);
     }
 
-    // 2. HTTP Room State Query (For Kindle / KOReader polling)
-    if (url.pathname.endsWith('/state')) {
-      // Clean stale HTTP clients (no activity for 30 seconds)
-      const staleThreshold = Date.now() - 30000;
-      for (const [k, v] of this.httpClients.entries()) {
-        if (v.lastSeen < staleThreshold) this.httpClients.delete(k);
-      }
-      return jsonResponse({
-        ok: true,
-        page: this.latestState.page,
-        updated: this.latestState.updated,
-        clients: this.clients.size,
-        httpClients: this.httpClients.size,
-        totalPeers: this.clients.size + this.httpClients.size,
-      });
+    if (!roomMatch) {
+      return jsonResponse({ ok: true, app: 'coop-reader relay', protocol: 2, features: ['websocket', 'http-mailbox', 'pin-codes'] });
     }
 
-    // 3. HTTP Page Synchronization (For Kindle / KOReader pushing page changes)
-    if (url.pathname.endsWith('/sync') && req.method === 'POST') {
+    this.purgeStaleHttp();
+
+    if (tail === '/host-status' && req.method === 'GET') {
+      return jsonResponse({ ok: true, ...this.getRoomState(this.roomId) });
+    }
+
+    // HTTP mailbox registration for KOReader.
+    if (tail === '/http/join' && req.method === 'POST') {
       try {
-        let page = 1;
-        let from = 'kindle';
-        if (req.headers.get('Content-Type')?.includes('application/json')) {
-          const b = await req.json();
-          page = parseInt(b.page, 10) || 1;
-          from = b.from || from;
-        } else {
-          page = parseInt(url.searchParams.get('page'), 10) || 1;
-          from = url.searchParams.get('from') || from;
+        const body = await readJson(req);
+        const id = body.id;
+        const role = body.role === 'host' ? 'host' : 'guest';
+        if (!validId(id)) return jsonResponse({ ok: false, error: 'valid peer id required' }, 400);
+        const existing = this.httpPeers.get(id);
+        const suppliedToken = body.token || '';
+        if (existing && suppliedToken !== existing.token) return jsonResponse({ ok: false, error: 'peer id already in use; reconnect with its bearer token' }, 409);
+        if (existing && role !== existing.role) return jsonResponse({ ok: false, error: 'peer role cannot be changed while registered' }, 409);
+        if (role === 'host' && id !== this.roomId) return jsonResponse({ ok: false, error: 'host id must match room id' }, 400);
+        if (role === 'guest' && id === this.roomId) return jsonResponse({ ok: false, error: 'guest id cannot equal room id' }, 400);
+        if (!existing && (this.clients.size + this.httpPeers.size) >= MAX_CLIENTS) return jsonResponse({ ok: false, error: 'room full' }, 429);
+        if (role === 'host' && this.hostId && this.hostId !== id && (this.clients.has(this.hostId) || this.httpPeers.has(this.hostId))) {
+          return jsonResponse({ ok: false, error: 'room already has an active host' }, 409);
         }
-
-        this.httpClients.set(from, { lastSeen: Date.now(), page });
-        this.latestState = { page, updated: Date.now() };
-
-        // Broadcast to all active WebSocket clients in this room (Chrome on MacOS)
-        const frame = JSON.stringify({
-          from: roomId || from,
-          p: { type: 'PAGE_CHANGE', page },
+        const token = existing ? existing.token : makeToken();
+        this.httpPeers.set(id, {
+          token,
+          role,
+          name: String(body.name || '').slice(0, 64),
+          lastSeen: Date.now(),
+          queue: existing ? existing.queue : [],
         });
-
-        for (const ws of this.clients.values()) {
-          try { ws.send(frame); } catch {}
+        if (role === 'host') {
+          this.hostId = id;
+          await this.announceExistingPeersToHost();
+        } else if (this.hostId) {
+          this.sendFrame(id, this.hostId, { type: 'RELAY_HELLO', peerId: id, name: String(body.name || '').slice(0, 64), transport: 'http' });
         }
-
-        return jsonResponse({ ok: true, page });
+        return jsonResponse({ ...this.getRoomState(this.roomId), token, id, role });
       } catch (e) {
-        return jsonResponse({ ok: false, error: e.message }, 500);
+        return jsonResponse({ ok: false, error: String(e.message || e) }, 400);
       }
     }
 
-    // 4. WebSocket Upgrade (For desktop browsers & web app peers)
-    if (req.headers.get('Upgrade') !== 'websocket') {
-      return new Response('coop-reader relay: websocket expected', { status: 426, headers: CORS_HEADERS });
+    const httpPollMatch = tail.match(/^\/http\/poll$/);
+    if (httpPollMatch && req.method === 'GET') {
+      const peerId = url.searchParams.get('id') || '';
+      const peer = await this.authenticateHttp(req, peerId);
+      if (!peer) return jsonResponse({ ok: false, error: 'HTTP peer not registered or token expired' }, 401);
+      const messages = peer.queue.splice(0, 100);
+      return jsonResponse({ ...this.getRoomState(this.roomId), id: peerId, messages });
     }
 
-    const q = url.searchParams, id = q.get('id') || '', tok = q.get('t') || '';
-    if (!/^[\w-]{1,64}$/.test(id) || !/^[\w-]{8,64}$/.test(tok)) return new Response('bad id/token', { status: 400 });
-    if (this.tokens.has(id) && this.tokens.get(id) !== tok) return new Response('id in use', { status: 409 });
-    if (!this.clients.has(id) && this.clients.size >= MAX_CLIENTS) return new Response('room full', { status: 429 });
+    if (tail === '/http/send' && req.method === 'POST') {
+      try {
+        const body = await readJson(req);
+        const id = body.id || '';
+        const peer = await this.authenticateHttp(req, id);
+        if (!peer) return jsonResponse({ ok: false, error: 'HTTP peer not registered or token expired' }, 401);
+        if (!body.p || typeof body.p !== 'object') return jsonResponse({ ok: false, error: 'message payload required' }, 400);
+        const encoded = JSON.stringify(body.p);
+        if (encoded.length > MAX_FRAME_CHARS) return jsonResponse({ ok: false, error: 'message too large' }, 413);
+        const type = body.p.type;
+        if (type === 'PAGE_CHANGE' && peer.role !== 'host') {
+          return jsonResponse({ ok: false, error: 'only the host may publish PAGE_CHANGE' }, 403);
+        }
+        if (type === 'PAGE_CHANGE' && Number(body.p.page) > 0) {
+          this.latestState = { page: Math.floor(Number(body.p.page)), updated: Date.now() };
+          await this.persistLatestState();
+        }
+        const to = body.to || this.roomId;
+        const sent = this.sendFrame(id, to, body.p);
+        return jsonResponse({ ok: true, delivered: sent, ...this.getPeerCounts() });
+      } catch (e) {
+        return jsonResponse({ ok: false, error: String(e.message || e) }, 400);
+      }
+    }
+
+    if (tail === '/http/leave' && (req.method === 'POST' || req.method === 'DELETE')) {
+      try {
+        const body = req.method === 'POST' ? await readJson(req) : {};
+        const id = url.searchParams.get('id') || body.id || '';
+        const peer = await this.authenticateHttp(req, id);
+        if (!peer) return jsonResponse({ ok: false, error: 'HTTP peer not registered or token expired' }, 401);
+        this.httpPeers.delete(id);
+        if (this.hostId === id) this.hostId = null;
+        this.broadcastLeft(id, 'http');
+        return jsonResponse({ ok: true });
+      } catch (e) {
+        return jsonResponse({ ok: false, error: String(e.message || e) }, 400);
+      }
+    }
+
+    // Status endpoint is also used by diagnostics; membership is counted only
+    // after a client has completed /http/join or a WebSocket upgrade.
+    if (tail === '/state' && req.method === 'GET') {
+      return jsonResponse(this.getRoomState(this.roomId));
+    }
+
+    // Backward-compatible page sync endpoint. New clients should use /http/send.
+    if (tail === '/sync' && req.method === 'POST') {
+      try {
+        const body = await readJson(req);
+        const from = String(body.from || url.searchParams.get('from') || '');
+        const page = Math.floor(Number(body.page || url.searchParams.get('page')));
+        if (!Number.isFinite(page) || page < 1) return jsonResponse({ ok: false, error: 'valid page required' }, 400);
+        const httpSender = this.httpPeers.get(from);
+        const websocketHost = from === this.roomId && this.clients.has(this.roomId);
+        const httpHost = from === this.roomId && httpSender && httpSender.role === 'host';
+        if (!websocketHost && !httpHost) return jsonResponse({ ok: false, error: 'only the registered room host may publish page changes' }, 403);
+        this.latestState = { page, updated: Date.now() };
+        await this.persistLatestState();
+        this.sendFrame(from, '*', { type: 'PAGE_CHANGE', page });
+        return jsonResponse({ ok: true, page, ...this.getPeerCounts() });
+      } catch (e) {
+        return jsonResponse({ ok: false, error: String(e.message || e) }, 400);
+      }
+    }
+
+    // WebSocket transport for WASM and GUI clients.
+    if (req.headers.get('Upgrade') !== 'websocket') {
+      return jsonResponse({ ok: false, error: 'unknown endpoint; WebSocket upgrade or HTTP mailbox expected' }, 404);
+    }
+
+    const q = url.searchParams;
+    const id = q.get('id') || '';
+    const tok = q.get('t') || '';
+    if (!validId(id) || !/^[\w-]{8,96}$/.test(tok)) return new Response('bad id/token', { status: 400, headers: CORS_HEADERS });
+    if (this.httpPeers.has(id)) return new Response('id already registered as HTTP peer', { status: 409, headers: CORS_HEADERS });
+    if (this.tokens.has(id) && this.tokens.get(id) !== tok) return new Response('id in use', { status: 409, headers: CORS_HEADERS });
+    if (!this.clients.has(id) && (this.clients.size + this.httpPeers.size) >= MAX_CLIENTS) return new Response('room full', { status: 429, headers: CORS_HEADERS });
 
     this.tokens.set(id, tok);
-    const [client, server] = Object.values(new WebSocketPair());
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
     server.accept();
 
     const old = this.clients.get(id);
-    if (old) { try { old.close(1000, 'replaced'); } catch {} }
+    if (old) { try { old.close(1000, 'replaced'); } catch (_) {} }
     this.clients.set(id, server);
+    if (id === this.roomId) {
+      this.hostId = id;
+      await this.announceExistingPeersToHost();
+    }
 
-    server.addEventListener('message', (e) => {
-      if (typeof e.data !== 'string' || e.data.length > 600000) return;
-      let m;
-      try { m = JSON.parse(e.data); } catch { return; }
-
-      // Keep track of latest page change if present in frame
-      if (m.p && typeof m.p === 'object' && m.p.type === 'PAGE_CHANGE') {
-        const pg = parseInt(m.p.page, 10);
-        if (pg) this.latestState = { page: pg, updated: Date.now() };
-      }
-
-      if (typeof m.to !== 'string') return;
-      const t = this.clients.get(m.to);
-      if (t) {
-        try { t.send(JSON.stringify({ from: id, p: m.p })); } catch {}
-      } else {
-        // If target is the room ID itself, or a Kindle HTTP host not on WebSocket, broadcast to other clients in room
-        const isRoomTarget = (m.to === roomId || m.to.startsWith('kroom') || m.to === '*' || m.to === 'broadcast');
-        if (isRoomTarget) {
-          for (const [cid, ws] of this.clients.entries()) {
-            if (cid !== id) {
-              try { ws.send(JSON.stringify({ from: id, p: m.p })); } catch {}
-            }
-          }
-        } else {
-          server.send(JSON.stringify({ err: 'gone', to: m.to }));
+    server.addEventListener('message', async (event) => {
+      if (typeof event.data !== 'string' || event.data.length > MAX_FRAME_CHARS) return;
+      let message;
+      try { message = JSON.parse(event.data); } catch (_) { return; }
+      if (!message || typeof message.to !== 'string' || !message.p || typeof message.p !== 'object') return;
+      if (message.p.type === 'PAGE_CHANGE') {
+        if (id !== this.hostId) {
+          try { server.send(JSON.stringify({ err: 'forbidden', reason: 'only the host may publish PAGE_CHANGE' })); } catch (_) {}
+          return;
         }
+        const page = Math.floor(Number(message.p.page));
+        if (page > 0) {
+          this.latestState = { page, updated: Date.now() };
+          await this.persistLatestState();
+        }
+      }
+      const sent = this.sendFrame(id, message.to, message.p);
+      if (!sent && message.to !== this.roomId && message.to !== '*' && message.to !== 'broadcast') {
+        try { server.send(JSON.stringify({ err: 'gone', to: message.to })); } catch (_) {}
       }
     });
 
     server.addEventListener('close', () => {
       if (this.clients.get(id) !== server) return;
       this.clients.delete(id);
-      for (const ws of this.clients.values()) {
-        try { ws.send(JSON.stringify({ from: id, left: true })); } catch {}
+      if (this.tokens.get(id) === tok) this.tokens.delete(id);
+      if (this.hostId === id) this.hostId = null;
+      this.broadcastLeft(id, 'websocket');
+    });
+    server.addEventListener('error', () => {
+      if (this.clients.get(id) === server) {
+        this.clients.delete(id);
+        if (this.tokens.get(id) === tok) this.tokens.delete(id);
+        if (this.hostId === id) this.hostId = null;
+        this.broadcastLeft(id, 'websocket');
       }
     });
 
@@ -194,28 +418,30 @@ export class Room {
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
-
-    if (req.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
+    if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
+    if (url.pathname === '/pin/create' && req.method === 'POST') {
+      let body;
+      try { body = await readJson(req.clone()); }
+      catch (e) { return jsonResponse({ ok: false, error: 'invalid JSON request' }, 400); }
+      if (!validId(body.room)) return jsonResponse({ ok: false, error: 'valid room required' }, 400);
+      const roomStub = env.ROOMS.get(env.ROOMS.idFromName(body.room));
+      const statusUrl = new URL('/room/' + encodeURIComponent(body.room) + '/host-status', url.origin);
+      const statusRes = await roomStub.fetch(new Request(statusUrl.toString(), { method: 'GET' }));
+      const roomStatus = await statusRes.json().catch(() => ({}));
+      if (!roomStatus.hostOnline) return jsonResponse({ ok: false, error: 'room host is not currently registered on this relay' }, 409);
+      const pinId = env.ROOMS.idFromName('__GLOBAL_PIN_REGISTRY__');
+      return env.ROOMS.get(pinId).fetch(new Request(req.url, {
+        method: 'POST', headers: req.headers, body: JSON.stringify(body)
+      }));
     }
-
-    // Route PIN requests to dedicated central Durable Object
-    if (url.pathname.startsWith('/pin')) {
+    if (url.pathname.startsWith('/pin/')) {
       const pinId = env.ROOMS.idFromName('__GLOBAL_PIN_REGISTRY__');
       return env.ROOMS.get(pinId).fetch(req);
     }
-
-    // Route room requests
-    const m = url.pathname.match(/^\/room\/([\w-]{1,64})(\/.*)?$/);
-    if (!m) {
-      return jsonResponse({
-        ok: true,
-        app: 'coop-reader relay',
-        features: ['websocket', 'http-sync', 'pin-codes'],
-      });
-    }
-
-    const roomId = m[1];
-    return env.ROOMS.get(env.ROOMS.idFromName(roomId)).fetch(req);
+    const match = url.pathname.match(/^\/room\/([\w-]{1,64})(\/.*)?$/);
+    if (!match) return jsonResponse({ ok: true, app: 'coop-reader relay', protocol: 2, features: ['websocket', 'http-mailbox', 'pin-codes'] });
+    const roomId = match[1];
+    const id = env.ROOMS.idFromName(roomId);
+    return env.ROOMS.get(id).fetch(req);
   },
 };

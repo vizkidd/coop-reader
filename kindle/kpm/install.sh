@@ -49,12 +49,14 @@ find_src() {
     local_subpath="$2"
     for base in "$SCRIPT_DIR" "$SCRIPT_DIR/.." "$(pwd)" "$(pwd)/.." "/mnt/us/coop-reader" "/mnt/us"; do
         if [ -d "$base/$local_subpath" ]; then
-            log "Found $local_name at: $base/$local_subpath"
-            echo "$base/$local_subpath"
+            # This function is called through command substitution; keep stdout
+            # reserved for the path so log text cannot corrupt the result.
+            log "Found $local_name at: $base/$local_subpath" >&2
+            printf '%s\n' "$base/$local_subpath"
             return 0
         fi
     done
-    log "WARNING: $local_name not found in any searched location"
+    log "WARNING: $local_name not found in any searched location" >&2
     return 1
 }
 
@@ -108,7 +110,7 @@ else
     <id>coop-reader</id>
   </information>
   <menus>
-    <menu type="json" file="menu.json"/>
+    <menu type="json">menu.json</menu>
   </menus>
 </extension>
 XMLEOF
@@ -169,8 +171,13 @@ if [ "$DAEMON_RUNNING" -eq 0 ]; then
 fi
 
 LAUNCH_URL="$TARGET_URL"
-if ! netstat -tlpn 2>/dev/null | grep -q ":$PORT "; then
-    LAUNCH_URL="$FALLBACK_FILE_URL"
+HTTP_READY=0
+if which curl >/dev/null 2>&1 && curl -fsS --max-time 2 "$TARGET_URL" >/dev/null 2>&1; then HTTP_READY=1; fi
+if [ "$HTTP_READY" -eq 0 ] && which wget >/dev/null 2>&1 && wget -q -T 2 -O /dev/null "$TARGET_URL" 2>/dev/null; then HTTP_READY=1; fi
+if [ "$HTTP_READY" -eq 0 ]; then
+    echo "Coop Reader daemon is not responding on 127.0.0.1:$PORT" >> /tmp/coop_daemon.log
+    if which eips >/dev/null 2>&1; then eips 0 0 "Coop Reader daemon failed" 2>/dev/null || true; fi
+    exit 1
 fi
 
 if which lipc-set-prop >/dev/null 2>&1; then

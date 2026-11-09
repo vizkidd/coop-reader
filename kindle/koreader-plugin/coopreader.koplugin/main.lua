@@ -40,6 +40,13 @@ local CoopReader = WidgetContainer:extend{
     history = {},
     is_host = false,
     pin = nil,
+    http_token = nil,
+    peer_id = nil,
+    peer_role = nil,
+    relay_key = nil,
+    peer_profiles = {},
+    session_generation = 0,
+    applying_remote_page = false,
     peer_count = 0,
     http_client_count = 0,
     last_sync_time = nil,
@@ -124,9 +131,9 @@ end
 
 function CoopReader:onReaderReady()
     self:logDebug("Reader is ready with active document")
-    if self.is_connected and self.is_syncing then
+    if self.is_connected then
         local p = self:getCurrentPage()
-        self:logDebug("Syncing initial page: " .. tostring(p))
+        self:logDebug("Publishing initial page/status: " .. tostring(p))
         self:sendPageUpdate(p)
     end
 end
@@ -163,6 +170,13 @@ function CoopReader:addToMainMenu(menu_items)
                     self.is_syncing = not self.is_syncing
                     local msg = self.is_syncing and "Coop Reader: Sync Active (Following Host)" or "Coop Reader: Detached (Reading Independently)"
                     self:logDebug(msg, true)
+                    if self.is_connected then
+                        if self.is_syncing and not self.is_host then
+                            self:sendRelayMessage(self.session_id, { type = "REQ_SYNC" })
+                        else
+                            self:sendPageUpdate(self:getCurrentPage())
+                        end
+                    end
                 end,
             },
             {
@@ -308,13 +322,17 @@ function CoopReader:showSessionStatus()
 
     if self.session_id then
         table.insert(lines, "Room ID:     " .. tostring(self.session_id))
+        table.insert(lines, "Host ID:     " .. tostring(self.session_id))
     else
         table.insert(lines, "Room ID:     (not connected)")
     end
 
     table.insert(lines, "Role:        " .. (self.is_host and "HOST" or "PEER"))
+    table.insert(lines, "Peer ID:     " .. tostring(self.peer_id or "(none)"))
     if self.pin then
         table.insert(lines, "Kindle PIN:  " .. tostring(self.pin))
+    elseif self.is_host then
+        table.insert(lines, "Kindle PIN:  unavailable (share full room code)")
     end
     table.insert(lines, "Connected:   " .. (self.is_connected and "YES" or "NO"))
     table.insert(lines, "Page Sync:   " .. (self.is_syncing and "ACTIVE" or "DETACHED"))
@@ -331,6 +349,7 @@ function CoopReader:showSessionStatus()
     table.insert(lines, "WebSocket:   " .. tostring(self.peer_count) .. " peer(s)")
     table.insert(lines, "HTTP/Kindle: " .. tostring(self.http_client_count) .. " peer(s)")
     table.insert(lines, "Total:       " .. tostring(self.peer_count + self.http_client_count) .. " peer(s)")
+    table.insert(lines, "Transport:   Authenticated HTTP mailbox")
     table.insert(lines, "")
 
     table.insert(lines, "--- Sync Statistics ---")
@@ -415,62 +434,71 @@ function CoopReader:ensureNetwork(callback)
 end
 
 -- Safe HTTP/HTTPS request with LuaSec and cURL fallback
-function CoopReader:httpRequest(url, method, post_body, timeout)
+local function shellQuote(value)
+    return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
+end
+
+function CoopReader:httpRequest(url, method, post_body, timeout, extra_headers)
     method = method or "GET"
     timeout = timeout or 4
+    extra_headers = extra_headers or {}
     local response_body = {}
-    
-    -- 1. Try LuaSocket / LuaSec
+    local request_headers = {
+        ["User-Agent"] = "KOReader-CoopReader/2.0",
+        ["Accept"] = "application/json",
+    }
+    for key, value in pairs(extra_headers) do request_headers[key] = value end
+
+    -- Prefer KOReader's LuaSocket/LuaSec stack.
     local ok, status, headers, err_str = pcall(function()
         local is_https = url:sub(1, 8) == "https://"
         local request_fn = (is_https and https and https.request) or http.request
-        
         local req = {
             url = url,
             method = method,
             sink = ltn12.sink.table(response_body),
             timeout = timeout,
-            headers = {
-                ["User-Agent"] = "KOReader-CoopReader/1.0",
-                ["Accept"] = "application/json",
-            }
+            headers = request_headers,
         }
-        
-        if method == "POST" and post_body then
+        if post_body ~= nil and method ~= "GET" then
             req.headers["Content-Type"] = "application/json"
-            req.headers["Content-Length"] = string.len(post_body)
+            req.headers["Content-Length"] = tostring(string.len(post_body))
             req.source = ltn12.source.string(post_body)
         end
-        
         local _, code, hdrs = request_fn(req)
         return code, hdrs
     end)
-    
-    local body = table.concat(response_body)
-    if ok and status and type(status) == "number" then
-        return body, status, nil
-    end
 
-    -- 2. Fallback to Kindle system curl binary if available
-    self:logDebug("LuaSocket failed, attempting system curl fallback for: " .. url)
-    local curl_cmd = nil
-    local escaped_url = string.format("%q", url)
-    if method == "POST" and post_body then
-        local escaped_data = string.format("%q", post_body)
-        curl_cmd = string.format("curl -s -m %d --max-time %d -X POST -H 'Content-Type: application/json' -d %s %s 2>/dev/null", timeout, timeout, escaped_data, escaped_url)
-    else
-        curl_cmd = string.format("curl -s -m %d --max-time %d %s 2>/dev/null", timeout, timeout, escaped_url)
+    local body = table.concat(response_body)
+    local numeric_status = tonumber(status)
+    if ok and numeric_status then return body, numeric_status, nil end
+
+    -- Kindle firmware versions differ in their LuaSec availability. Fall back
+    -- to curl without using shell-interpolated, double-quoted user input.
+    self:logDebug("LuaSocket/LuaSec unavailable; trying curl for " .. tostring(url))
+    local parts = {
+        "curl -sS --connect-timeout " .. tostring(timeout) .. " --max-time " .. tostring(timeout),
+        "-X " .. shellQuote(method),
+    }
+    for key, value in pairs(request_headers) do
+        table.insert(parts, "-H " .. shellQuote(tostring(key) .. ": " .. tostring(value)))
     end
-    
-    local handle = io.popen(curl_cmd)
+    if post_body ~= nil and method ~= "GET" then
+        table.insert(parts, "--data-binary " .. shellQuote(post_body))
+    end
+    table.insert(parts, "-w " .. shellQuote("\\n%{http_code}"))
+    table.insert(parts, shellQuote(url) .. " 2>/dev/null")
+    local handle = io.popen(table.concat(parts, " "))
     if handle then
-        local curl_out = handle:read("*a")
+        local output = handle:read("*a") or ""
         handle:close()
-        if curl_out and #curl_out > 0 then
-            return curl_out, 200, nil
+        local code = output:match("(%d%d%d)%s*$")
+        if code then
+            local response = output:sub(1, #output - #code):gsub("\n$", "")
+            return response, tonumber(code), nil
         end
+        if #output > 0 then return output, 200, nil end
     end
-    
     return nil, 0, tostring(status or err_str or "Request failed")
 end
 
@@ -483,104 +511,45 @@ function CoopReader:promptHostSession()
 end
 
 function CoopReader:startHostingSession()
-    self:logDebug("Creating new reading session as Host...", true)
+    if self.is_connected then self:disconnect() end
+    self:logDebug("Creating a relay-backed KOReader session...", true)
 
     local chars = "abcdefghijklmnopqrstuvwxyz0123456789"
     local suffix = ""
-    math.randomseed(os.time())
-    for i = 1, 6 do
+    math.randomseed(os.time() + math.floor((socket.gettime and socket.gettime() or 0) * 1000))
+    for i = 1, 8 do
         local r = math.random(1, #chars)
         suffix = suffix .. chars:sub(r, r)
     end
     local room_id = "kroom-" .. suffix
-    local wifi_ip = self:getWifiIp()
+    local ok = self:startSession(room_id, "host")
+    if not ok then return end
 
-    -- Register 4-digit PIN on Cloudflare relay
-    local pin_create_url = self.relay_base_url .. "/pin/create"
-    local req_body = json.encode({ room = room_id, key = "" })
-    local res, status, err = self:httpRequest(pin_create_url, "POST", req_body, 5)
+    -- PINs are created only in the shared relay registry. Never display a
+    -- locally fabricated code that other devices cannot resolve.
+    local pin_url = self.relay_base_url:gsub("/+$", "") .. "/pin/create"
+    local pin_body = json.encode({ room = room_id, key = "" })
+    local res, status, err = self:httpRequest(pin_url, "POST", pin_body, 5)
+    local data = nil
+    if res and status == 200 then pcall(function() data = json.decode(res) end) end
+    self.pin = (data and data.ok and data.pin) and tostring(data.pin) or nil
+    if self.pin then self:logDebug("Relay PIN registered: " .. self.pin)
+    else self:logDebug("Room is active, but relay PIN registration failed: " .. tostring(err or status), true) end
 
-    local pin = nil
-    local relay_registered = false
-    if res then
-        local ok, data = pcall(function() return json.decode(res) end)
-        if ok and data and data.ok and data.pin then
-            pin = tostring(data.pin)
-            relay_registered = true
-        end
-    end
+    local current_page = self:getCurrentPage()
+    self.last_page = current_page
+    self:sendPageUpdate(current_page)
 
-    if not pin then
-        -- Fallback to local daemon
-        local d_create_url = self.daemon_base_url .. "/pin/create"
-        local d_res = self:httpRequest(d_create_url, "POST", req_body, 2)
-        if d_res then
-            local ok, d_data = pcall(function() return json.decode(d_res) end)
-            if ok and d_data and d_data.ok and d_data.pin then
-                pin = tostring(d_data.pin)
-            end
-        end
-    end
-
-    if not pin then
-        pin = tostring(math.random(1000, 9999))
-    end
-
-    self.is_host = true
-    self.session_id = room_id
-    self.pin = pin
-    self.is_connected = true
-    self.is_syncing = true
-
-    self:logDebug(string.format("Hosting session: %s (PIN: %s, Registered: %s)", room_id, pin, tostring(relay_registered)))
-
-    -- Show prominent on-screen dialog with PIN and clear network feedback
+    local info_text = string.format(
+        "Relay-backed session is active.\n\nRoom ID:\n%s\n\n%s\n\nFull room code:\n%s\n\nRelay:\n%s\n\nPeer count will update in Session Status. Keep KOReader open and connected to Wi-Fi.",
+        room_id,
+        self.pin and ("Kindle PIN:\n" .. self.pin) or "Kindle PIN: unavailable — share the full room code",
+        room_id,
+        self.relay_base_url
+    )
     pcall(function()
-        local info_text
-        if relay_registered then
-            info_text = string.format(
-                "Session Started & Registered!\n\n" ..
-                "==============================\n" ..
-                "  KINDLE PIN:   %s\n" ..
-                "  Full Code:    %s\n" ..
-                "  Wi-Fi IP:     %s\n" ..
-                "==============================\n\n" ..
-                "Give this 4-digit PIN to your reading partner.\n" ..
-                "They can enter it on Chrome (vizkidd.github.io/coop-reader),\n" ..
-                "on a mobile phone, or on another Kindle!\n\n" ..
-                "Relay: %s\n\n" ..
-                "Your page turns will now sync to everyone automatically.",
-                pin, room_id, wifi_ip, self.relay_base_url
-            )
-        else
-            info_text = string.format(
-                "⚠️ Session Started Locally (Relay Offline)\n\n" ..
-                "==============================\n" ..
-                "  KINDLE PIN:   %s\n" ..
-                "  Full Code:    %s\n" ..
-                "  Wi-Fi IP:     %s\n" ..
-                "==============================\n\n" ..
-                "[WARNING] Could not reach Relay Server:\n" ..
-                "%s\n\n" ..
-                "vizkidd.github.io/coop-reader will not be able to find this session until the relay is online.\n\n" ..
-                "To fix:\n" ..
-                "1. Verify Kindle Wi-Fi is connected.\n" ..
-                "2. Tap 'Coop Reader Sync' -> 'Set Relay Server URL...'\n" ..
-                "3. Enter your deployed Cloudflare Worker URL.",
-                pin, room_id, wifi_ip, self.relay_base_url
-            )
-        end
-        local viewer = TextViewer:new{
-            title = relay_registered and "Coop Reader — Hosting Session" or "Coop Reader — Relay Warning",
-            text = info_text,
-        }
-        UIManager:show(viewer)
+        UIManager:show(TextViewer:new{ title = "Coop Reader — Hosting Session", text = info_text })
     end)
-
-    -- Broadcast current page to the room
-    local cur_page = self:getCurrentPage()
-    self.last_page = cur_page
-    self:sendPageUpdate(cur_page)
 end
 
 function CoopReader:promptJoinSession()
@@ -596,7 +565,7 @@ function CoopReader:showJoinDialog()
         title = "Join Coop Reader Session",
         input = self.session_id or "",
         input_type = "string",
-        description = "Enter 4-digit PIN (from Host screen)\nor full session code / host ID:",
+        description = "Enter 4–8 digit PIN (from Host screen)\nor full session code / host ID:",
         buttons = {
             {
                 {
@@ -627,113 +596,271 @@ end
 
 function CoopReader:resolveAndConnect(input_code)
     self:logDebug("Processing session code: " .. input_code, true)
-    
-    -- Check if input is a 3 to 6 character Short PIN or Word code
-    local is_short_pin = (#input_code <= 8 and not input_code:find("%.") and not input_code:find("-"))
-    
+    input_code = tostring(input_code or ""):gsub("%s+", "")
+    if input_code == "" then return false end
+
+    local is_short_pin = input_code:match("^%d%d%d%d%d?%d?%d?%d?$") ~= nil
     if is_short_pin then
-        self:logDebug("Resolving short PIN: " .. input_code .. " on relay...")
-        
-        -- Try Cloudflare relay PIN resolution
-        local pin_url = self.relay_base_url .. "/pin/" .. input_code
+        self:logDebug("Resolving relay PIN " .. input_code)
+        local pin_url = self.relay_base_url:gsub("/+$", "") .. "/pin/" .. input_code
         local res, status, err = self:httpRequest(pin_url, "GET", nil, 5)
-        
         local parsed = nil
-        if res then
-            pcall(function() parsed = json.decode(res) end)
+        if res and status == 200 then pcall(function() parsed = json.decode(res) end) end
+        if not (parsed and parsed.ok and parsed.room) then
+            self:logDebug("PIN lookup failed (HTTP " .. tostring(status) .. "): " .. tostring(err), true)
+            UIManager:show(InfoMessage:new{
+                text = "That PIN was not found on the configured relay. Check the PIN and relay URL, or ask the host to share the full room code.",
+                timeout = 6
+            })
+            return false
         end
-        
-        if parsed and parsed.ok and parsed.room then
-            self:logDebug(string.format("PIN %s resolved to room: %s", input_code, parsed.room:sub(1, 8)))
-            self:startSession(parsed.room)
-            return
-        end
-        
-        -- Try local daemon PIN resolution
-        local d_pin_url = self.daemon_base_url .. "/pin/" .. input_code
-        local d_res = self:httpRequest(d_pin_url, "GET", nil, 2)
-        local d_parsed = nil
-        if d_res then
-            pcall(function() d_parsed = json.decode(d_res) end)
-        end
-        if d_parsed and d_parsed.ok and d_parsed.room then
-            self:logDebug(string.format("PIN %s resolved via local daemon: %s", input_code, d_parsed.room:sub(1, 8)))
-            self:startSession(d_parsed.room)
-            return
-        end
-        
-        self:logDebug("Could not resolve PIN " .. input_code .. ". Connecting using it as room name directly.")
+        return self:startSession(parsed.room, "guest", parsed.key or "")
     end
-    
-    -- Direct session code or fallback
-    local clean_room = input_code:match("([^.]*)") or input_code
-    self:startSession(clean_room)
+
+    local room_id, key = input_code:match("^([%w_-]+)%.([%w_%-]+)$")
+    if not room_id then room_id = input_code:match("^([%w_-]+)$") end
+    if not room_id then
+        UIManager:show(InfoMessage:new{ text = "Invalid room code. Enter the short PIN or room-id[.key] code.", timeout = 5 })
+        return false
+    end
+    return self:startSession(room_id, "guest", key or "")
 end
 
-function CoopReader:startSession(room_id)
+function CoopReader:roomUrl(suffix)
+    return self.relay_base_url:gsub("/+$", "") .. "/room/" .. tostring(self.session_id or "") .. (suffix or "")
+end
+
+function CoopReader:authHeaders()
+    if not self.http_token then return {} end
+    return { Authorization = "Bearer " .. self.http_token }
+end
+
+function CoopReader:registerHttpPeer()
+    if not self.session_id or not self.peer_id or not self.peer_role then return false end
+    local body = json.encode({
+        id = self.peer_id,
+        role = self.peer_role,
+        name = "Kindle KOReader",
+        token = self.http_token or nil,
+    })
+    local res, status, err = self:httpRequest(self:roomUrl("/http/join"), "POST", body, 5)
+    local data = nil
+    if res and status == 200 then pcall(function() data = json.decode(res) end) end
+    if not (data and data.ok and data.token) then
+        self:logDebug("Relay registration failed (HTTP " .. tostring(status) .. "): " .. tostring((data and data.error) or err or "no response"), true)
+        self.http_token = nil
+        return false
+    end
+    self.http_token = data.token
+    self.peer_count = tonumber(data.clients) or 0
+    self.http_client_count = math.max(0, (tonumber(data.httpClients) or 0) - 1) -- exclude this HTTP peer
+    self:logDebug("Registered relay mailbox as " .. self.peer_role .. " (" .. tostring(self.peer_id) .. ")")
+    return true, data
+end
+
+function CoopReader:sendRelayMessage(to, message)
+    if not self.is_connected or not self.http_token or not self.peer_id then return false end
+    local body = json.encode({ id = self.peer_id, to = to or self.session_id, p = message })
+    local res, status, err = self:httpRequest(self:roomUrl("/http/send"), "POST", body, 4, self:authHeaders())
+    if status == 200 and res then
+        local data = nil
+        pcall(function() data = json.decode(res) end)
+        if data and data.ok then return true end
+        self:logDebug("Relay accepted request but did not confirm delivery")
+        return true
+    end
+    self:logDebug("Relay send failed (HTTP " .. tostring(status) .. "): " .. tostring(err or res or "no response"))
+    return false
+end
+
+function CoopReader:applyRemotePage(page)
+    local remote_page = tonumber(page)
+    if not remote_page or remote_page < 1 then return end
+    remote_page = math.floor(remote_page)
+    if remote_page == self:getCurrentPage() then
+        self.last_page = remote_page
+        return
+    end
+    self.last_page = remote_page
+    self.applying_remote_page = true
+    pcall(function() self.ui:handleEvent(Event:new("GotoPage", remote_page)) end)
+    self.applying_remote_page = false
+    self:logDebug("Applied host page " .. tostring(remote_page))
+end
+
+function CoopReader:handleRelayMessage(frame)
+    if type(frame) ~= "table" then return end
+    local from = tostring(frame.from or self.session_id or "")
+    if frame.left then
+        self.peer_profiles[from] = nil
+        self:logDebug("Peer left the session: " .. from)
+        return
+    end
+    local payload = frame.p or frame.payload or {}
+    if type(payload) ~= "table" then return end
+    if payload.raw and type(payload.raw) == "string" then
+        local ok, decoded = pcall(function() return json.decode(payload.raw) end)
+        if not ok or type(decoded) ~= "table" then return end
+        payload = decoded
+    elseif payload.e then
+        self:logDebug("Received an encrypted browser message this KOReader plugin cannot decrypt", true)
+        return
+    end
+
+    local kind = payload.type
+    if kind == "RELAY_HELLO" then
+        if self.is_host then
+            self.peer_profiles[from] = self.peer_profiles[from] or { name = payload.name or "Reader" }
+            self:sendRelayMessage(from, { type = "PROFILE", peerId = self.peer_id, name = "Kindle KOReader" })
+            self:sendRelayMessage(from, { type = "SYNC", state = { currentPage = self:getCurrentPage() } })
+        end
+    elseif kind == "REQ_SYNC" then
+        if self.is_host then
+            self:sendRelayMessage(from, { type = "SYNC", state = { currentPage = self:getCurrentPage() } })
+            self:sendRelayMessage(from, { type = "PAGE_CHANGE", page = self:getCurrentPage() })
+        end
+    elseif kind == "SYNC" then
+        if not self.is_host and self.is_syncing then
+            local state = payload.state or {}
+            self:applyRemotePage(state.currentPage or state.page)
+        end
+    elseif kind == "PAGE_CHANGE" then
+        -- PAGE_CHANGE is authoritative and may only come from the room host.
+        if not self.is_host and from == self.session_id and self.is_syncing then
+            self:applyRemotePage(payload.page)
+        end
+    elseif kind == "PAGE_INFO" then
+        if self.is_host then
+            self.peer_profiles[from] = self.peer_profiles[from] or {}
+            self.peer_profiles[from].page = tonumber(payload.page) or payload.page
+            self.peer_profiles[from].detached = payload.detached and true or false
+        end
+    elseif kind == "PROFILE" then
+        self.peer_profiles[from] = self.peer_profiles[from] or {}
+        self.peer_profiles[from].name = payload.name or self.peer_profiles[from].name or "Reader"
+    elseif kind == "PING" then
+        self:sendRelayMessage(from, { type = "PONG", t = payload.t or os.time() })
+    elseif kind == "PONG" then
+        self.last_poll_status = "OK"
+    elseif kind == "AUTH_REQUIRED" then
+        -- KOReader's Lua runtime currently has no compatible WebCrypto AES/SHA
+        -- implementation. Fail closed instead of leaving a false-connected peer.
+        self:disconnect()
+        UIManager:show(InfoMessage:new{
+            text = "This session requires a password. Password-protected browser sessions are not supported by the KOReader plugin yet. Ask the host to create an unprotected room.",
+            timeout = 8
+        })
+    elseif kind == "HOST_KICK" or kind == "RELAY_CLOSE" then
+        if not self.is_host then
+            self:logDebug("Host ended this session", true)
+            self:disconnect()
+        end
+    elseif kind == "CHAT" or kind == "ANNOT" or kind == "ANNOT_ALL" then
+        self:logDebug("Received " .. tostring(kind) .. "; this message type is not yet rendered in the KOReader UI")
+    end
+end
+
+function CoopReader:startSession(room_id, role, key)
+    role = role or "guest"
+    if not room_id or not room_id:match("^[%w_-]+$") then
+        self:logDebug("Invalid room ID", true)
+        return false
+    end
+    if self.is_connected then self:disconnect() end
+
+    self.session_generation = (self.session_generation or 0) + 1
     self.session_id = room_id
-    self.is_connected = true
+    self.peer_role = role
+    self.is_host = role == "host"
+    self.peer_id = self.is_host and room_id or ("khttp-" .. tostring(os.time()) .. tostring(math.random(10000, 99999)))
+    self.relay_key = key or ""
+    self.http_token = nil
+    self.is_connected = false
     self.is_syncing = true
     self.first_sync_shown = false
     self.sync_success_count = 0
     self.sync_fail_count = 0
+    self.peer_profiles = {}
     self.peer_count = 0
     self.http_client_count = 0
-    
-    local short_display = room_id:sub(1, 8)
-    self:logDebug("Connected to room: " .. short_display, true)
-    
-    -- Send initial page update if document is currently open
-    local current_page = self:getCurrentPage()
-    self.last_page = current_page
-    self:sendPageUpdate(current_page)
-    
-    -- Immediately poll room state to show connection info
-    local poll_url = self.relay_base_url .. "/room/" .. room_id .. "/state"
-    local res, status = self:httpRequest(poll_url, "GET", nil, 3)
-    if res then
-        local ok, data = pcall(function() return json.decode(res) end)
-        if ok and data and data.ok then
-            local peers = (tonumber(data.clients) or 0) + (tonumber(data.httpClients) or 0)
-            local info = string.format(
-                "Room: %s\nPage: %s\nPeers: %d (WS: %s, HTTP: %s)\nRelay: %s",
-                room_id,
-                tostring(data.page or "?"),
-                peers,
-                tostring(data.clients or 0),
-                tostring(data.httpClients or 0),
-                self.relay_base_url
-            )
-            self:logDebug("Room state: " .. info)
-            pcall(function()
-                UIManager:show(InfoMessage:new{
-                    text = "Connected!\n" .. info,
-                    timeout = 5
-                })
-            end)
-            self.peer_count = tonumber(data.clients) or 0
-            self.http_client_count = tonumber(data.httpClients) or 0
-        end
+
+    local registered, room_data = self:registerHttpPeer()
+    if not registered then
+        self.session_id = nil
+        self.peer_id = nil
+        self.peer_role = nil
+        self.is_host = false
+        self.pin = nil
+        self:logDebug("Could not join the relay room. The app has not marked this session connected.", true)
+        return false
     end
-    
-    -- Start background non-blocking polling loop
+
+    self.is_connected = true
+    self.last_poll_status = "Connected"
+    self.last_page = self:getCurrentPage()
+    self:logDebug("Relay mailbox connected: " .. room_id .. " (" .. role .. ")", true)
+
+    if self.is_host then
+        self:sendRelayMessage("*", { type = "PROFILE", peerId = self.peer_id, name = "Kindle KOReader" })
+        self:sendPageUpdate(self:getCurrentPage())
+    else
+        self:sendRelayMessage(self.session_id, { type = "RELAY_HELLO", peerId = self.peer_id, name = "Kindle KOReader", transport = "http" })
+        self:sendRelayMessage(self.session_id, { type = "REQ_SYNC" })
+        self:sendRelayMessage(self.session_id, { type = "PROFILE", peerId = self.peer_id, name = "Kindle KOReader" })
+    end
+
     self:startPolling()
+    local peers = (tonumber(room_data.clients) or 0) + (tonumber(room_data.httpClients) or 0) - 1
+    if peers < 0 then peers = 0 end
+    local info = string.format(
+        "%s\nRoom: %s\nPeer count: %d\nCurrent page: %s\nRelay: %s\nTransport: HTTP mailbox",
+        self.is_host and "Hosting session" or "Joined session",
+        room_id,
+        peers,
+        tostring(room_data.page or self:getCurrentPage()),
+        self.relay_base_url
+    )
+    UIManager:show(InfoMessage:new{ text = info, timeout = 6 })
+    return true
+end
+
+function CoopReader:refreshHttpRegistration()
+    if not self.session_id or not self.peer_id then return false end
+    local ok = self:registerHttpPeer()
+    if ok then
+        self:logDebug("Relay mailbox registration refreshed")
+        return true
+    end
+    return false
 end
 
 function CoopReader:disconnect()
+    local room_id = self.session_id
+    local peer_id = self.peer_id
+    local token = self.http_token
     self.poll_active = false
+    self.session_generation = (self.session_generation or 0) + 1
+    if room_id and peer_id and token then
+        local headers = { Authorization = "Bearer " .. token }
+        local url = self.relay_base_url:gsub("/+$", "") .. "/room/" .. room_id .. "/http/leave"
+        local body = json.encode({ id = peer_id })
+        self:httpRequest(url, "POST", body, 2, headers)
+    end
     self.is_connected = false
     self.session_id = nil
+    self.peer_id = nil
+    self.peer_role = nil
+    self.http_token = nil
+    self.relay_key = nil
     self.is_host = false
     self.pin = nil
+    self.peer_profiles = {}
     self.peer_count = 0
     self.http_client_count = 0
     self.last_poll_status = "disconnected"
     self.first_sync_shown = false
     self:logDebug("Disconnected from Coop Reader session", true)
 end
-
--- ==================== PAGE SYNCHRONIZATION ====================
 
 function CoopReader:getCurrentPage()
     local page = 1
@@ -750,37 +877,40 @@ function CoopReader:getCurrentPage()
 end
 
 function CoopReader:onPageUpdate(pageno)
-    if not self.is_connected or not self.is_syncing or pageno == self.last_page then
-        return
-    end
+    if not self.is_connected or self.applying_remote_page or pageno == self.last_page then return end
     self.last_page = pageno
     self:logDebug("Local page turned to: " .. tostring(pageno))
     self:sendPageUpdate(pageno)
 end
 
 function CoopReader:sendPageUpdate(pageno)
-    if not self.session_id then return end
-    
-    local payload = json.encode({ page = pageno, from = "kindle-koreader" })
-    
-    -- 1. Push to Cloudflare Relay HTTP endpoint
-    local relay_sync_url = self.relay_base_url .. "/room/" .. self.session_id .. "/sync?page=" .. tostring(pageno) .. "&from=kindle"
-    local res, status, err = self:httpRequest(relay_sync_url, "POST", payload, 2)
-    if status == 200 or (res and #res > 0) then
-        self:logDebug(string.format("Page %d synced to relay (HTTP %s)", pageno, tostring(status)))
+    if not self.is_connected or not self.session_id then return false end
+    pageno = math.max(1, math.floor(tonumber(pageno) or self:getCurrentPage()))
+    self.last_page = pageno
+    local message
+    local target
+    if self.is_host then
+        message = { type = "PAGE_CHANGE", page = pageno }
+        target = "*"
+    else
+        -- A guest reports its position; it must never overwrite the host page.
+        message = { type = "PAGE_INFO", page = pageno, detached = not self.is_syncing }
+        target = self.session_id
+    end
+    local ok = self:sendRelayMessage(target, message)
+    if ok then
         self.last_sync_time = os.time()
         self.sync_success_count = self.sync_success_count + 1
     else
-        self:logDebug(string.format("Page %d sync FAILED (HTTP %s, err: %s)", pageno, tostring(status), tostring(err)))
         self.sync_fail_count = self.sync_fail_count + 1
     end
-    
-    -- 2. Also notify local daemon if present
+    -- Preserve local daemon metrics/refresh functionality without using it as
+    -- the room transport; the shared relay mailbox is authoritative.
     local daemon_sync_url = self.daemon_base_url .. "/api/sync-page?page=" .. tostring(pageno) .. "&session=" .. self.session_id
     self:httpRequest(daemon_sync_url, "GET", nil, 1)
+    return ok
 end
 
--- Periodic non-blocking poll for Host page changes
 function CoopReader:startPolling()
     self.poll_active = true
     self:schedulePoll()
@@ -788,69 +918,57 @@ end
 
 function CoopReader:schedulePoll()
     if not self.poll_active or not self.session_id then return end
-    
+    local generation = self.session_generation
     UIManager:scheduleIn(2, function()
-        if not self.poll_active or not self.session_id then return end
+        if not self.poll_active or not self.session_id or generation ~= self.session_generation then return end
         self:pollRemoteState()
         self:schedulePoll()
     end)
 end
 
 function CoopReader:pollRemoteState()
-    if not self.is_connected or not self.is_syncing or not self.session_id then return end
-    
-    local poll_url = self.relay_base_url .. "/room/" .. self.session_id .. "/state"
-    local res, status = self:httpRequest(poll_url, "GET", nil, 2)
-    
-    if res and (status == 200 or (status == 0 and #res > 0)) then
-        local data = nil
-        pcall(function() data = json.decode(res) end)
-        if data and data.ok then
-            self.last_poll_status = "OK"
-            self.last_sync_time = os.time()
-            self.sync_success_count = self.sync_success_count + 1
-
-            -- Track peer counts from relay
-            if data.clients then self.peer_count = tonumber(data.clients) or 0 end
-            if data.httpClients then self.http_client_count = tonumber(data.httpClients) or 0 end
-            local total_peers = (self.peer_count or 0) + (self.http_client_count or 0)
-
-            -- Show first successful sync toast
-            if not self.first_sync_shown and data.page then
-                self.first_sync_shown = true
-                local msg = string.format("Synced with host - Page %s (%d peer%s in room)",
-                    tostring(data.page), total_peers, total_peers == 1 and "" or "s")
-                self:logDebug(msg, true)
-            end
-
-            if data.page then
-                local remote_page = tonumber(data.page)
-                local my_page = self:getCurrentPage()
-                
-                if remote_page and remote_page > 0 and remote_page ~= my_page and remote_page ~= self.last_page then
-                    self:logDebug(string.format("Host page: %d (local: %d, peers: %d). Jumping...", remote_page, my_page, total_peers))
-                    self.last_page = remote_page
-                    
-                    pcall(function()
-                        self.ui:handleEvent(Event:new("GotoPage", remote_page))
-                    end)
-                    
-                    self:logDebug(string.format("Jumped to page %d (peers: %d)", remote_page, total_peers))
-                end
-            end
-        else
-            self.last_poll_status = "Parse error"
-            self.sync_fail_count = self.sync_fail_count + 1
+    -- Poll and heartbeat even while detached so the room membership does not expire.
+    if not self.is_connected or not self.session_id or not self.http_token then return end
+    local url = self:roomUrl("/http/poll?id=" .. self.peer_id)
+    local res, status, err = self:httpRequest(url, "GET", nil, 3, self:authHeaders())
+    if status == 401 then
+        self.last_poll_status = "Re-registering"
+        if self:refreshHttpRegistration() then
+            self:sendRelayMessage(self.is_host and "*" or self.session_id, { type = self.is_host and "PROFILE" or "REQ_SYNC", peerId = self.peer_id, name = "Kindle KOReader" })
         end
-    else
-        self.last_poll_status = string.format("HTTP %s", tostring(status))
-        self.sync_fail_count = self.sync_fail_count + 1
-        
-        -- Show toast on repeated failures
-        if self.sync_fail_count > 0 and self.sync_fail_count % 5 == 0 then
-            self:logDebug(string.format("Sync failing (%d consecutive). Relay: %s", self.sync_fail_count, self.relay_base_url), true)
-        end
+        return
     end
+    if not res or status ~= 200 then
+        self.last_poll_status = "HTTP " .. tostring(status)
+        self.sync_fail_count = self.sync_fail_count + 1
+        if self.sync_fail_count > 0 and self.sync_fail_count % 5 == 0 then
+            self:logDebug("Relay polling failing: HTTP " .. tostring(status) .. " — " .. tostring(err), true)
+        end
+        return
+    end
+
+    local data = nil
+    local ok = pcall(function() data = json.decode(res) end)
+    if not ok or type(data) ~= "table" or not data.ok then
+        self.last_poll_status = "Parse error"
+        self.sync_fail_count = self.sync_fail_count + 1
+        return
+    end
+    self.last_poll_status = "OK"
+    self.last_sync_time = os.time()
+    self.peer_count = tonumber(data.clients) or 0
+    self.http_client_count = tonumber(data.httpClients) or 0
+    self.http_client_count = math.max(0, self.http_client_count - 1) -- exclude this HTTP peer
+
+    local messages = data.messages or {}
+    for _, frame in ipairs(messages) do self:handleRelayMessage(frame) end
+
+    if not self.first_sync_shown then
+        self.first_sync_shown = true
+        local total = self.peer_count + self.http_client_count
+        self:logDebug(string.format("Relay mailbox active; %d other peer(s)", total), true)
+    end
+    self.sync_success_count = self.sync_success_count + 1
 end
 
 function CoopReader:onCloseDocument()

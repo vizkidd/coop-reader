@@ -34,11 +34,22 @@
     downloadAllowed: true,
     peerUploadsAllowed: false,
     peerAnnotateAllowed: true,
-    battery: null
+    battery: null,
+    relayConnected: false,
+    hostOnline: null
   };
 
   var connections = {};
+  // Relay transport per peer; HTTP peers (KOReader) need plaintext control
+  // frames because their Lua runtime does not implement the browser AES layer.
+  var connectionTransports = {};
   var relayWs = null;
+  var relayToken = '';
+  var relayReconnectTimer = null;
+  var relayHeartbeatTimer = null;
+  var relayStatusTimer = null;
+  var relayGeneration = 0;
+  var manualDisconnect = false;
   var relayKeyB64 = '';
   var peerRelayKey = '';
   var sessionPasswordHash = null;
@@ -164,6 +175,8 @@
 
   function openMsg(env, keyB64, room) {
     if (!env) return Promise.resolve(null);
+    // KOReader sends control messages as ordinary protocol objects.
+    if (env.type) return Promise.resolve(env);
     if (env.raw) {
       try { return Promise.resolve(JSON.parse(env.raw)); } catch (e) { return Promise.resolve(null); }
     }
@@ -187,7 +200,7 @@
   }
 
   function hashPassword(pass, salt) {
-    if (!window.crypto || !window.crypto.subtle) return Promise.resolve(pass);
+    if (!window.crypto || !window.crypto.subtle) return Promise.reject(new Error('This Kindle browser does not provide Web Crypto SHA-256; password-protected sessions are unavailable.'));
     var enc = new TextEncoder();
     return window.crypto.subtle.digest('SHA-256', enc.encode(pass + ':' + salt)).then(function (buf) {
       var arr = new Uint8Array(buf);
@@ -200,63 +213,173 @@
   }
 
   // ==================== NETWORKING & RELAY ====================
-  function initRelayConnection(roomId, peerId, isHostRole) {
-    if (relayWs) {
-      try { relayWs.close(); } catch (_) {}
-      relayWs = null;
+  function registerAppHostPin(roomId, attempt) {
+    attempt = attempt || 0;
+    if (!state.isHost || state.sessionId !== roomId) return;
+    if (!state.relayConnected) {
+      if (attempt < 24) setTimeout(function () { registerAppHostPin(roomId, attempt + 1); }, 500);
+      else {
+        state.pin = '';
+        var pinOutput = document.getElementById('session-display-pin');
+        if (pinOutput) pinOutput.innerText = 'Unavailable — use full code';
+        updateHeaderUI();
+      }
+      return;
     }
+    var relayHttp = CONFIG.defaultRelay.replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+    fetch(relayHttp + '/pin/create', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room: roomId, key: relayKeyB64 || '' })
+    }).then(function (res) {
+      if (!res.ok) throw new Error('PIN registry returned HTTP ' + res.status);
+      return res.json();
+    }).then(function (data) {
+      if (!state.isHost || state.sessionId !== roomId) return;
+      state.pin = data && data.ok && data.pin ? String(data.pin) : '';
+      var pinOutput = document.getElementById('session-display-pin');
+      if (pinOutput) pinOutput.innerText = state.pin || 'Unavailable — use full code';
+      updateHeaderUI();
+    }).catch(function (error) {
+      state.pin = '';
+      var pinOutput = document.getElementById('session-display-pin');
+      if (pinOutput) pinOutput.innerText = 'Unavailable — use full code';
+      updateSyncStatus('PIN unavailable: ' + error.message, 'error');
+      updateHeaderUI();
+    });
+  }
 
-    var wsUrl = CONFIG.defaultRelay + '/room/' + encodeURIComponent(roomId) + '?id=' + encodeURIComponent(peerId) + '&t=' + generateId('tok');
+  function startRoomStatusPolling(roomId, generation) {
+    if (relayStatusTimer) { clearInterval(relayStatusTimer); relayStatusTimer = null; }
+    function checkStatus() {
+      if (generation !== relayGeneration || state.sessionId !== roomId || manualDisconnect) return;
+      var relayHttp = CONFIG.defaultRelay.replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+      fetch(relayHttp + '/room/' + encodeURIComponent(roomId) + '/state').then(function (response) {
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.json();
+      }).then(function (data) {
+        if (generation !== relayGeneration || state.sessionId !== roomId || !data || !data.ok) return;
+        state.hostOnline = !!data.hostOnline;
+        if (!state.isHost && !state.hostOnline) updateSyncStatus('Relay connected · waiting for host', 'error');
+        else if (state.hostOnline && state.relayConnected) updateSyncStatus(state.isHost ? 'HOST · Relay connected' : 'Connected to host', 'success');
+        updateHeaderUI();
+      }).catch(function () {
+        if (generation === relayGeneration && !state.isHost) {
+          state.hostOnline = false;
+          updateSyncStatus('Relay connected · host status unavailable', 'error');
+          updateHeaderUI();
+        }
+      });
+    }
+    checkStatus();
+    relayStatusTimer = setInterval(checkStatus, 3000);
+  }
+
+  function initRelayConnection(roomId, peerId, isHostRole) {
+    if (relayReconnectTimer) { clearTimeout(relayReconnectTimer); relayReconnectTimer = null; }
+    if (relayHeartbeatTimer) { clearInterval(relayHeartbeatTimer); relayHeartbeatTimer = null; }
+    if (relayStatusTimer) { clearInterval(relayStatusTimer); relayStatusTimer = null; }
+    if (relayWs) {
+      var previous = relayWs;
+      relayWs = null;
+      previous.onclose = null;
+      previous.onerror = null;
+      try { previous.close(); } catch (_) {}
+    }
+    if (!roomId || !peerId || manualDisconnect) return;
+
+    var generation = ++relayGeneration;
+    if (!relayToken) relayToken = generateId('tok');
+    var wsUrl = CONFIG.defaultRelay.replace(/\/$/, '') + '/room/' + encodeURIComponent(roomId) + '?id=' + encodeURIComponent(peerId) + '&t=' + encodeURIComponent(relayToken);
     updateSyncStatus('Connecting to relay...', 'warning');
 
     try {
       relayWs = new WebSocket(wsUrl);
     } catch (e) {
+      state.relayConnected = false;
       updateSyncStatus('Relay error: ' + e.message, 'error');
+      scheduleRelayReconnect(generation);
       return;
     }
+    var socket = relayWs;
 
-    relayWs.onopen = function () {
-      updateSyncStatus(isHostRole ? 'Hosting' : 'Connected', 'success');
+    socket.onopen = function () {
+      if (generation !== relayGeneration || relayWs !== socket) return;
+      state.relayConnected = true;
+      state.hostOnline = isHostRole ? true : null;
+      updateSyncStatus(isHostRole ? 'HOST · Relay connected' : 'Relay connected · checking host', 'success');
+      startRoomStatusPolling(roomId, generation);
+      if (isHostRole) registerAppHostPin(roomId, 0);
       if (!isHostRole) {
-        // Peer sends hello to host
         sendToHost({ type: 'RELAY_HELLO', peerId: peerId });
         sendToHost({ type: 'REQ_SYNC' });
         sendProfile();
       }
+      updateHeaderUI();
+      if (relayHeartbeatTimer) clearInterval(relayHeartbeatTimer);
+      relayHeartbeatTimer = setInterval(function () {
+        if (generation !== relayGeneration || relayWs !== socket || socket.readyState !== 1) return;
+        if (!state.isHost) sendToHost({ type: 'PING', t: Date.now() });
+      }, CONFIG.heartbeatInterval);
     };
 
-    relayWs.onmessage = function (event) {
+    socket.onmessage = function (event) {
+      if (generation !== relayGeneration || relayWs !== socket) return;
       var frame;
       try { frame = JSON.parse(event.data); } catch (_) { return; }
-      if (!frame || !frame.p) return;
-
+      if (!frame) return;
+      if (frame.left) {
+        delete connections[frame.from];
+        delete connectionTransports[frame.from];
+        delete profiles[frame.from];
+        if (!isHostRole && frame.from === roomId) { state.hostOnline = false; updateSyncStatus('Host disconnected', 'error'); }
+        updatePeersListUI();
+        updateHeaderUI();
+        return;
+      }
+      if (!frame.p) return;
       var currentKey = isHostRole ? relayKeyB64 : peerRelayKey;
       openMsg(frame.p, currentKey, roomId).then(function (msg) {
-        if (!msg) return;
-        handleIncomingMessage(frame.from, msg);
+        if (!msg || generation !== relayGeneration || relayWs !== socket) return;
+        handleIncomingMessage(frame.from, msg, frame.transport || 'websocket');
       });
     };
 
-    relayWs.onclose = function () {
-      updateSyncStatus('Relay disconnected', 'error');
-      setTimeout(function () {
-        if (state.sessionId) initRelayConnection(state.sessionId, state.myPeerId, state.isHost);
-      }, 5000);
+    socket.onerror = function () {
+      if (generation === relayGeneration) updateSyncStatus('Relay connection error', 'error');
     };
 
-    // Heartbeat
-    setInterval(function () {
-      if (relayWs && relayWs.readyState === 1) {
-        if (!state.isHost) {
-          sendToHost({ type: 'PING' });
-        }
-      }
-    }, CONFIG.heartbeatInterval);
+    socket.onclose = function () {
+      if (generation !== relayGeneration || relayWs !== socket) return;
+      state.relayConnected = false;
+      state.hostOnline = null;
+      if (relayStatusTimer) { clearInterval(relayStatusTimer); relayStatusTimer = null; }
+      if (relayHeartbeatTimer) { clearInterval(relayHeartbeatTimer); relayHeartbeatTimer = null; }
+      updateSyncStatus('Relay disconnected', 'error');
+      updateHeaderUI();
+      if (!manualDisconnect && state.sessionId) scheduleRelayReconnect(generation);
+    };
+  }
+
+  function scheduleRelayReconnect(generation) {
+    if (manualDisconnect || !state.sessionId || relayReconnectTimer) return;
+    relayReconnectTimer = setTimeout(function () {
+      relayReconnectTimer = null;
+      if (manualDisconnect || !state.sessionId || generation !== relayGeneration) return;
+      initRelayConnection(state.sessionId, state.myPeerId, state.isHost);
+    }, 5000);
   }
 
   function sendToPeer(targetId, msg) {
     if (!relayWs || relayWs.readyState !== 1) return;
+    var isHttpPeer = state.isHost && connectionTransports[targetId] === 'http';
+    if (isHttpPeer) {
+      // KOReader's mailbox can handle the core reading protocol, but not the
+      // browser AES-GCM envelope or large app features such as file transfers.
+      var coreTypes = ['PROFILE', 'SYNC', 'PAGE_CHANGE', 'PING', 'PONG', 'AUTH_REQUIRED', 'AUTH_FAIL', 'HOST_KICK', 'RELAY_CLOSE'];
+      if (coreTypes.indexOf(msg.type) < 0) return;
+      relayWs.send(JSON.stringify({ to: targetId, p: { raw: JSON.stringify(msg) } }));
+      return;
+    }
     var currentKey = state.isHost ? relayKeyB64 : peerRelayKey;
     sealMsg(msg, currentKey, state.sessionId).then(function (env) {
       if (relayWs && relayWs.readyState === 1) {
@@ -282,14 +405,60 @@
     }
   }
 
+  function requestSessionPassword() {
+    return new Promise(function (resolve) {
+      var overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;background:#fff;color:#000;display:flex;align-items:center;justify-content:center;padding:16px;border:3px solid #000;';
+      overlay.innerHTML = '<div style="width:100%;max-width:340px;border:2px solid #000;padding:16px;background:#fff"><h3 style="margin:0 0 12px">Session password</h3><input id="coop-session-password" type="password" autocomplete="current-password" style="width:100%;margin-bottom:12px"><div style="display:flex;gap:8px;justify-content:flex-end"><button id="coop-password-cancel" class="btn">Cancel</button><button id="coop-password-submit" class="btn">Join</button></div></div>';
+      document.body.appendChild(overlay);
+      var input = overlay.querySelector('#coop-session-password');
+      var done = function (value) { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); resolve(value); };
+      overlay.querySelector('#coop-password-cancel').onclick = function () { done(''); };
+      overlay.querySelector('#coop-password-submit').onclick = function () { done(input.value || ''); };
+      input.addEventListener('keydown', function (event) { if (event.key === 'Enter') done(input.value || ''); });
+      try { input.focus(); } catch (_) {}
+    });
+  }
+
   // ==================== MESSAGE HANDLER ====================
-  function handleIncomingMessage(senderId, msg) {
+  function handleIncomingMessage(senderId, msg, senderTransport) {
     if (!msg || !msg.type) return;
+
+    if (msg.type === 'AUTH_REQUIRED' && !state.isHost) {
+      requestSessionPassword().then(function (password) {
+        if (!password) {
+          updateSyncStatus('Password required — leaving session', 'error');
+          var leave = document.getElementById('btn-disconnect-session');
+          if (leave) leave.click();
+          return;
+        }
+        hashPassword(password, msg.salt).then(function (hash) {
+          if (hash) sendToHost({ type: 'AUTH', hash: hash });
+        }).catch(function (error) {
+          updateSyncStatus(error.message, 'error');
+          var leave = document.getElementById('btn-disconnect-session');
+          if (leave) leave.click();
+        });
+      });
+      return;
+    }
+    if (msg.type === 'AUTH_FAIL') {
+      updateSyncStatus('Incorrect session password', 'error');
+      var leave = document.getElementById('btn-disconnect-session');
+      if (leave) leave.click();
+      return;
+    }
 
     if (msg.type === 'RELAY_HELLO') {
       if (state.isHost) {
         connections[senderId] = true;
-        // Send current session state to new joiner
+        connectionTransports[senderId] = senderTransport || 'websocket';
+        // KOReader is an HTTP-only peer: give it the document/page metadata it
+        // understands, and keep the richer annotations/chat/file path for the
+        // browser GUI peers.
+        sendToPeer(senderId, {
+          type: 'PROFILE', peerId: state.myPeerId, name: state.myDisplayName
+        });
         sendToPeer(senderId, {
           type: 'SYNC',
           state: {
@@ -300,13 +469,14 @@
             downloadAllowed: state.downloadAllowed
           }
         });
-        sendToPeer(senderId, { type: 'ANNOT_ALL', all: annots });
-        sendToPeer(senderId, { type: 'CHAT_HISTORY', messages: chatMessages.slice(-30) });
-        // If we have raw file cached and user needs it, send it
-        if (docRawBytes && state.currentFilename) {
-          sendFileToPeer(senderId, state.currentFilename, docRawBytes);
+        sendToPeer(senderId, { type: 'PAGE_CHANGE', page: state.currentPage });
+        if (connectionTransports[senderId] !== 'http') {
+          sendToPeer(senderId, { type: 'ANNOT_ALL', all: annots });
+          sendToPeer(senderId, { type: 'CHAT_HISTORY', messages: chatMessages.slice(-30) });
+          if (docRawBytes && state.currentFilename) sendFileToPeer(senderId, state.currentFilename, docRawBytes);
         }
         updatePeersListUI();
+        updateHeaderUI();
       }
       return;
     }
@@ -818,17 +988,34 @@
 
   // ==================== UI HELPERS & MODALS ====================
   function updateHeaderUI() {
-    el.docTitle.innerText = state.currentFilename || 'Coop Reader';
-    el.pageIndicator.innerText = state.currentPage + ' / ' + state.totalPages;
+    if (el.docTitle) el.docTitle.innerText = state.currentFilename || 'Coop Reader';
+    if (el.pageIndicator) el.pageIndicator.innerText = state.currentPage + ' / ' + state.totalPages;
+
+    var activeBox = document.getElementById('session-active-box');
+    var activeInfo = document.getElementById('session-active-info');
+    if (activeBox) activeBox.style.display = state.sessionId ? 'block' : 'none';
+    var createBox = document.getElementById('session-create-box');
+    var joinBox = document.getElementById('session-join-box');
+    if (createBox) createBox.style.display = state.sessionId ? 'none' : '';
+    if (joinBox) joinBox.style.display = state.sessionId ? 'none' : '';
+    if (activeInfo && state.sessionId) {
+      var role = state.isHost ? 'HOST' : 'GUEST';
+      var relay = state.relayConnected ? 'Connected' : 'Reconnecting / not connected';
+      var peerCount = Object.keys(connections).length;
+      activeInfo.textContent = role + ' · ' + relay + '\nRoom: ' + state.sessionId +
+        '\nPeers: ' + peerCount + '\nPage: ' + state.currentPage +
+        (state.isHost ? ('\nPIN: ' + (state.pin || 'Unavailable — share full code')) : ('\nHost: ' + ((profiles[state.sessionId] && profiles[state.sessionId].name) || state.sessionId) + '\nHost status: ' + (state.hostOnline === false ? 'offline' : (state.hostOnline === true ? 'online' : 'checking'))));
+    }
 
     if (state.isHost) {
-      el.syncStatus.innerHTML = '<span class="kindle-badge inverted">HOST</span>' + (state.pin ? ' PIN: ' + state.pin : '');
+      el.syncStatus.innerHTML = '<span class="kindle-badge inverted">HOST</span>' +
+        (state.pin ? ' PIN: ' + escapeHtml(state.pin) : ' · ' + (state.relayConnected ? 'Relay connected' : 'Relay offline'));
       el.btnSync.style.display = 'none';
     } else if (state.detached) {
       el.syncStatus.innerHTML = '<span class="kindle-badge inverted">DETACHED</span> Host: p.' + state.syncedPage;
       el.btnSync.style.display = 'inline-flex';
     } else if (state.sessionId) {
-      el.syncStatus.innerHTML = '<span class="kindle-badge">SYNCED</span>';
+      el.syncStatus.innerHTML = '<span class="kindle-badge">' + (state.relayConnected ? 'SYNCED' : 'RECONNECTING') + '</span>';
       el.btnSync.style.display = 'none';
     } else {
       el.syncStatus.innerHTML = '<span class="kindle-badge">SOLO</span>';
@@ -891,9 +1078,14 @@
         var activeInfo = document.getElementById('session-active-info');
         if (state.sessionId) {
           activeBox.style.display = 'block';
-          activeInfo.innerHTML = '<strong>Status:</strong> ' + (state.isHost ? 'HOSTING' : 'FOLLOWING') + '<br>' +
-            (state.pin ? '<strong>Kindle PIN:</strong> <span style="font-size:1.3rem; font-weight:900;">' + state.pin + '</span><br>' : '') +
-            '<strong>Room Code:</strong> ' + escapeHtml(state.sessionId);
+          var peerCount = Object.keys(connections).length;
+          activeInfo.innerHTML = '<strong>Status:</strong> ' + (state.isHost ? 'HOSTING' : 'JOINED') + '<br>' +
+            '<strong>Relay:</strong> ' + (state.relayConnected ? 'Connected' : 'Reconnecting / offline') + '<br>' +
+            '<strong>Room Code:</strong> ' + escapeHtml(state.sessionId) + '<br>' +
+            '<strong>Host:</strong> ' + escapeHtml(state.isHost ? state.myDisplayName : state.sessionId) + '<br>' +
+            '<strong>Peers:</strong> ' + peerCount + '<br>' +
+            '<strong>Page:</strong> ' + state.currentPage + ' / ' + state.totalPages + '<br>' +
+            (state.isHost ? '<strong>Kindle PIN:</strong> ' + (state.pin ? escapeHtml(state.pin) : 'Unavailable — share full room code') : '');
         } else {
           activeBox.style.display = 'none';
         }
@@ -961,170 +1153,139 @@
       }
     });
 
-    // ==================== BUY ME A COFFEE (BMC) ====================
-    var bmcTimer = null;
-    var bmcSecondsRemaining = 0;
-    var bmcHalftime = 0;
-
-    function showBmcModal(mode) {
-      try {
-        if (sessionStorage.getItem('coop_bmc_donated') === 'true') return;
-      } catch (_) {}
-
-      var isHostCreate = (mode === 'create' || mode === 'host');
-      var totalSeconds = isHostCreate ? 120 : 60;
-      bmcHalftime = isHostCreate ? 60 : 30;
-      bmcSecondsRemaining = totalSeconds;
-
-      var modal = document.getElementById('modal-bmc');
-      var closeBtn = document.getElementById('bmc-modal-close');
-      var statusEl = document.getElementById('bmc-timer-status');
-      var titleEl = document.getElementById('bmc-modal-title');
-      if (!modal) return;
-
-      if (titleEl) {
-        titleEl.innerText = isHostCreate ? 'Starting Session — Support Coop Reader 📖' : 'Joining Session — Support Coop Reader 📖';
-      }
-
-      if (closeBtn) closeBtn.style.display = 'none';
-
-      function updateStatus() {
-        if (bmcSecondsRemaining > bmcHalftime) {
-          var waitSecs = bmcSecondsRemaining - bmcHalftime;
-          if (statusEl) statusEl.innerText = 'Close button available in ' + waitSecs + 's (' + bmcSecondsRemaining + 's total)';
-          if (closeBtn) closeBtn.style.display = 'none';
-        } else {
-          if (statusEl) statusEl.innerText = 'Auto-closing in ' + bmcSecondsRemaining + 's';
-          if (closeBtn) {
-            closeBtn.style.display = 'inline-block';
-            closeBtn.innerText = 'Continue to Reader';
-          }
-        }
-      }
-
-      updateStatus();
-      modal.classList.add('open');
-
-      if (bmcTimer) clearInterval(bmcTimer);
-      bmcTimer = setInterval(function () {
-        bmcSecondsRemaining--;
-        updateStatus();
-        if (bmcSecondsRemaining <= 0) {
-          closeBmcModal();
-        }
-      }, 1000);
-    }
-
+    // Session creation/joining must never be blocked by a timed donation modal.
+    function showBmcModal() { return; }
     function closeBmcModal() {
-      if (bmcTimer) { clearInterval(bmcTimer); bmcTimer = null; }
       var modal = document.getElementById('modal-bmc');
       if (modal) modal.classList.remove('open');
     }
     window.closeBmcModal = closeBmcModal;
 
-    var bmcBtn = document.getElementById('bmc-btn-link');
-    if (bmcBtn) {
-      bmcBtn.addEventListener('click', function () {
-        try {
-          sessionStorage.setItem('coop_bmc_donated', 'true');
-        } catch (_) {}
-        closeBmcModal();
-      });
-    }
-
     // Session Host / Join Actions
     function connectToRoom(roomId, key) {
+      manualDisconnect = false;
       state.sessionId = roomId;
       peerRelayKey = key || '';
+      relayToken = generateId('tok');
       state.isHost = false;
+      state.relayConnected = false;
+      state.hostOnline = null;
       state.myPeerId = generateId('kpeer');
+      state.pin = '';
+      state.detached = false;
+      connections = {};
+      connectionTransports = {};
+      profiles = {};
+      document.getElementById('session-active-box').style.display = 'block';
       initRelayConnection(state.sessionId, state.myPeerId, false);
+      updateHeaderUI();
+      updatePeersListUI();
     }
 
     document.getElementById('btn-host-session').addEventListener('click', function () {
-      showBmcModal('create');
+      manualDisconnect = false;
       state.isHost = true;
       state.sessionId = generateId('kroom');
+      state.relayConnected = false;
+      state.hostOnline = null;
+      state.pin = '';
+      state.detached = false;
       var keyBytes = new Uint8Array(32);
-      if (window.crypto && window.crypto.getRandomValues) {
-        window.crypto.getRandomValues(keyBytes);
-      }
+      if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(keyBytes);
       relayKeyB64 = b64u(keyBytes);
       state.myPeerId = state.sessionId;
+      relayToken = generateId('tok');
+      connections = {};
+      connectionTransports = {};
+      profiles = {};
 
       initRelayConnection(state.sessionId, state.myPeerId, true);
       document.getElementById('session-display-code').innerText = state.sessionId + '.' + relayKeyB64;
       document.getElementById('session-info-box').style.display = 'block';
+      document.getElementById('session-pin-box').style.display = 'block';
+      document.getElementById('session-display-pin').innerText = 'Registering…';
+      document.getElementById('session-create-box').style.display = 'none';
+      document.getElementById('session-join-box').style.display = 'none';
+      document.getElementById('session-active-box').style.display = 'block';
+      updateHeaderUI();
 
-      // Register short PIN on relay
-      var relayHttp = CONFIG.defaultRelay.replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
-      fetch(relayHttp + '/pin/create', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ room: state.sessionId, key: relayKeyB64 })
-      }).then(function (res) { return res.json(); }).then(function (data) {
-        if (data && data.ok && data.pin) {
-          state.pin = data.pin;
-          document.getElementById('session-display-pin').innerText = data.pin;
-          document.getElementById('session-pin-box').style.display = 'block';
-          updateHeaderUI();
-        }
-      }).catch(function () {
-        var numPin = String(1000 + Math.floor(Math.random() * 9000));
-        state.pin = numPin;
-        document.getElementById('session-display-pin').innerText = numPin;
-        document.getElementById('session-pin-box').style.display = 'block';
-        updateHeaderUI();
-      });
       updateHeaderUI();
     });
 
     var btnDisconnect = document.getElementById('btn-disconnect-session');
     if (btnDisconnect) {
       btnDisconnect.addEventListener('click', function () {
-        if (relayWs) { try { relayWs.close(); } catch(_) {} relayWs = null; }
+        manualDisconnect = true;
+        relayGeneration++;
+        if (relayReconnectTimer) { clearTimeout(relayReconnectTimer); relayReconnectTimer = null; }
+        if (relayHeartbeatTimer) { clearInterval(relayHeartbeatTimer); relayHeartbeatTimer = null; }
+        if (relayStatusTimer) { clearInterval(relayStatusTimer); relayStatusTimer = null; }
+        if (relayWs) {
+          var oldSocket = relayWs;
+          relayWs = null;
+          oldSocket.onclose = null;
+          oldSocket.onerror = null;
+          try { oldSocket.close(); } catch (_) {}
+        }
         state.sessionId = '';
         state.isHost = false;
+        state.myPeerId = '';
         state.pin = '';
+        state.relayConnected = false;
+        state.hostOnline = null;
         state.detached = false;
+        peerRelayKey = '';
+        relayKeyB64 = '';
+        relayToken = '';
+        connections = {};
+        connectionTransports = {};
+        profiles = {};
         document.getElementById('session-pin-box').style.display = 'none';
         document.getElementById('session-info-box').style.display = 'none';
         document.getElementById('session-active-box').style.display = 'none';
+        document.getElementById('session-create-box').style.display = '';
+        document.getElementById('session-join-box').style.display = '';
         updateHeaderUI();
+        updatePeersListUI();
         closeModals();
+        updateSyncStatus('Left session', 'success');
       });
     }
 
     document.getElementById('btn-join-session').addEventListener('click', function () {
       var code = (document.getElementById('input-join-code').value || '').trim();
       if (!code) return;
-      showBmcModal('join');
-
-      var isShortPin = code.length <= 8 && code.indexOf('.') === -1 && code.indexOf('-') === -1;
+      var isShortPin = /^\d{3,8}$/.test(code);
       if (isShortPin) {
         updateSyncStatus('Resolving PIN ' + code + '...', 'warning');
         var relayHttp = CONFIG.defaultRelay.replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
-        fetch(relayHttp + '/pin/' + code)
-          .then(function (res) { return res.json(); })
+        fetch(relayHttp + '/pin/' + encodeURIComponent(code))
+          .then(function (res) {
+            if (!res.ok) throw new Error('PIN not found on relay (HTTP ' + res.status + ')');
+            return res.json();
+          })
           .then(function (data) {
-            if (data && data.ok && data.room) {
-              connectToRoom(data.room, data.key || '');
-            } else {
-              return fetch(CONFIG.daemonApi + '/pin/' + code)
-                .then(function (r) { return r.json(); })
-                .then(function (d) {
-                  if (d && d.ok && d.room) connectToRoom(d.room, d.key || '');
-                  else connectToRoom(code, '');
-                });
-            }
-          }).catch(function () {
-            connectToRoom(code, '');
+            if (!data || !data.ok || !data.room) throw new Error('Relay did not return a room for this PIN');
+            if (data.key && !/^[\w-]{43}$/.test(data.key)) throw new Error('Relay returned an invalid room key');
+            connectToRoom(data.room, data.key || '');
+            closeModals();
+          })
+          .catch(function (err) {
+            updateSyncStatus(err.message + '. Check the PIN and relay URL.', 'error');
           });
       } else {
         var parts = code.split('.');
+        if (parts.length > 2 || !/^[\w-]{1,64}$/.test(parts[0])) {
+          updateSyncStatus('Invalid room code', 'error');
+          return;
+        }
+        if (parts[1] && !/^[\w-]{43}$/.test(parts[1])) {
+          updateSyncStatus('Invalid room encryption key', 'error');
+          return;
+        }
         connectToRoom(parts[0], parts[1] || '');
+        closeModals();
       }
-      closeModals();
     });
 
     // Document Picker Trigger

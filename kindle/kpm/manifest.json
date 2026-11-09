@@ -3,11 +3,11 @@
   "id": "coop-reader",
   "name": "Coop Reader",
   "version": [1, 0, 0],
-  "author": "coop-reader team",
-  "description": "Collaborative real-time document reader for jailbroken Kindles with page sync, annotations, chat, and host controls",
+  "author": "Coop Reader contributors",
+  "description": "Collaborative document reader and Kindle sync bridge.",
+  "dependencies": [],
   "supported_platforms": null,
   "category": "Applications",
-  "homepage": "https://github.com",
+  "homepage": "https://github.com/vizkidd/coop-reader",
   "license": "MIT"
 }
-

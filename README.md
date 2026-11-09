@@ -2,7 +2,7 @@
 
 Read documents together in real time. Everything runs in the browser (static files, no backend of your own required): the host opens a file, shares a link or code, and everyone follows along. Connections are peer-to-peer (WebRTC via PeerJS), with optional relay fallbacks for difficult networks.
 
-> **Privacy note:** the document is sent to each peer's browser. It is not stored on any server. If the optional relay server is used, the document passes through it **end-to-end encrypted** (AES-GCM); the relay operator sees only who talks to whom and message sizes, not content.
+> **Privacy note:** documents are sent to participating clients, not stored by the relay. Browser/WASM and Kindle GUI WebSocket relay messages use AES-GCM end-to-end encryption. **The KOReader HTTP-mailbox bridge is currently different:** its limited page/profile/presence messages travel to the relay over HTTPS with a bearer token, but are not end-to-end encrypted, so the relay operator can read those bridge messages. KOReader does not receive document bytes through this bridge. Do not use the KOReader bridge for sensitive reading-session metadata until end-to-end encryption is added.
 
 ---
 
@@ -58,7 +58,7 @@ Connections try these routes in order:
 1. **Direct** WebRTC (STUN).
 2. **TURN relay** if you configure one (credentials URL or ICE JSON). Needed across Wi-Fi / mobile data in many cases.
 3. **Peer relay:** another connected peer dials the stuck newcomer and forwards data (one hop; the helper can see the traffic).
-4. **WebSocket relay server** (end-to-end encrypted; the random key travels in the invite link, or in the host code as `id.key`, and is never sent to the relay — joining through the relay needs the full link or code): deploy `relay-worker.js` (below), or rely on the built-in default address, which is used **only if it answers a reachability check**.
+4. **WebSocket relay server** (browser/WASM and Kindle GUI messages are end-to-end encrypted; the random key travels in the invite link, or in the host code as `id.key`, and is never sent to the relay — joining through the relay needs the full link or code). The KOReader HTTP-mailbox bridge instead uses HTTPS plus a per-peer bearer token and currently sends only page/profile/presence messages in plaintext to the relay. Deploy `relay-worker.js` (below), or rely on the built-in default address, which is used **only if it answers a reachability check**.
 
 Options:
 - **Automatic** (default) or **Relay server only** mode.
@@ -80,10 +80,11 @@ Screen stays awake during a session, password entry uses an in-page dialog, and 
 
 ## Kindle Edition (Jailbroken Kindles)
 `coop-reader` is ported to jailbroken Amazon Kindles for synchronised reading across e-ink devices:
-- **Kindle Package Manager (KPM)**: `dist/coop-reader.kpkg` installable via `;kpm install coop-reader.kpkg`.
+- **Kindle Package Manager (KPM)**: `dist/coop-reader.kpkg` is a repository package artifact; install by package ID (`;kpm install coop-reader`) only after a KPM repository publishes it. For local USB install, use the KUAL ZIP.
 - **KUAL Extension**: `dist/coop-reader-kual.zip` for direct USB extraction to `/mnt/us/extensions/`.
-- **KOReader Plugin**: `dist/coopreader.koplugin.zip` for reading directly inside KOReader.
-- See [`kindle/README.md`](kindle/README.md) for full instructions, E-Ink optimizations, and hardware button configuration.
+- **KOReader Plugin**: `dist/coopreader.koplugin.zip` for page-sync and peer-presence integration directly inside KOReader.
+- The Kindle GUI and KOReader plugin are not feature-equivalent: KOReader currently supports page sync, profiles/presence, PIN/full-code join, status and disconnect; chat, annotations, file transfer, voice and password-protected rooms are not implemented in the KOReader plugin.
+- See [`kindle/README.md`](kindle/README.md) for install instructions, supported features, relay deployment and known limitations.
 
 ## Files
 ```text

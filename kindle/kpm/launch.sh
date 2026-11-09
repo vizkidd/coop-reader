@@ -14,8 +14,8 @@ fi
 
 if [ -f "$EXT_DIR/bin/launch.sh" ]; then
     exec sh "$EXT_DIR/bin/launch.sh" "$@"
-elif [ -f "$APP_DIR/../kual/bin/launch.sh" ]; then
-    exec sh "$APP_DIR/../kual/bin/launch.sh" "$@"
+elif [ -f "$APP_DIR/kual/bin/launch.sh" ]; then
+    exec sh "$APP_DIR/kual/bin/launch.sh" "$@"
 else
     echo "[Coop Reader] Error: could not find launcher script in $EXT_DIR/bin/launch.sh"
     exit 1

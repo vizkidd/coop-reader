@@ -7,7 +7,7 @@
     <id>coop-reader</id>
   </information>
   <menus>
-    <menu type="json" file="menu.json"/>
+    <menu type="json">menu.json</menu>
   </menus>
 </extension>
 

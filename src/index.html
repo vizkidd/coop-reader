@@ -217,6 +217,11 @@
     <button id="btn-create-session" onclick="startHost()">Create</button>
     <input type="password" id="host-password" placeholder="Host password (optional)" autocomplete="new-password" />
     <button id="btn-leave-session" class="secondary" onclick="resetToSolo()" style="display:none">Leave Session</button>
+    <div id="session-host-info" style="display:none;font-size:.82rem;line-height:1.45;opacity:.85;max-width:340px;overflow-wrap:anywhere">
+      <div><strong id="session-role-label">Session</strong> · <span id="session-transport-label">Connecting</span></div>
+      <div>Room: <code id="session-room-label"></code></div>
+      <div>Peers: <span id="session-peer-count">0</span></div>
+    </div>
   </div>
   <div class="menu-group" id="session-join-group">
     <span class="menu-label">Join</span>
@@ -810,6 +815,7 @@ function clearAllRemoteCursors() { for (const id of Object.keys(remoteCursors)) 
 
 // ==================== AUTO-JOIN & BMC RESET ====================
 let httpSyncInterval = null;
+let relayHostOnline = null;
 
 function resetBmcStorage() {
   try {
@@ -864,6 +870,8 @@ function resetToSolo() {
   rejoinTimer = null;
   rejoinAttempts = 0;
   lastJoinCode = null;
+  targetIsKindleRoom = false;
+  relayHostOnline = null;
   pendingAuthHash = null;
   peerRelayKey = '';
   if (httpSyncInterval) { clearInterval(httpSyncInterval); httpSyncInterval = null; }
@@ -889,6 +897,7 @@ function resetToSolo() {
   cleanupVoice();
   isHost = false;
   myPeerId = null;
+  currentKindlePin = '';
   document.body.classList.remove('peer-mode');
   hideError();
   setStatus('Solo reading', 'info');
@@ -1055,6 +1064,12 @@ function attachPeerMediaHandlers() {
 // ==================== INITIAL DATA SYNC ====================
 function sendInitialDataToConn(conn) {
   profiles[myPeerId] = myProfile();
+  if (conn && conn._kindle) {
+    try { conn.send({ type:'PROFILE', peerId: myPeerId, ...myProfile() }); } catch(_){}
+    try { conn.send({ type:'SYNC', state }); } catch(_){}
+    try { conn.send({ type:'PAGE_CHANGE', page: state.currentPage }); } catch(_){}
+    return;
+  }
   try { conn.send({ type:'SETTINGS', s: hostSettings }); } catch(_){}
   try { conn.send({ type:'ANNOT_ALL', all: annots }); } catch(_){}
   for (const [id, p] of Object.entries(profiles)) try { conn.send({ type:'PROFILE', peerId: id, ...p }); } catch(_){}
@@ -1213,13 +1228,26 @@ async function joinSession(targetCode, isRetry) {
   }
 
   const code = dot > 0 ? rawCode.slice(0, dot) : rawCode;   // host code may be "id.key"
-  if (code.startsWith('kroom') || code.startsWith('kindle')) targetIsKindleRoom = true;
-  if (dot > 0 && KEY_RE.test(rawCode.slice(dot + 1))) { peerRelayKey = rawCode.slice(dot + 1); try { sessionStorage.setItem('coop-rk', peerRelayKey); } catch (_) {} }
+  targetIsKindleRoom = code.startsWith('kroom') || code.startsWith('kindle');
+  if (dot > 0) {
+    const candidateKey = rawCode.slice(dot + 1);
+    if (!KEY_RE.test(candidateKey)) return notify('The room code contains an invalid encryption key.', 'warning');
+    peerRelayKey = candidateKey;
+    try { sessionStorage.setItem('coop-rk', peerRelayKey); } catch (_) {}
+  } else if (!isRetry) {
+    // Do not accidentally reuse a previous room's key when joining a plain
+    // KOReader/KPM room code. Retries retain the in-memory key.
+    peerRelayKey = '';
+    try { sessionStorage.removeItem('coop-rk'); } catch (_) {}
+  }
   if (code === myPeerId) return notify('You cannot join your own session.','warning');
-  lastJoinCode = code; if (!isRetry) { rejoinAttempts = 0; preAuthDrops = 0; } clearTimeout(rejoinTimer); rejoinTimer = null;
+  lastJoinCode = code;
+  if (!isRetry) relayHostOnline = null;
+  if (!isRetry) { rejoinAttempts = 0; preAuthDrops = 0; } clearTimeout(rejoinTimer); rejoinTimer = null;
   try { sessionStorage.setItem('coop-session', code); } catch (_) {}
   if (relayV) { const old = relayV; relayV = null; try { old._sock.close(); } catch (_) {} }
-  if (!window.RTCPeerConnection) { showError({type:'browser-incompatible'}); return; }
+  // Relay-only joins (Kindle rooms and relay-server-only mode) do not need
+  // WebRTC. Defer the RTCPeerConnection check until the PeerJS fallback path.
   connectionGeneration++;
   cleanupVoice();
   if (peer) { try{peer.destroy()}catch(_){} }
@@ -1227,6 +1255,20 @@ async function joinSession(targetCode, isRetry) {
   isHost = false; myPeerId = null;
   updateHostUI(); updateDownloadButton();
 
+  // Kindle/KOReader hosts do not run a PeerJS signaling server. Connect to the
+  // room relay directly instead of waiting for a guaranteed peer-unavailable
+  // timeout; this also works on browsers without RTCPeerConnection.
+  if (targetIsKindleRoom || getNet().mode === 'ws') {
+    const idBytes = crypto.getRandomValues(new Uint8Array(12));
+    myPeerId = 'web-' + Array.from(idBytes, b => b.toString(16).padStart(2, '0')).join('');
+    setStatus('Connecting directly to the room relay…', 'info');
+    const relayStub = { peer: code, open: false, close() {}, send() {} };
+    connections = [relayStub];
+    startRelayJoin(relayStub);
+    return;
+  }
+
+  if (!window.RTCPeerConnection) { showError({type:'browser-incompatible'}); return; }
   setStatus(`Connecting to ${code}…`,'info');
   peer = new Peer(peerOptions());
   attachPeerMediaHandlers();
@@ -1249,7 +1291,10 @@ async function joinSession(targetCode, isRetry) {
   });
   
   let hasJoined = false;
-  peer.on('open', () => {
+  peer.on('open', (id) => {
+    // The relay transport needs a unique local participant ID even when the
+    // direct PeerJS connection to a Kindle-only room cannot be established.
+    if (id && !myPeerId) myPeerId = id;
     if (hasJoined) {
       setStatus('Reconnected to signaling server', 'success');
       if (getMediaStreamForCall()) {
@@ -1316,6 +1361,13 @@ async function registerKindlePin(roomId, key) {
   currentKindlePin = '';
   updateKindlePinUI();
   try {
+    // PIN minting is host-validated by the Worker, so wait until our host
+    // WebSocket has completed its room registration.
+    for (let attempt = 0; attempt < 24 && (!hostWs || hostWs.readyState !== 1); attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (!isHost || myPeerId !== roomId) return;
+    }
+    if (!hostWs || hostWs.readyState !== 1) throw new Error('host relay is not connected');
     const relayHttp = (getNet().relay || DEFAULT_RELAY).replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
     const res = await fetch(`${relayHttp}/pin/create`, {
       method: 'POST',
@@ -1329,16 +1381,14 @@ async function registerKindlePin(roomId, key) {
       return;
     }
   } catch (_) {}
-  // Fallback short PIN (numeric hash of room ID)
-  let sum = 0;
-  for (let i = 0; i < roomId.length; i++) sum = (sum * 31 + roomId.charCodeAt(i)) % 9000;
-  currentKindlePin = String(1000 + Math.abs(sum));
+  currentKindlePin = '';
   updateKindlePinUI();
+  notify('Relay PIN registration failed. Share the full room code instead, or check the relay connection.', 'warning', 6500);
 }
 
 function updateKindlePinUI() {
   const pinEl = document.getElementById('kindle-pin-badge');
-  if (pinEl) pinEl.innerText = currentKindlePin || '...';
+  if (pinEl) pinEl.innerText = currentKindlePin || 'Unavailable';
   const group = document.getElementById('kindle-share-group');
   if (group) group.style.display = (isHost && myPeerId) ? 'flex' : 'none';
 }
@@ -1354,10 +1404,10 @@ function copyKindlePin() {
 function syncHttpRelayPage(page) {
   if (!isHost || !myPeerId) return;
   const relayHttp = (getNet().relay || DEFAULT_RELAY).replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
-  fetch(`${relayHttp}/room/${encodeURIComponent(myPeerId)}/sync?page=${page}&from=host`, {
+  fetch(`${relayHttp}/room/${encodeURIComponent(myPeerId)}/sync?page=${page}&from=${encodeURIComponent(myPeerId)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ page: page, from: 'host' })
+    body: JSON.stringify({ page: page, from: myPeerId })
   }).catch(() => {});
 }
 
@@ -1368,12 +1418,19 @@ function startHttpSyncPolling(hostId) {
     fetch(`${relayHttp}/room/${encodeURIComponent(hostId)}/state`)
       .then(r => r.json())
       .then(st => {
-        if (st && st.ok && st.page != null) {
-          const pg = parseInt(st.page, 10);
-          if (pg && pg >= 1 && pg !== syncedPage) {
-            syncedPage = pg;
-            if (!detached) { state.currentPage = pg; renderCurrentPage(); }
-            setStatus(`Kindle host → Page ${pg}`, 'info', 2000);
+        if (st && st.ok) {
+          const wasOnline = relayHostOnline;
+          relayHostOnline = !!st.hostOnline;
+          if (relayHostOnline && wasOnline === false) setStatus('Connected to host', 'success', 2500);
+          if (!relayHostOnline && wasOnline !== false) setStatus('Relay connected; waiting for the host to come online…', 'warning', 5000);
+          if (wasOnline !== relayHostOnline) updatePeerListUI();
+          if (relayHostOnline && st.page != null) {
+            const pg = parseInt(st.page, 10);
+            if (pg && pg >= 1 && pg !== syncedPage) {
+              syncedPage = pg;
+              if (!detached) { state.currentPage = pg; renderCurrentPage(); }
+              setStatus(`Host → Page ${pg}`, 'info', 2000);
+            }
           }
         }
       }).catch(() => {});
@@ -1382,7 +1439,26 @@ function startHttpSyncPolling(hostId) {
 
 function updatePeerListUI() {
   refreshPeers();
-  const n = connections.length;
+  const n = connections.filter(c => c && c.open).length;
+  const info = document.getElementById('session-host-info');
+  if (info) {
+    const inPeerSession = document.body.classList.contains('peer-mode') && !!lastJoinCode;
+    const active = isHost ? !!myPeerId : inPeerSession;
+    info.style.display = active ? 'block' : 'none';
+    const role = document.getElementById('session-role-label');
+    const transport = document.getElementById('session-transport-label');
+    const room = document.getElementById('session-room-label');
+    const count = document.getElementById('session-peer-count');
+    if (role) role.textContent = isHost ? 'Hosting' : 'Joined · Host';
+    if (transport) {
+      if (isHost) transport.textContent = hostWs && hostWs.readyState === 1 ? 'Relay connected' : 'Relay connecting';
+      else if (connections.some(c => c && c.open && !c._ws)) transport.textContent = 'Connected directly';
+      else if (connections.some(c => c && c.open)) transport.textContent = relayHostOnline === false ? 'Relay connected · host offline' : (relayHostOnline === true ? 'Connected to host' : 'Relay connected · checking host');
+      else transport.textContent = 'Reconnecting';
+    }
+    if (room) room.textContent = isHost ? (myPeerId || '—') : (lastJoinCode || '—');
+    if (count) count.textContent = String(n);
+  }
   if (!isHost) return;
   setStatus(`Hosting — ${n} peer${n===1?'':'s'}`, n>0?'success':'info');
 }
@@ -1400,13 +1476,13 @@ function updateHostUI() {
     pwCheckbox.title = hasPw ? '' : 'Set a password to enable this';
   }
 
-  const isConnectedPeer = document.body.classList.contains('peer-mode') && connections.some(c => c.open);
+  const hasActiveSession = (isHost && !!myPeerId) || (document.body.classList.contains('peer-mode') && !!lastJoinCode);
   const btnCreate = document.getElementById('btn-create-session');
   const hostPw = document.getElementById('host-password');
   const btnLeave = document.getElementById('btn-leave-session');
   const joinGroup = document.getElementById('session-join-group');
 
-  if (isConnectedPeer) {
+  if (hasActiveSession) {
     if (btnCreate) btnCreate.style.display = 'none';
     if (hostPw) hostPw.style.display = 'none';
     if (btnLeave) btnLeave.style.display = '';
@@ -1417,6 +1493,7 @@ function updateHostUI() {
     if (btnLeave) btnLeave.style.display = 'none';
     if (joinGroup) joinGroup.style.display = '';
   }
+  updatePeerListUI();
 }
 
 // ==================== DOWNLOAD ====================
@@ -3001,6 +3078,8 @@ function startRelayJoin(direct) {
   if (!relayEndpoint) { notify('Direct connection is slow or blocked. Add a relay server under menu → Network for a reliable fallback.', 'warning', 9000); return; }
   if (!hostId || !myId) return;
   let ws; try { ws = new WebSocket(relayUrl(hostId, myId)); } catch (_) { notify('Relay server address is invalid.', 'error'); return; }
+  relayHostOnline = null;
+  updatePeerListUI();
   setStatus('Connecting through the relay server…', 'info');
   ws.onerror = (err) => {
     console.warn('Relay WebSocket connection error:', err);
@@ -3013,6 +3092,7 @@ function startRelayJoin(direct) {
           'Deploy your Cloudflare Worker relay (npx wrangler deploy) or update your Relay URL under menu ☰ → Network.'
         ]
       });
+      scheduleRejoin();
     }
   };
   ws.onopen = () => {
@@ -3072,8 +3152,8 @@ function startRelayJoin(direct) {
   };
   ws.onclose = (ev) => {
     netLog('relay socket closed (code ' + ev.code + ')');
-    if (relayV && relayV._sock === ws) { clearInterval(relayV._hb); connections = connections.filter(x => x !== relayV); relayV = null; updatePeerListUI(); notify('Relay connection lost — reconnecting…', 'warning'); scheduleRejoin(); }
-    else if (!relayV) notify('Could not reach the relay server.', 'error', 5000);
+    if (relayV && relayV._sock === ws) { clearInterval(relayV._hb); connections = connections.filter(x => x !== relayV); relayV = null; updatePeerListUI(); updateHostUI(); notify('Relay connection lost — reconnecting…', 'warning'); scheduleRejoin(); }
+    else if (!relayV) { notify('Could not reach the relay server.', 'error', 5000); if (isKindle) scheduleRejoin(); }
   };
 }
 // host side: stay connected to the relay room so peers can always reach us
@@ -3086,56 +3166,65 @@ function openHostRelay() {
 }
 function hostRelayMsg(m) {
   if (!isHost || !m.from) return;
-  if (m.left || !m.p) return hostRelayPlain(m);
-  // Handle unencrypted PAGE_CHANGE from Kindle HTTP sync (relay broadcasts these as plain JSON)
-  if (m.p && typeof m.p === 'object' && m.p.type === 'PAGE_CHANGE') {
-    const pg = parseInt(m.p.page, 10);
-    if (pg && pg >= 1) {
-      syncedPage = pg;
-      if (!detached) { state.currentPage = pg; renderCurrentPage(); }
-      setStatus(`Kindle → Page ${pg}`, 'info', 2000);
-      // Create virtual Kindle peer entry for display if not already tracked
-      if (!connections.find(c => c.peer === m.from)) {
-        const kindlePeer = { peer: m.from, get open() { return true; }, _lastPong: Date.now(), _virtual: true, _kindle: true, _ws: false, _authenticated: true,
-          dataChannel: { get bufferedAmount() { return 0; }, addEventListener() {}, removeEventListener() {} },
-          send() {}, close() { connections = connections.filter(c => c !== kindlePeer); updatePeerListUI(); }, on() {} };
-        connections.push(kindlePeer);
-        updatePeerListUI(); updateChatAvailability();
-        notify(`Kindle peer ${m.from.substring(0, 8)}… syncing via HTTP relay`, 'info', 4000);
-      } else {
-        const kp = connections.find(c => c.peer === m.from);
-        if (kp) kp._lastPong = Date.now();
-      }
-    }
-    return;
-  }
+  if (m.left || !m.p) return hostRelayPlain({ from: m.from, left: !!m.left, transport: m.transport || 'websocket' });
   const q = hostWs; if (!q) return;
   q._rq = (q._rq || Promise.resolve()).then(async () => {
-    let p; try { p = await openMsg(m.p, relayKeyB64, myPeerId); } catch (_) { return; }   // peers without the key can't even say hello
-    if (p) hostRelayPlain({ from: m.from, p });
+    let p;
+    try { p = await openMsg(m.p, relayKeyB64, myPeerId); } catch (_) { return; }
+    if (p) hostRelayPlain({ from: m.from, p, transport: m.transport || 'websocket' });
   });
 }
 function hostRelayPlain(m) {
   if (!isHost || !m.from) return;
   const X = String(m.from);
-  if (m.left) { const n = connections.length; connections = connections.filter(c => !(c._ws && c.peer === X)); if (n !== connections.length) { updatePeerListUI(); updateChatAvailability(); } return; }
+  if (m.left) {
+    const n = connections.length;
+    connections = connections.filter(c => !(c && c._relay && c.peer === X));
+    if (n !== connections.length) { updatePeerListUI(); updateChatAvailability(); }
+    return;
+  }
   const p = m.p; if (!p || typeof p !== 'object') return;
-  let v = connections.find(c => c._ws && c.peer === X);
+  const isHttpPeer = m.transport === 'http' || p.transport === 'http';
+  let v = connections.find(c => c && c._relay && c.peer === X);
   if (p.type === 'RELAY_HELLO') {
-    if (v) return;
-    connections = connections.filter(c => !(c.peer === X && !c.open));
-    v = { peer: X, get open() { return !!hostWs && hostWs.readyState === 1; }, _lastPong: Date.now(), _virtual: true, _ws: true, _authenticated: !sessionAuth.required, dataChannel: wsStub(null),
-      send(msg) { if (hostWs && hostWs.readyState === 1) wsSend(hostWs, X, msg, relayKeyB64, myPeerId); },
-      close() { try { if (hostWs && hostWs.readyState === 1) wsSend(hostWs, X, { type: 'RELAY_CLOSE' }, relayKeyB64, myPeerId); } catch (_) {} connections = connections.filter(c => c !== v); updatePeerListUI(); updateChatAvailability(); }, on() {} };
+    if (v) { v._lastPong = Date.now(); return; }
+    connections = connections.filter(c => !(c && c.peer === X && !c.open));
+    v = {
+      peer: X,
+      get open() { return !!hostWs && hostWs.readyState === 1; },
+      _lastPong: Date.now(), _virtual: true, _relay: true,
+      _ws: !isHttpPeer, _kindle: isHttpPeer, _authenticated: !sessionAuth.required,
+      dataChannel: wsStub(null),
+      send(msg) {
+        if (!hostWs || hostWs.readyState !== 1) return;
+        if (isHttpPeer) {
+          const raw = JSON.stringify(msg, wsReplacer);
+          try { hostWs.send(JSON.stringify({ to: X, p: { raw } })); } catch (_) {}
+        } else {
+          wsSend(hostWs, X, msg, relayKeyB64, myPeerId);
+        }
+      },
+      close() {
+        try { this.send({ type: 'RELAY_CLOSE' }); } catch (_) {}
+        connections = connections.filter(c => c !== v);
+        updatePeerListUI(); updateChatAvailability();
+      },
+      on() {}
+    };
     Object.defineProperty(v.dataChannel, 'bufferedAmount', { get: () => wsBuf(hostWs) });
     connections.push(v); updatePeerListUI(); updateChatAvailability();
     relayWatchdog(v, () => connections.includes(v), () => { netLog('relayed peer went quiet'); v.close(); });
-    notify(`Peer ${X.substring(0, 6)}… connected through the relay server`, 'info', 4000);
-    if (sessionAuth.required) v.send({ type: 'AUTH_REQUIRED', salt: sessionAuth.salt }); else sendInitialDataToConn(v);
+    notify(`${isHttpPeer ? 'Kindle HTTP peer' : 'Peer'} ${X.substring(0, 8)} connected through the relay`, 'info', 4000);
+    if (sessionAuth.required) v.send({ type: 'AUTH_REQUIRED', salt: sessionAuth.salt });
+    else sendInitialDataToConn(v);
     return;
   }
-  if (v) handleNetworkMessage(v, p);
+  if (v) {
+    v._lastPong = Date.now();
+    handleNetworkMessage(v, p);
+  }
 }
+
 setInterval(() => {
   if (isHost && myPeerId) ensureRelayProbe();
   const relay = getNet().relay || (defaultRelayOk ? DEFAULT_RELAY : '');
@@ -3273,53 +3362,10 @@ let bmcTimer = null;
 let bmcSecondsRemaining = 0;
 let bmcHalftime = 0;
 
-function showBmcModal(mode) {
-  try {
-    if (sessionStorage.getItem('coop_bmc_donated') === 'true') return;
-  } catch (_) {}
-
-  const isHostCreate = (mode === 'create' || mode === 'host');
-  const totalSeconds = isHostCreate ? 120 : 60; // 2 minutes for create, 1 minute for join
-  bmcHalftime = isHostCreate ? 60 : 30; // close button available at halftime
-  bmcSecondsRemaining = totalSeconds;
-
-  const modal = document.getElementById('bmc-modal');
-  const closeBtn = document.getElementById('bmc-modal-close');
-  const statusEl = document.getElementById('bmc-timer-status');
-  const titleEl = document.getElementById('bmc-modal-title');
-  if (!modal) return;
-
-  if (titleEl) {
-    titleEl.textContent = isHostCreate ? 'Starting Session — Support Coop Reader 📖' : 'Joining Session — Support Coop Reader 📖';
-  }
-
-  if (closeBtn) closeBtn.style.display = 'none';
-
-  function updateStatus() {
-    if (bmcSecondsRemaining > bmcHalftime) {
-      const waitSecs = bmcSecondsRemaining - bmcHalftime;
-      if (statusEl) statusEl.textContent = `Close button available in ${waitSecs}s (${bmcSecondsRemaining}s total)`;
-      if (closeBtn) closeBtn.style.display = 'none';
-    } else {
-      if (statusEl) statusEl.textContent = `Auto-closing in ${bmcSecondsRemaining}s`;
-      if (closeBtn) {
-        closeBtn.style.display = 'inline-block';
-        closeBtn.textContent = 'Continue to Reader';
-      }
-    }
-  }
-
-  updateStatus();
-  modal.classList.add('open');
-
-  if (bmcTimer) clearInterval(bmcTimer);
-  bmcTimer = setInterval(() => {
-    bmcSecondsRemaining--;
-    updateStatus();
-    if (bmcSecondsRemaining <= 0) {
-      closeBmcModal();
-    }
-  }, 1000);
+function showBmcModal() {
+  // Support prompts must never gate room creation or joining. The donation
+  // dialog remains available from its explicit menu/button entry point.
+  closeBmcModal();
 }
 
 function closeBmcModal() {
