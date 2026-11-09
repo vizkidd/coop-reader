@@ -5,7 +5,7 @@
   "version": [1, 0, 0],
   "author": "coop-reader team",
   "description": "Collaborative real-time document reader for jailbroken Kindles with page sync, annotations, chat, and host controls",
-  "supported_platforms": ["kindle", "kindle5", "kindlepw2", "kindlehf"],
+  "supported_platforms": null,
   "category": "Applications",
   "homepage": "https://github.com",
   "license": "MIT"

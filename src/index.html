@@ -1361,6 +1361,25 @@ function syncHttpRelayPage(page) {
   }).catch(() => {});
 }
 
+function startHttpSyncPolling(hostId) {
+  if (httpSyncInterval) clearInterval(httpSyncInterval);
+  const relayHttp = (getNet().relay || DEFAULT_RELAY).replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+  httpSyncInterval = setInterval(() => {
+    fetch(`${relayHttp}/room/${encodeURIComponent(hostId)}/state`)
+      .then(r => r.json())
+      .then(st => {
+        if (st && st.ok && st.page != null) {
+          const pg = parseInt(st.page, 10);
+          if (pg && pg >= 1 && pg !== syncedPage) {
+            syncedPage = pg;
+            if (!detached) { state.currentPage = pg; renderCurrentPage(); }
+            setStatus(`Kindle host → Page ${pg}`, 'info', 2000);
+          }
+        }
+      }).catch(() => {});
+  }, 2500);
+}
+
 function updatePeerListUI() {
   refreshPeers();
   const n = connections.length;
@@ -2914,7 +2933,7 @@ function ensureRelayProbe() {
   if (!relayProbe) relayProbe = probeRelay(DEFAULT_RELAY).then(ok => { defaultRelayOk = ok; if (!ok) setTimeout(() => { relayProbe = null; }, 60000); });
   return relayProbe;
 }
-function routeLabel(c) { return c._ws ? '🌐 relay server' : c._virtual ? '🔗 via peer' : c._isRelay ? '🔒 TURN' : '⚡ direct'; }
+function routeLabel(c) { return c._kindle ? '📱 Kindle HTTP' : c._ws ? '🌐 relay server' : c._virtual ? '🔗 via peer' : c._isRelay ? '🔒 TURN' : '⚡ direct'; }
 const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
 const wsReplacer = (k, v) => v instanceof ArrayBuffer ? { __b: b64(new Uint8Array(v)) } : ArrayBuffer.isView(v) ? { __b: b64(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) } : v;
 const wsRevive = (k, v) => v && typeof v === 'object' && typeof v.__b === 'string' ? Uint8Array.from(atob(v.__b), ch => ch.charCodeAt(0)) : v;
@@ -3068,6 +3087,28 @@ function openHostRelay() {
 function hostRelayMsg(m) {
   if (!isHost || !m.from) return;
   if (m.left || !m.p) return hostRelayPlain(m);
+  // Handle unencrypted PAGE_CHANGE from Kindle HTTP sync (relay broadcasts these as plain JSON)
+  if (m.p && typeof m.p === 'object' && m.p.type === 'PAGE_CHANGE') {
+    const pg = parseInt(m.p.page, 10);
+    if (pg && pg >= 1) {
+      syncedPage = pg;
+      if (!detached) { state.currentPage = pg; renderCurrentPage(); }
+      setStatus(`Kindle → Page ${pg}`, 'info', 2000);
+      // Create virtual Kindle peer entry for display if not already tracked
+      if (!connections.find(c => c.peer === m.from)) {
+        const kindlePeer = { peer: m.from, get open() { return true; }, _lastPong: Date.now(), _virtual: true, _kindle: true, _ws: false, _authenticated: true,
+          dataChannel: { get bufferedAmount() { return 0; }, addEventListener() {}, removeEventListener() {} },
+          send() {}, close() { connections = connections.filter(c => c !== kindlePeer); updatePeerListUI(); }, on() {} };
+        connections.push(kindlePeer);
+        updatePeerListUI(); updateChatAvailability();
+        notify(`Kindle peer ${m.from.substring(0, 8)}… syncing via HTTP relay`, 'info', 4000);
+      } else {
+        const kp = connections.find(c => c.peer === m.from);
+        if (kp) kp._lastPong = Date.now();
+      }
+    }
+    return;
+  }
   const q = hostWs; if (!q) return;
   q._rq = (q._rq || Promise.resolve()).then(async () => {
     let p; try { p = await openMsg(m.p, relayKeyB64, myPeerId); } catch (_) { return; }   // peers without the key can't even say hello
@@ -3097,7 +3138,8 @@ function hostRelayPlain(m) {
 }
 setInterval(() => {
   if (isHost && myPeerId) ensureRelayProbe();
-  const want = isHost && myPeerId && getNet().relay;
+  const relay = getNet().relay || (defaultRelayOk ? DEFAULT_RELAY : '');
+  const want = isHost && myPeerId && relay;
   if (hostWs && (!want || hostWsFor !== myPeerId || hostWs.readyState > 1)) { const w = hostWs; hostWs = null; try { w.close(); } catch (_) {} dropWsConns(); }
   if (want && !hostWs) openHostRelay();
 }, 3000);

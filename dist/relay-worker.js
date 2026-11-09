@@ -26,6 +26,7 @@ export class Room {
     this.tokens = new Map();
     this.pins = new Map(); // PIN -> { room, key, ts }
     this.latestState = { page: 1, updated: Date.now() };
+    this.httpClients = new Map();
   }
 
   async fetch(req) {
@@ -82,11 +83,18 @@ export class Room {
 
     // 2. HTTP Room State Query (For Kindle / KOReader polling)
     if (url.pathname.endsWith('/state')) {
+      // Clean stale HTTP clients (no activity for 30 seconds)
+      const staleThreshold = Date.now() - 30000;
+      for (const [k, v] of this.httpClients.entries()) {
+        if (v.lastSeen < staleThreshold) this.httpClients.delete(k);
+      }
       return jsonResponse({
         ok: true,
         page: this.latestState.page,
         updated: this.latestState.updated,
         clients: this.clients.size,
+        httpClients: this.httpClients.size,
+        totalPeers: this.clients.size + this.httpClients.size,
       });
     }
 
@@ -104,6 +112,7 @@ export class Room {
           from = url.searchParams.get('from') || from;
         }
 
+        this.httpClients.set(from, { lastSeen: Date.now(), page });
         this.latestState = { page, updated: Date.now() };
 
         // Broadcast to all active WebSocket clients in this room (Chrome on MacOS)

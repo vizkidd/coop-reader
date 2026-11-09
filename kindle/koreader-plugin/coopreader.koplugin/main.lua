@@ -38,6 +38,15 @@ local CoopReader = WidgetContainer:extend{
     max_logs = 60,
     log_file_path = "/tmp/coopreader_debug.log",
     history = {},
+    is_host = false,
+    pin = nil,
+    peer_count = 0,
+    http_client_count = 0,
+    last_sync_time = nil,
+    last_poll_status = "none",
+    sync_success_count = 0,
+    sync_fail_count = 0,
+    first_sync_shown = false,
 }
 
 -- ==================== INITIALIZATION & MENU ====================
@@ -163,6 +172,15 @@ function CoopReader:addToMainMenu(menu_items)
                 end,
             },
             {
+                text = "Session Status",
+                enabled_func = function()
+                    return self.session_id ~= nil
+                end,
+                callback = function()
+                    self:showSessionStatus()
+                end,
+            },
+            {
                 text = "View Debug Log",
                 callback = function()
                     self:showDebugLog()
@@ -275,6 +293,62 @@ function CoopReader:showDebugLog()
     pcall(function()
         local viewer = TextViewer:new{
             title = "Coop Reader Debug Log",
+            text = text,
+        }
+        UIManager:show(viewer)
+    end)
+end
+
+function CoopReader:showSessionStatus()
+    local lines = {}
+    table.insert(lines, "═══════════════════════════════════")
+    table.insert(lines, "  COOP READER SESSION STATUS")
+    table.insert(lines, "═══════════════════════════════════")
+    table.insert(lines, "")
+
+    if self.session_id then
+        table.insert(lines, "Room ID:     " .. tostring(self.session_id))
+    else
+        table.insert(lines, "Room ID:     (not connected)")
+    end
+
+    table.insert(lines, "Role:        " .. (self.is_host and "HOST" or "PEER"))
+    if self.pin then
+        table.insert(lines, "Kindle PIN:  " .. tostring(self.pin))
+    end
+    table.insert(lines, "Connected:   " .. (self.is_connected and "YES" or "NO"))
+    table.insert(lines, "Page Sync:   " .. (self.is_syncing and "ACTIVE" or "DETACHED"))
+    table.insert(lines, "")
+
+    table.insert(lines, "--- Connection Details ---")
+    table.insert(lines, "Relay URL:   " .. tostring(self.relay_base_url))
+    table.insert(lines, "Wi-Fi IP:    " .. tostring(self:getWifiIp()))
+    table.insert(lines, "Local Page:  " .. tostring(self:getCurrentPage()))
+    table.insert(lines, "Last Synced: " .. tostring(self.last_page))
+    table.insert(lines, "")
+
+    table.insert(lines, "--- Peers ---")
+    table.insert(lines, "WebSocket:   " .. tostring(self.peer_count) .. " peer(s)")
+    table.insert(lines, "HTTP/Kindle: " .. tostring(self.http_client_count) .. " peer(s)")
+    table.insert(lines, "Total:       " .. tostring(self.peer_count + self.http_client_count) .. " peer(s)")
+    table.insert(lines, "")
+
+    table.insert(lines, "--- Sync Statistics ---")
+    table.insert(lines, "Poll Status: " .. tostring(self.last_poll_status))
+    table.insert(lines, "Syncs OK:    " .. tostring(self.sync_success_count))
+    table.insert(lines, "Syncs Fail:  " .. tostring(self.sync_fail_count))
+    if self.last_sync_time then
+        table.insert(lines, "Last Sync:   " .. os.date("%H:%M:%S", self.last_sync_time))
+    else
+        table.insert(lines, "Last Sync:   (never)")
+    end
+    table.insert(lines, "")
+    table.insert(lines, "Polling:     " .. (self.poll_active and "ACTIVE (every 2s)" or "STOPPED"))
+
+    local text = table.concat(lines, "\n")
+    pcall(function()
+        local viewer = TextViewer:new{
+            title = "Coop Reader — Session Status",
             text = text,
         }
         UIManager:show(viewer)
@@ -600,14 +674,47 @@ function CoopReader:startSession(room_id)
     self.session_id = room_id
     self.is_connected = true
     self.is_syncing = true
+    self.first_sync_shown = false
+    self.sync_success_count = 0
+    self.sync_fail_count = 0
+    self.peer_count = 0
+    self.http_client_count = 0
     
     local short_display = room_id:sub(1, 8)
-    self:logDebug("Successfully connected to room: " .. short_display, true)
+    self:logDebug("Connected to room: " .. short_display, true)
     
     -- Send initial page update if document is currently open
     local current_page = self:getCurrentPage()
     self.last_page = current_page
     self:sendPageUpdate(current_page)
+    
+    -- Immediately poll room state to show connection info
+    local poll_url = self.relay_base_url .. "/room/" .. room_id .. "/state"
+    local res, status = self:httpRequest(poll_url, "GET", nil, 3)
+    if res then
+        local ok, data = pcall(function() return json.decode(res) end)
+        if ok and data and data.ok then
+            local peers = (tonumber(data.clients) or 0) + (tonumber(data.httpClients) or 0)
+            local info = string.format(
+                "Room: %s\nPage: %s\nPeers: %d (WS: %s, HTTP: %s)\nRelay: %s",
+                room_id,
+                tostring(data.page or "?"),
+                peers,
+                tostring(data.clients or 0),
+                tostring(data.httpClients or 0),
+                self.relay_base_url
+            )
+            self:logDebug("Room state: " .. info)
+            pcall(function()
+                UIManager:show(InfoMessage:new{
+                    text = "Connected!\n" .. info,
+                    timeout = 5
+                })
+            end)
+            self.peer_count = tonumber(data.clients) or 0
+            self.http_client_count = tonumber(data.httpClients) or 0
+        end
+    end
     
     -- Start background non-blocking polling loop
     self:startPolling()
@@ -617,6 +724,12 @@ function CoopReader:disconnect()
     self.poll_active = false
     self.is_connected = false
     self.session_id = nil
+    self.is_host = false
+    self.pin = nil
+    self.peer_count = 0
+    self.http_client_count = 0
+    self.last_poll_status = "disconnected"
+    self.first_sync_shown = false
     self:logDebug("Disconnected from Coop Reader session", true)
 end
 
@@ -652,7 +765,15 @@ function CoopReader:sendPageUpdate(pageno)
     
     -- 1. Push to Cloudflare Relay HTTP endpoint
     local relay_sync_url = self.relay_base_url .. "/room/" .. self.session_id .. "/sync?page=" .. tostring(pageno) .. "&from=kindle"
-    self:httpRequest(relay_sync_url, "POST", payload, 2)
+    local res, status, err = self:httpRequest(relay_sync_url, "POST", payload, 2)
+    if status == 200 or (res and #res > 0) then
+        self:logDebug(string.format("Page %d synced to relay (HTTP %s)", pageno, tostring(status)))
+        self.last_sync_time = os.time()
+        self.sync_success_count = self.sync_success_count + 1
+    else
+        self:logDebug(string.format("Page %d sync FAILED (HTTP %s, err: %s)", pageno, tostring(status), tostring(err)))
+        self.sync_fail_count = self.sync_fail_count + 1
+    end
     
     -- 2. Also notify local daemon if present
     local daemon_sync_url = self.daemon_base_url .. "/api/sync-page?page=" .. tostring(pageno) .. "&session=" .. self.session_id
@@ -681,24 +802,53 @@ function CoopReader:pollRemoteState()
     local poll_url = self.relay_base_url .. "/room/" .. self.session_id .. "/state"
     local res, status = self:httpRequest(poll_url, "GET", nil, 2)
     
-    if res and status == 200 then
+    if res and (status == 200 or (status == 0 and #res > 0)) then
         local data = nil
         pcall(function() data = json.decode(res) end)
-        if data and data.ok and data.page then
-            local remote_page = tonumber(data.page)
-            local my_page = self:getCurrentPage()
-            
-            if remote_page and remote_page > 0 and remote_page ~= my_page and remote_page ~= self.last_page then
-                self:logDebug(string.format("Host changed page to: %d (local: %d). Jumping...", remote_page, my_page))
-                self.last_page = remote_page
-                
-                -- Programmatically navigate to remote page in KOReader
-                pcall(function()
-                    self.ui:handleEvent(Event:new("GotoPage", remote_page))
-                end)
-                
-                self:logDebug(string.format("Jumped to page %d to follow host", remote_page), true)
+        if data and data.ok then
+            self.last_poll_status = "OK"
+            self.last_sync_time = os.time()
+            self.sync_success_count = self.sync_success_count + 1
+
+            -- Track peer counts from relay
+            if data.clients then self.peer_count = tonumber(data.clients) or 0 end
+            if data.httpClients then self.http_client_count = tonumber(data.httpClients) or 0 end
+            local total_peers = (self.peer_count or 0) + (self.http_client_count or 0)
+
+            -- Show first successful sync toast
+            if not self.first_sync_shown and data.page then
+                self.first_sync_shown = true
+                local msg = string.format("Synced with host - Page %s (%d peer%s in room)",
+                    tostring(data.page), total_peers, total_peers == 1 and "" or "s")
+                self:logDebug(msg, true)
             end
+
+            if data.page then
+                local remote_page = tonumber(data.page)
+                local my_page = self:getCurrentPage()
+                
+                if remote_page and remote_page > 0 and remote_page ~= my_page and remote_page ~= self.last_page then
+                    self:logDebug(string.format("Host page: %d (local: %d, peers: %d). Jumping...", remote_page, my_page, total_peers))
+                    self.last_page = remote_page
+                    
+                    pcall(function()
+                        self.ui:handleEvent(Event:new("GotoPage", remote_page))
+                    end)
+                    
+                    self:logDebug(string.format("Jumped to page %d (peers: %d)", remote_page, total_peers))
+                end
+            end
+        else
+            self.last_poll_status = "Parse error"
+            self.sync_fail_count = self.sync_fail_count + 1
+        end
+    else
+        self.last_poll_status = string.format("HTTP %s", tostring(status))
+        self.sync_fail_count = self.sync_fail_count + 1
+        
+        -- Show toast on repeated failures
+        if self.sync_fail_count > 0 and self.sync_fail_count % 5 == 0 then
+            self:logDebug(string.format("Sync failing (%d consecutive). Relay: %s", self.sync_fail_count, self.relay_base_url), true)
         end
     end
 end
