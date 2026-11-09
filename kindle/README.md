@@ -74,15 +74,37 @@ kindle/
 ### Option 2: Install via KUAL (Manual USB Transfer)
 1. Build or download `dist/coop-reader-kual.zip`.
 2. Connect your jailbroken Kindle to your computer via USB.
-3. Unzip `coop-reader-kual.zip` into the `extensions/` directory on your Kindle drive:
+3. Unzip `coop-reader-kual.zip` directly into the `extensions/` directory on your Kindle drive so the path is `/mnt/us/extensions/coop-reader/`:
    ```text
    /mnt/us/extensions/coop-reader/
        ├── config.xml
        ├── menu.json
        ├── bin/
+       │   ├── launch.sh
+       │   ├── refresh.sh
+       │   ├── stop.sh
+       │   └── coop_daemon.py
        └── app/
+           ├── index.html
+           ├── kindle-app.js
+           └── kindle-theme.css
    ```
-4. Eject your Kindle, open **KUAL**, tap **Coop Reader**, and choose **Launch Coop Reader**.
+4. Safely eject your Kindle, open **KUAL**, tap **Coop Reader**, and choose **Launch Coop Reader**.
+
+> [!IMPORTANT]
+> **Running via `kterm` (Terminal)**:
+> Kindles mount the USB storage `/mnt/us` with the `noexec` mount flag. Executing `./launch.sh` directly will fail with `Permission denied`. Always prefix with `sh`:
+> ```bash
+> sh /mnt/us/extensions/coop-reader/bin/launch.sh
+> # or from the kpm folder:
+> sh /mnt/us/kpm/launch.sh
+> ```
+
+> [!NOTE]
+> If Coop Reader is missing from KUAL:
+> 1. Ensure `config.xml` and `menu.json` are directly inside `/mnt/us/extensions/coop-reader/`, NOT nested in another subfolder.
+> 2. Exit and reopen KUAL, or type `;restart` into the Kindle search bar to restart the UI framework.
+> 3. Check `/mnt/us/kpm_install.log` for any script execution errors.
 
 ### Option 3: KOReader Plugin (For Reading inside KOReader)
 1. Extract `dist/coopreader.koplugin.zip` into:
