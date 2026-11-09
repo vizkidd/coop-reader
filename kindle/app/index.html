@@ -32,6 +32,8 @@
     <div style="display:flex; align-items:center; gap:6px;">
       <span id="voice-indicator" class="kindle-badge inverted" style="display:none; font-size:0.75rem;"></span>
       <button id="btn-sync" class="btn btn-sm" style="display:none;">Follow Host</button>
+      <button id="btn-toggle-doc-sync" class="btn btn-sm" title="Toggle Document Sync">Doc Sync: ON</button>
+      <button id="btn-toggle-page-sync" class="btn btn-sm" title="Toggle Page Sync">Page Sync: ON</button>
       <button id="btn-font-smaller" class="btn btn-sm btn-icon">A-</button>
       <button id="btn-font-larger" class="btn btn-sm btn-icon">A+</button>
     </div>
@@ -95,6 +97,22 @@
             <div id="session-display-code" style="font-family:monospace; word-break:break-all; font-weight:bold; font-size:0.85rem; margin-top:2px;"></div>
           </div>
         </div>
+        <hr style="border:none; border-top:1px solid #000; margin:16px 0;">
+        <div id="session-sync-settings" style="padding:10px; border:1px solid #000; background:#fbfbfb;">
+          <h3 style="margin:0 0 10px 0; font-size:1rem;">Sync Preferences</h3>
+          <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; cursor:pointer; font-size:0.88rem;">
+            <input type="checkbox" id="chk-sync-doc" checked style="width:18px; height:18px;">
+            <span><strong>Sync Document (Open/Close)</strong><br><small style="color:#444;">Auto-load books opened by host</small></span>
+          </label>
+          <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; cursor:pointer; font-size:0.88rem;">
+            <input type="checkbox" id="chk-sync-page" checked style="width:18px; height:18px;">
+            <span><strong>Sync Page Turns</strong><br><small style="color:#444;">Keep pages synchronized with group</small></span>
+          </label>
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:0.88rem;">
+            <input type="checkbox" id="chk-sync-bg" checked style="width:18px; height:18px;">
+            <span><strong>Background Execution</strong><br><small style="color:#444;">Keep syncing when app is backgrounded</small></span>
+          </label>
+        </div>
       </div>
       <div class="kindle-modal-footer">
         <button class="btn btn-close-modal">Done / Start Reading</button>
@@ -110,7 +128,10 @@
         <button class="btn btn-sm btn-close-modal">&times;</button>
       </div>
       <div class="kindle-modal-body">
-        <h3>Kindle Storage (/mnt/us/documents)</h3>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <h3 style="margin:0;">Kindle Storage (/mnt/us/documents)</h3>
+          <button id="btn-close-doc" class="btn btn-sm" style="display:none;">Close Book</button>
+        </div>
         <div id="local-doc-list" style="margin-bottom:16px; border:1px solid #000; max-height:220px; overflow-y:auto;">
           <div style="padding:10px;">Scanning Kindle documents...</div>
         </div>

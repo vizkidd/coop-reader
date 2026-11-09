@@ -129,13 +129,18 @@ XMLEOF
           "action": "bin/launch.sh"
         },
         {
-          "name": "Quick Clear Ghosting (EIPS)",
+          "name": "Start Background Sync Daemon",
           "priority": 2,
+          "action": "bin/bg_daemon.sh"
+        },
+        {
+          "name": "Quick Clear Ghosting (EIPS)",
+          "priority": 3,
           "action": "bin/refresh.sh"
         },
         {
-          "name": "Stop Coop Reader & Sleep Normal",
-          "priority": 3,
+          "name": "Stop Coop Reader & Background Daemon",
+          "priority": 4,
           "action": "bin/stop.sh"
         }
       ]
@@ -232,16 +237,23 @@ REFEOF
     cat > "$EXT_DIR/bin/stop.sh" << 'STOPEOF'
 #!/bin/sh
 PID_FILE="/tmp/coop_reader.pid"
+BG_PID_FILE="/tmp/coop_bg_daemon.pid"
 if [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
     kill "$PID" 2>/dev/null || true
     rm -f "$PID_FILE"
 fi
+if [ -f "$BG_PID_FILE" ]; then
+    BG_PID=$(cat "$BG_PID_FILE")
+    kill "$BG_PID" 2>/dev/null || true
+    rm -f "$BG_PID_FILE"
+fi
 if which lipc-set-prop >/dev/null 2>&1; then
     lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null || true
 fi
 rm -f /tmp/coop_redirect.html 2>/dev/null || true
-if which eips >/dev/null 2>&1; then eips -c 2>/dev/null || true; fi
+rm -f /tmp/coop_session.txt 2>/dev/null || true
+if which eips >/dev/null 2>&1; then eips -c 2>/dev/null || true; eips 0 0 "Coop Reader: Stopped" 2>/dev/null || true; fi
 exit 0
 STOPEOF
 fi

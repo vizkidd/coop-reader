@@ -347,6 +347,16 @@ class KindleRequestHandler(SimpleHTTPRequestHandler):
                 ok = False
             return self.send_json({"ok": ok})
 
+        # API: Record active room session for background sync
+        if parsed.path == '/api/session':
+            room = qs.get('room', [''])[0]
+            try:
+                with open('/tmp/coop_session.txt', 'w') as f:
+                    f.write(room + '\n')
+            except Exception:
+                pass
+            return self.send_json({"ok": True, "room": room})
+
         # API: Allow sleep
         if parsed.path == '/api/power/allow-sleep':
             try:
@@ -361,6 +371,28 @@ class KindleRequestHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+
+        # API: Save received document to /mnt/us/documents/coop-reader
+        if parsed.path == '/api/save-doc':
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                qs = parse_qs(parsed.query)
+                filename = qs.get('filename', ['document'])[0]
+                target_dir = os.path.join(DOCUMENTS_DIR, 'coop-reader')
+                if not os.path.exists(target_dir):
+                    os.makedirs(target_dir)
+                target_path = os.path.join(target_dir, os.path.basename(filename))
+                with open(target_path, 'wb') as f:
+                    remaining = length
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(remaining, 64 * 1024))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        remaining -= len(chunk)
+                return self.send_json({"ok": True, "path": target_path})
+            except Exception as e:
+                return self.send_json({"ok": False, "error": str(e)}, 500)
 
         # API: PIN creation
         if parsed.path == '/pin/create':

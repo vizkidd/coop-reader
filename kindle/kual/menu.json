@@ -10,13 +10,18 @@
           "action": "bin/launch.sh"
         },
         {
-          "name": "Quick Clear Ghosting (EIPS)",
+          "name": "Start Background Sync Daemon",
           "priority": 2,
+          "action": "bin/bg_daemon.sh"
+        },
+        {
+          "name": "Quick Clear Ghosting (EIPS)",
+          "priority": 3,
           "action": "bin/refresh.sh"
         },
         {
-          "name": "Stop Coop Reader & Sleep Normal",
-          "priority": 3,
+          "name": "Stop Coop Reader & Background Daemon",
+          "priority": 4,
           "action": "bin/stop.sh"
         }
       ]

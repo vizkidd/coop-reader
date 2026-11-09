@@ -104,6 +104,11 @@ button:active, .btn:active, button.active {
   color: var(--bg);
 }
 
+button.inverted, .btn.inverted {
+  background: var(--text);
+  color: var(--bg);
+}
+
 button:disabled, .btn:disabled {
   opacity: 0.4;
   border-style: dashed;

@@ -140,3 +140,41 @@ test('HTTP peer IDs cannot be taken over without their bearer token or change ro
   });
   assert.equal(roleChange.response.status, 409);
 });
+
+test('room document upload, download, and state reflection works', async () => {
+  const env = makeEnv();
+  const fileBytes = new TextEncoder().encode('Hello Coop Reader EPUB content');
+  
+  // Upload document
+  const uploadReq = new Request('https://relay.test/room/room-doc/doc?filename=sample.epub', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/epub+zip' },
+    body: fileBytes,
+  });
+  const uploadRes = await Worker.fetch(uploadReq, env);
+  assert.equal(uploadRes.status, 200);
+  const uploadData = await uploadRes.json();
+  assert.equal(uploadData.ok, true);
+  assert.equal(uploadData.doc.filename, 'sample.epub');
+  assert.equal(uploadData.doc.size, fileBytes.byteLength);
+
+  // Check state includes doc
+  const stateRes = await call(env, '/room/room-doc/state');
+  assert.equal(stateRes.data.ok, true);
+  assert.equal(stateRes.data.doc.filename, 'sample.epub');
+
+  // Check metadata query
+  const metaRes = await call(env, '/room/room-doc/doc/meta');
+  assert.equal(metaRes.data.ok, true);
+  assert.equal(metaRes.data.hasDoc, true);
+  assert.equal(metaRes.data.doc.filename, 'sample.epub');
+
+  // Download document
+  const downloadReq = new Request('https://relay.test/room/room-doc/doc');
+  const downloadRes = await Worker.fetch(downloadReq, env);
+  assert.equal(downloadRes.status, 200);
+  assert.equal(downloadRes.headers.get('Content-Type'), 'application/epub+zip');
+  const downloadedBuf = await downloadRes.arrayBuffer();
+  assert.deepEqual(new Uint8Array(downloadedBuf), fileBytes);
+});
+

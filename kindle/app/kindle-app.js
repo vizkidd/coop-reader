@@ -25,6 +25,12 @@
     myPeerId: '',
     myDisplayName: 'Kindle Reader',
     detached: false,
+    syncPageEnabled: true,
+    syncDocEnabled: true,
+    backgroundPolling: true,
+    isBackground: false,
+    isDownloadingDoc: false,
+    lastDownloadedDoc: '',
     currentPage: 1,
     totalPages: 1,
     syncedPage: 1,
@@ -38,6 +44,25 @@
     relayConnected: false,
     hostOnline: null
   };
+
+  try {
+    var sp = localStorage.getItem('coop-sync-page');
+    if (sp !== null) state.syncPageEnabled = sp === 'true';
+    var sd = localStorage.getItem('coop-sync-doc');
+    if (sd !== null) state.syncDocEnabled = sd === 'true';
+    var sb = localStorage.getItem('coop-sync-bg');
+    if (sb !== null) state.backgroundPolling = sb === 'true';
+  } catch (_) {}
+
+  var welcomeDoc = 'Welcome to Coop Reader for Kindle!\n\n' +
+    'Read documents and books together in real-time.\n\n' +
+    'How to use:\n' +
+    '1. Tap [Session] at the top right to Host or Join a reading room.\n' +
+    '2. Tap [Docs] to browse books from /mnt/us/documents or receive a book from the host.\n' +
+    '3. Page turns sync across everyone in the session.\n' +
+    '4. Tap left/right screen edges or use Kindle physical buttons to turn pages.\n' +
+    '5. Tap [Refresh] anytime to clear e-ink ghosting.\n\n' +
+    'Supported formats: PDF, EPUB, MOBI, AZW3, TXT, DOCX, XLSX.';
 
   var connections = {};
   // Relay transport per peer; HTTP peers (KOReader) need plaintext control
@@ -87,6 +112,12 @@
     el.btnNext = document.getElementById('btn-next');
     el.btnSync = document.getElementById('btn-sync');
     el.btnRefresh = document.getElementById('btn-refresh');
+    el.btnToggleDocSync = document.getElementById('btn-toggle-doc-sync');
+    el.btnTogglePageSync = document.getElementById('btn-toggle-page-sync');
+    el.chkSyncDoc = document.getElementById('chk-sync-doc');
+    el.chkSyncPage = document.getElementById('chk-sync-page');
+    el.chkSyncBg = document.getElementById('chk-sync-bg');
+    el.btnCloseDoc = document.getElementById('btn-close-doc');
 
     // Modals
     el.modalSession = document.getElementById('modal-session');
@@ -261,6 +292,18 @@
         state.hostOnline = !!data.hostOnline;
         if (!state.isHost && !state.hostOnline) updateSyncStatus('Relay connected · waiting for host', 'error');
         else if (state.hostOnline && state.relayConnected) updateSyncStatus(state.isHost ? 'HOST · Relay connected' : 'Connected to host', 'success');
+
+        if (data.doc && data.doc.filename && state.syncDocEnabled && data.doc.filename !== state.currentFilename && !state.isDownloadingDoc) {
+          downloadDocFromRelay(data.doc.filename);
+        }
+        if (data.latestPage && state.syncPageEnabled && !state.isHost && !state.detached && data.latestPage !== state.currentPage) {
+          state.syncedPage = data.latestPage;
+          state.currentPage = data.latestPage;
+          if (!state.isBackground) {
+            renderCurrentPage();
+          }
+        }
+
         updateHeaderUI();
       }).catch(function () {
         if (generation === relayGeneration && !state.isHost) {
@@ -272,6 +315,116 @@
     }
     checkStatus();
     relayStatusTimer = setInterval(checkStatus, 3000);
+  }
+
+  // ==================== BACKGROUND & PERSISTENCE ====================
+  var bgPollTimer = null;
+
+  function onBackground() {
+    state.isBackground = true;
+    if (state.backgroundPolling && state.sessionId && !manualDisconnect) {
+      if (!bgPollTimer) {
+        bgPollTimer = setInterval(function () {
+          checkRoomBackgroundSync();
+        }, 5000);
+      }
+    }
+  }
+
+  function onForeground() {
+    state.isBackground = false;
+    if (bgPollTimer) {
+      clearInterval(bgPollTimer);
+      bgPollTimer = null;
+    }
+    if (state.sessionId && !manualDisconnect) {
+      if (!relayWs || relayWs.readyState !== 1) {
+        initRelayConnection(state.sessionId, state.myPeerId, state.isHost);
+      }
+      checkRoomBackgroundSync();
+    }
+    renderCurrentPage();
+  }
+
+  function checkRoomBackgroundSync() {
+    if (!state.sessionId || manualDisconnect) return;
+    var relayHttp = CONFIG.defaultRelay.replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+    fetch(relayHttp + '/room/' + encodeURIComponent(state.sessionId) + '/state')
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data || !data.ok || !state.sessionId) return;
+        state.hostOnline = !!data.hostOnline;
+        if (data.doc && data.doc.filename && state.syncDocEnabled && data.doc.filename !== state.currentFilename && !state.isDownloadingDoc) {
+          downloadDocFromRelay(data.doc.filename);
+        }
+        if (data.latestPage && state.syncPageEnabled && !state.isHost && !state.detached && data.latestPage !== state.currentPage) {
+          state.syncedPage = data.latestPage;
+          state.currentPage = data.latestPage;
+          if (!state.isBackground) {
+            renderCurrentPage();
+          }
+        }
+        updateHeaderUI();
+      })
+      .catch(function () {});
+  }
+
+  function recordLocalSession(roomId) {
+    if (!roomId) return;
+    try {
+      fetch(CONFIG.daemonApi + '/api/session?room=' + encodeURIComponent(roomId))
+        .catch(function () {});
+    } catch (_) {}
+  }
+
+  function clearLocalSession() {
+    try {
+      fetch(CONFIG.daemonApi + '/api/session?room=')
+        .catch(function () {});
+    } catch (_) {}
+  }
+
+  function setDocSync(enabled) {
+    state.syncDocEnabled = !!enabled;
+    try { localStorage.setItem('coop-sync-doc', String(state.syncDocEnabled)); } catch (_) {}
+    updateSyncControlsUI();
+    updateSyncStatus('Doc sync ' + (state.syncDocEnabled ? 'ON' : 'OFF'), 'success');
+  }
+
+  function setPageSync(enabled) {
+    state.syncPageEnabled = !!enabled;
+    try { localStorage.setItem('coop-sync-page', String(state.syncPageEnabled)); } catch (_) {}
+    updateSyncControlsUI();
+    updateSyncStatus('Page sync ' + (state.syncPageEnabled ? 'ON' : 'OFF'), 'success');
+  }
+
+  function setBackgroundSync(enabled) {
+    state.backgroundPolling = !!enabled;
+    try { localStorage.setItem('coop-sync-bg', String(state.backgroundPolling)); } catch (_) {}
+    updateSyncControlsUI();
+    updateSyncStatus('Background sync ' + (state.backgroundPolling ? 'ON' : 'OFF'), 'success');
+  }
+
+  function updateSyncControlsUI() {
+    if (el.btnToggleDocSync) {
+      el.btnToggleDocSync.innerText = 'Doc Sync: ' + (state.syncDocEnabled ? 'ON' : 'OFF');
+      if (state.syncDocEnabled) {
+        el.btnToggleDocSync.classList.remove('inverted');
+      } else {
+        el.btnToggleDocSync.classList.add('inverted');
+      }
+    }
+    if (el.btnTogglePageSync) {
+      el.btnTogglePageSync.innerText = 'Page Sync: ' + (state.syncPageEnabled ? 'ON' : 'OFF');
+      if (state.syncPageEnabled) {
+        el.btnTogglePageSync.classList.remove('inverted');
+      } else {
+        el.btnTogglePageSync.classList.add('inverted');
+      }
+    }
+    if (el.chkSyncDoc) el.chkSyncDoc.checked = state.syncDocEnabled;
+    if (el.chkSyncPage) el.chkSyncPage.checked = state.syncPageEnabled;
+    if (el.chkSyncBg) el.chkSyncBg.checked = state.backgroundPolling;
   }
 
   function initRelayConnection(roomId, peerId, isHostRole) {
@@ -375,7 +528,7 @@
     if (isHttpPeer) {
       // KOReader's mailbox can handle the core reading protocol, but not the
       // browser AES-GCM envelope or large app features such as file transfers.
-      var coreTypes = ['PROFILE', 'SYNC', 'PAGE_CHANGE', 'PING', 'PONG', 'AUTH_REQUIRED', 'AUTH_FAIL', 'HOST_KICK', 'RELAY_CLOSE'];
+      var coreTypes = ['PROFILE', 'SYNC', 'PAGE_CHANGE', 'PING', 'PONG', 'AUTH_REQUIRED', 'AUTH_FAIL', 'HOST_KICK', 'RELAY_CLOSE', 'DOC_OPEN', 'DOC_CLOSE'];
       if (coreTypes.indexOf(msg.type) < 0) return;
       relayWs.send(JSON.stringify({ to: targetId, p: { raw: JSON.stringify(msg) } }));
       return;
@@ -504,9 +657,14 @@
       state.fileType = incoming.fileType || state.fileType;
       state.syncedPage = incoming.currentPage || 1;
 
-      if (!state.detached) {
+      if (state.syncPageEnabled && !state.detached) {
         state.currentPage = state.syncedPage;
-        renderCurrentPage();
+        if (!state.isBackground) {
+          renderCurrentPage();
+        }
+      }
+      if (state.syncDocEnabled && incoming.currentFilename && incoming.currentFilename !== state.currentFilename) {
+        downloadDocFromRelay(incoming.currentFilename);
       }
       updateHeaderUI();
       return;
@@ -516,11 +674,39 @@
       var pg = parseInt(msg.page, 10);
       if (isNaN(pg)) return;
       state.syncedPage = pg;
-      if (!state.detached) {
+      if (state.syncPageEnabled && !state.detached) {
         state.currentPage = pg;
-        renderCurrentPage();
+        if (!state.isBackground) {
+          renderCurrentPage();
+        }
       }
       updateHeaderUI();
+      if (state.isHost) broadcast(msg);
+      return;
+    }
+
+    if (msg.type === 'DOC_OPEN') {
+      if (state.syncDocEnabled && msg.filename && msg.filename !== state.currentFilename) {
+        downloadDocFromRelay(msg.filename);
+      }
+      if (state.isHost) broadcast(msg);
+      return;
+    }
+
+    if (msg.type === 'DOC_CLOSE') {
+      if (state.syncDocEnabled) {
+        state.currentFilename = '';
+        docPages = paginateText(welcomeDoc);
+        state.totalPages = docPages.length;
+        state.currentPage = 1;
+        pdfDoc = null;
+        docRawBytes = null;
+        if (!state.isBackground) {
+          renderCurrentPage();
+        }
+        updateHeaderUI();
+        updateSyncStatus('Host closed document', 'warning');
+      }
       if (state.isHost) broadcast(msg);
       return;
     }
@@ -655,14 +841,84 @@
     return pages.length ? pages : ['(Empty document)'];
   }
 
-  function loadDocumentFromBytes(arrayBuffer, filename) {
+  function uploadDocToRelay(filename, arrayBuffer) {
+    if (!state.sessionId || !arrayBuffer) return;
+    var relayHttp = CONFIG.defaultRelay.replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+    updateSyncStatus('Sharing ' + filename + '…', 'warning');
+
+    var url = relayHttp + '/room/' + encodeURIComponent(state.sessionId) + '/doc?filename=' + encodeURIComponent(filename);
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', url, true);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.onload = function () {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          updateSyncStatus('Shared ' + filename, 'success');
+          broadcast({ type: 'DOC_OPEN', filename: filename });
+        } else {
+          updateSyncStatus('Upload failed (HTTP ' + xhr.status + ')', 'error');
+        }
+      };
+      xhr.onerror = function () {
+        updateSyncStatus('Upload network error', 'error');
+      };
+      xhr.send(arrayBuffer);
+    } catch (e) {
+      updateSyncStatus('Upload failed: ' + e.message, 'error');
+    }
+  }
+
+  function downloadDocFromRelay(filename) {
+    if (!state.sessionId || !filename || state.isDownloadingDoc || filename === state.currentFilename) return;
+    if (!state.syncDocEnabled) return;
+    state.isDownloadingDoc = true;
+    updateSyncStatus('Downloading ' + filename + '…', 'warning');
+    var relayHttp = CONFIG.defaultRelay.replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+    var url = relayHttp + '/room/' + encodeURIComponent(state.sessionId) + '/doc';
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.responseType = 'arraybuffer';
+    xhr.onload = function () {
+      state.isDownloadingDoc = false;
+      if (xhr.status >= 200 && xhr.status < 300 && xhr.response && xhr.response.byteLength > 0) {
+        state.lastDownloadedDoc = filename;
+        loadDocumentFromBytes(xhr.response, filename, true);
+        updateSyncStatus('Opened ' + filename, 'success');
+      } else {
+        updateSyncStatus('Failed to download ' + filename, 'error');
+      }
+    };
+    xhr.onerror = function () {
+      state.isDownloadingDoc = false;
+      updateSyncStatus('Doc download network error', 'error');
+    };
+    xhr.send();
+  }
+
+  function closeCurrentDocument() {
+    state.currentFilename = '';
+    docPages = paginateText(welcomeDoc);
+    state.totalPages = docPages.length;
+    state.currentPage = 1;
+    pdfDoc = null;
+    docRawBytes = null;
+    renderCurrentPage();
+    updateHeaderUI();
+    updateSyncStatus('Document closed', 'warning');
+    if (state.isHost && state.syncDocEnabled) {
+      broadcast({ type: 'DOC_CLOSE' });
+    }
+  }
+
+  function loadDocumentFromBytes(arrayBuffer, filename, fromRemote) {
     docRawBytes = arrayBuffer;
     state.currentFilename = filename;
     var ext = filename.split('.').pop().toLowerCase();
 
     if (ext === 'pdf') {
       state.fileType = 'pdf';
-      renderPdfDocument(arrayBuffer);
+      renderPdfDocument(arrayBuffer, fromRemote);
     } else {
       state.fileType = 'text';
       var text = '';
@@ -699,6 +955,10 @@
           }
         });
       }
+
+      if (!fromRemote && state.sessionId && state.syncDocEnabled && (state.isHost || state.peerUploadsAllowed)) {
+        uploadDocToRelay(filename, arrayBuffer);
+      }
     }
   }
 
@@ -714,7 +974,7 @@
     return clean.replace(/\n{3,}/g, '\n\n').trim();
   }
 
-  function renderPdfDocument(arrayBuffer) {
+  function renderPdfDocument(arrayBuffer, fromRemote) {
     if (!window.pdfjsLib) {
       el.textViewport.innerText = 'PDF.js library is loading or not available. Please install pdf.min.js locally or connect to Wi-Fi.';
       el.textViewport.style.display = 'block';
@@ -739,6 +999,10 @@
             fileType: 'pdf'
           }
         });
+      }
+
+      if (!fromRemote && state.sessionId && state.syncDocEnabled && (state.isHost || state.peerUploadsAllowed)) {
+        uploadDocToRelay(state.currentFilename, arrayBuffer);
       }
     }).catch(function (err) {
       el.textViewport.innerText = 'Failed to load PDF: ' + err.message;
@@ -788,10 +1052,12 @@
     state.currentPage = next;
     renderCurrentPage();
 
-    if (state.isHost) {
-      broadcast({ type: 'PAGE_CHANGE', page: state.currentPage });
-    } else {
-      reportPageToHost();
+    if (state.syncPageEnabled) {
+      if (state.isHost) {
+        broadcast({ type: 'PAGE_CHANGE', page: state.currentPage });
+      } else {
+        reportPageToHost();
+      }
     }
   }
 
@@ -979,7 +1245,7 @@
     fetch(CONFIG.daemonApi + '/api/open-doc?path=' + encodeURIComponent(fullPath))
       .then(function (res) { return res.arrayBuffer(); })
       .then(function (buf) {
-        loadDocumentFromBytes(buf, filename);
+        loadDocumentFromBytes(buf, filename, false);
         updateSyncStatus('Loaded', 'success');
       }).catch(function (err) {
         updateSyncStatus('Failed to load: ' + err.message, 'error');
@@ -990,6 +1256,8 @@
   function updateHeaderUI() {
     if (el.docTitle) el.docTitle.innerText = state.currentFilename || 'Coop Reader';
     if (el.pageIndicator) el.pageIndicator.innerText = state.currentPage + ' / ' + state.totalPages;
+    if (el.btnCloseDoc) el.btnCloseDoc.style.display = state.currentFilename ? 'inline-flex' : 'none';
+    updateSyncControlsUI();
 
     var activeBox = document.getElementById('session-active-box');
     var activeInfo = document.getElementById('session-active-info');
@@ -1011,6 +1279,9 @@
       el.syncStatus.innerHTML = '<span class="kindle-badge inverted">HOST</span>' +
         (state.pin ? ' PIN: ' + escapeHtml(state.pin) : ' · ' + (state.relayConnected ? 'Relay connected' : 'Relay offline'));
       el.btnSync.style.display = 'none';
+    } else if (!state.syncPageEnabled) {
+      el.syncStatus.innerHTML = '<span class="kindle-badge inverted">PAGE SYNC OFF</span>';
+      el.btnSync.style.display = 'inline-flex';
     } else if (state.detached) {
       el.syncStatus.innerHTML = '<span class="kindle-badge inverted">DETACHED</span> Host: p.' + state.syncedPage;
       el.btnSync.style.display = 'inline-flex';
@@ -1178,6 +1449,7 @@
       profiles = {};
       document.getElementById('session-active-box').style.display = 'block';
       initRelayConnection(state.sessionId, state.myPeerId, false);
+      recordLocalSession(state.sessionId);
       updateHeaderUI();
       updatePeersListUI();
     }
@@ -1200,6 +1472,7 @@
       profiles = {};
 
       initRelayConnection(state.sessionId, state.myPeerId, true);
+      recordLocalSession(state.sessionId);
       document.getElementById('session-display-code').innerText = state.sessionId + '.' + relayKeyB64;
       document.getElementById('session-info-box').style.display = 'block';
       document.getElementById('session-pin-box').style.display = 'block';
@@ -1207,8 +1480,6 @@
       document.getElementById('session-create-box').style.display = 'none';
       document.getElementById('session-join-box').style.display = 'none';
       document.getElementById('session-active-box').style.display = 'block';
-      updateHeaderUI();
-
       updateHeaderUI();
     });
 
@@ -1227,6 +1498,7 @@
           oldSocket.onerror = null;
           try { oldSocket.close(); } catch (_) {}
         }
+        clearLocalSession();
         state.sessionId = '';
         state.isHost = false;
         state.myPeerId = '';
@@ -1300,10 +1572,58 @@
       if (!file) return;
       var reader = new FileReader();
       reader.onload = function (ev) {
-        loadDocumentFromBytes(ev.target.result, file.name);
+        loadDocumentFromBytes(ev.target.result, file.name, false);
         closeModals();
       };
       reader.readAsArrayBuffer(file);
+    });
+
+    // Sync Toggles in Sub-bar and Modal
+    if (el.btnToggleDocSync) {
+      el.btnToggleDocSync.addEventListener('click', function () {
+        setDocSync(!state.syncDocEnabled);
+      });
+    }
+    if (el.btnTogglePageSync) {
+      el.btnTogglePageSync.addEventListener('click', function () {
+        setPageSync(!state.syncPageEnabled);
+      });
+    }
+    if (el.chkSyncDoc) {
+      el.chkSyncDoc.addEventListener('change', function () {
+        setDocSync(el.chkSyncDoc.checked);
+      });
+    }
+    if (el.chkSyncPage) {
+      el.chkSyncPage.addEventListener('change', function () {
+        setPageSync(el.chkSyncPage.checked);
+      });
+    }
+    if (el.chkSyncBg) {
+      el.chkSyncBg.addEventListener('change', function () {
+        setBackgroundSync(el.chkSyncBg.checked);
+      });
+    }
+    if (el.btnCloseDoc) {
+      el.btnCloseDoc.addEventListener('click', function () {
+        closeCurrentDocument();
+        closeModals();
+      });
+    }
+
+    // Page Visibility & Background Hooks
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) onBackground();
+      else onForeground();
+    });
+    window.addEventListener('blur', function () {
+      state.isBackground = true;
+    });
+    window.addEventListener('focus', function () {
+      onForeground();
+    });
+    window.addEventListener('pageshow', function () {
+      onForeground();
     });
 
     // Chat
@@ -1337,19 +1657,11 @@
     document.body.classList.add('font-scale-' + state.fontScale);
 
     bindEvents();
+    updateSyncControlsUI();
     pollKindleStatus();
     setInterval(pollKindleStatus, 30000);
 
     // Initial placeholder document
-    var welcomeDoc = 'Welcome to Coop Reader for Kindle!\n\n' +
-      'Read documents and books together in real-time.\n\n' +
-      'How to use:\n' +
-      '1. Tap [Session] at the top right to Host or Join a reading room.\n' +
-      '2. Tap [Docs] to browse books from /mnt/us/documents or receive a book from the host.\n' +
-      '3. Page turns sync across everyone in the session.\n' +
-      '4. Tap left/right screen edges or use Kindle physical buttons to turn pages.\n' +
-      '5. Tap [Refresh] anytime to clear e-ink ghosting.\n\n' +
-      'Supported formats: PDF, EPUB, MOBI, AZW3, TXT, DOCX, XLSX.';
     docPages = paginateText(welcomeDoc);
     state.totalPages = docPages.length;
     renderCurrentPage();

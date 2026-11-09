@@ -12,6 +12,14 @@ if [ ! -f "$EXT_DIR/bin/launch.sh" ]; then
     fi
 fi
 
+if [ "${1:-}" = "-b" ] || [ "${1:-}" = "--background" ] || [ "${1:-}" = "--bg" ]; then
+    if [ -f "$EXT_DIR/bin/bg_daemon.sh" ]; then
+        exec sh "$EXT_DIR/bin/bg_daemon.sh"
+    elif [ -f "$APP_DIR/kual/bin/bg_daemon.sh" ]; then
+        exec sh "$APP_DIR/kual/bin/bg_daemon.sh"
+    fi
+fi
+
 if [ -f "$EXT_DIR/bin/launch.sh" ]; then
     exec sh "$EXT_DIR/bin/launch.sh" "$@"
 elif [ -f "$APP_DIR/kual/bin/launch.sh" ]; then
