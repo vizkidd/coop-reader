@@ -54,6 +54,13 @@ local CoopReader = WidgetContainer:extend{
     sync_success_count = 0,
     sync_fail_count = 0,
     first_sync_shown = false,
+    current_doc_name = nil,
+    current_doc_path = nil,
+    last_synced_doc = nil,
+    last_downloaded_doc = nil,
+    sync_doc_open = true,
+    is_suspended = false,
+    download_in_progress = false,
 }
 
 -- ==================== INITIALIZATION & MENU ====================
@@ -129,9 +136,143 @@ function CoopReader:getWifiIp()
     return "Wi-Fi (Active)"
 end
 
+-- ==================== DOCUMENT SYNCHRONIZATION ====================
+
+function CoopReader:getCurrentDocumentPath()
+    local path = nil
+    pcall(function()
+        if self.ui and self.ui.document and self.ui.document.file then
+            path = self.ui.document.file
+        elseif self.view and self.view.document and self.view.document.file then
+            path = self.view.document.file
+        end
+    end)
+    return path
+end
+
+function CoopReader:uploadDocumentToRelay(filepath, filename)
+    if not self.session_id or not filepath or not filename then return end
+    self.last_synced_doc = filename
+    self:logDebug("Syncing document to room: " .. filename, true)
+
+    local url = self.relay_base_url .. "/room/" .. self.session_id .. "/doc?filename=" .. filename
+    local escaped_url = string.format("%q", url)
+    local escaped_path = string.format("%q", filepath)
+    local cmd = string.format("curl -s -m 90 --max-time 90 -X POST -H 'Content-Type: application/octet-stream' --data-binary @%s %s 2>/dev/null &", escaped_path, escaped_url)
+    os.execute(cmd)
+    self:logDebug("Document upload initiated in background: " .. filename)
+end
+
+function CoopReader:findLocalDocument(filename)
+    if not filename then return nil end
+    local candidates = {
+        "/mnt/us/documents/" .. filename,
+        "/mnt/us/documents/coop-reader/" .. filename,
+        "/mnt/us/documents/Downloads/" .. filename,
+    }
+    for _, path in ipairs(candidates) do
+        local f = io.open(path, "rb")
+        if f then
+            f:close()
+            return path
+        end
+    end
+    local search_cmd = string.format("find /mnt/us/documents -name %q 2>/dev/null | head -n 1", filename)
+    local h = io.popen(search_cmd)
+    if h then
+        local found = h:read("*l")
+        h:close()
+        if found and #found > 0 then
+            return found
+        end
+    end
+    return nil
+end
+
+function CoopReader:onRemoteDocOpen(filename)
+    if not filename or filename == self.current_doc_name or self.download_in_progress then return end
+    self.last_downloaded_doc = filename
+    self:logDebug("Host opened shared book: " .. filename, true)
+
+    local local_path = self:findLocalDocument(filename)
+    if local_path then
+        self:logDebug("Opening local copy: " .. local_path)
+        self:openDocumentInKOReader(local_path)
+    else
+        self:downloadAndOpenDocument(filename)
+    end
+end
+
+function CoopReader:downloadAndOpenDocument(filename)
+    if self.download_in_progress or not self.session_id then return end
+    self.download_in_progress = true
+    local target_dir = "/mnt/us/documents/coop-reader"
+    os.execute("mkdir -p " .. target_dir)
+    local target_path = target_dir .. "/" .. filename
+    local url = self.relay_base_url .. "/room/" .. self.session_id .. "/doc"
+    self:logDebug("Downloading " .. filename .. " from relay...", true)
+
+    local escaped_url = string.format("%q", url)
+    local escaped_path = string.format("%q", target_path)
+    local cmd = string.format("curl -s -m 90 --max-time 90 -o %s %s 2>/dev/null", escaped_path, escaped_url)
+    os.execute(cmd)
+    self.download_in_progress = false
+
+    local f = io.open(target_path, "rb")
+    if f then
+        local size = f:seek("end")
+        f:close()
+        if size and size > 0 then
+            self:logDebug(string.format("Downloaded %s (%d bytes)", filename, size), true)
+            self:openDocumentInKOReader(target_path)
+            return
+        end
+    end
+    self:logDebug("Failed to download document: " .. filename, true)
+end
+
+function CoopReader:openDocumentInKOReader(filepath)
+    if not filepath then return end
+    self.current_doc_path = filepath
+    self.current_doc_name = filepath:match("([^/]+)$")
+    self:logDebug("Opening in KOReader: " .. filepath, true)
+
+    local opened = false
+    pcall(function()
+        local ReaderUI = require("apps/reader/readerui")
+        if ReaderUI and ReaderUI.showReader then
+            ReaderUI:showReader(filepath)
+            opened = true
+        end
+    end)
+    if not opened then
+        pcall(function()
+            Dispatcher:execute("open_document", filepath)
+            opened = true
+        end)
+    end
+    if not opened then
+        pcall(function()
+            self.ui:handleEvent(Event:new("OpenDocument", filepath))
+        end)
+    end
+end
+
 function CoopReader:onReaderReady()
     self:logDebug("Reader is ready with active document")
-    if self.is_connected then
+    local doc_path = self:getCurrentDocumentPath()
+    if doc_path then
+        self.current_doc_path = doc_path
+        local filename = doc_path:match("([^/]+)$")
+        if filename then
+            self.current_doc_name = filename
+            self:logDebug("Active document: " .. filename)
+            if self.is_connected and (self.is_host or self.sync_doc_open) and filename ~= self.last_synced_doc then
+                self:uploadDocumentToRelay(doc_path, filename)
+            end
+        end
+    end
+    if self.is_connected and self.is_syncing then
         local p = self:getCurrentPage()
         self:logDebug("Publishing initial page/status: " .. tostring(p))
         self:sendPageUpdate(p)
@@ -177,6 +318,17 @@ function CoopReader:addToMainMenu(menu_items)
                             self:sendPageUpdate(self:getCurrentPage())
                         end
                     end
+                end,
+            },
+            {
+                text = "Sync Document Opening",
+                checked_func = function()
+                    return self.sync_doc_open
+                end,
+                callback = function()
+                    self.sync_doc_open = not self.sync_doc_open
+                    local msg = self.sync_doc_open and "Coop Reader: Document Sync Active (Follows Host Books)" or "Coop Reader: Document Sync Off (Manual Book Selection)"
+                    self:logDebug(msg, true)
                 end,
             },
             {
@@ -335,6 +487,8 @@ function CoopReader:showSessionStatus()
         table.insert(lines, "Kindle PIN:  unavailable (share full room code)")
     end
     table.insert(lines, "Connected:   " .. (self.is_connected and "YES" or "NO"))
+    table.insert(lines, "Document:    " .. tostring(self.current_doc_name or "(none)"))
+    table.insert(lines, "Doc Sync:    " .. (self.sync_doc_open and "ACTIVE" or "OFF"))
     table.insert(lines, "Page Sync:   " .. (self.is_syncing and "ACTIVE" or "DETACHED"))
     table.insert(lines, "")
 
@@ -742,6 +896,10 @@ function CoopReader:handleRelayMessage(frame)
         self:sendRelayMessage(from, { type = "PONG", t = payload.t or os.time() })
     elseif kind == "PONG" then
         self.last_poll_status = "OK"
+    elseif kind == "DOC_OPEN" then
+        if self.sync_doc_open and payload.filename and payload.filename ~= self.current_doc_name then
+            self:onRemoteDocOpen(payload.filename)
+        end
     elseif kind == "AUTH_REQUIRED" then
         -- KOReader's Lua runtime currently has no compatible WebCrypto AES/SHA
         -- implementation. Fail closed instead of leaving a false-connected peer.
@@ -803,10 +961,22 @@ function CoopReader:startSession(room_id, role, key)
     if self.is_host then
         self:sendRelayMessage("*", { type = "PROFILE", peerId = self.peer_id, name = "Kindle KOReader" })
         self:sendPageUpdate(self:getCurrentPage())
+        local active_doc = self:getCurrentDocumentPath()
+        if active_doc then
+            local filename = active_doc:match("([^/]+)$")
+            if filename then
+                self.current_doc_name = filename
+                self.current_doc_path = active_doc
+                self:uploadDocumentToRelay(active_doc, filename)
+            end
+        end
     else
         self:sendRelayMessage(self.session_id, { type = "RELAY_HELLO", peerId = self.peer_id, name = "Kindle KOReader", transport = "http" })
         self:sendRelayMessage(self.session_id, { type = "REQ_SYNC" })
         self:sendRelayMessage(self.session_id, { type = "PROFILE", peerId = self.peer_id, name = "Kindle KOReader" })
+        if room_data.doc and room_data.doc.filename and self.sync_doc_open then
+            self:onRemoteDocOpen(room_data.doc.filename)
+        end
     end
 
     self:startPolling()
@@ -859,6 +1029,9 @@ function CoopReader:disconnect()
     self.http_client_count = 0
     self.last_poll_status = "disconnected"
     self.first_sync_shown = false
+    self.last_synced_doc = nil
+    self.last_downloaded_doc = nil
+    self.download_in_progress = false
     self:logDebug("Disconnected from Coop Reader session", true)
 end
 
@@ -917,10 +1090,10 @@ function CoopReader:startPolling()
 end
 
 function CoopReader:schedulePoll()
-    if not self.poll_active or not self.session_id then return end
+    if not self.poll_active or not self.session_id or self.is_suspended then return end
     local generation = self.session_generation
     UIManager:scheduleIn(2, function()
-        if not self.poll_active or not self.session_id or generation ~= self.session_generation then return end
+        if not self.poll_active or not self.session_id or self.is_suspended or generation ~= self.session_generation then return end
         self:pollRemoteState()
         self:schedulePoll()
     end)
@@ -928,7 +1101,7 @@ end
 
 function CoopReader:pollRemoteState()
     -- Poll and heartbeat even while detached so the room membership does not expire.
-    if not self.is_connected or not self.session_id or not self.http_token then return end
+    if not self.is_connected or not self.session_id or not self.http_token or self.is_suspended then return end
     local url = self:roomUrl("/http/poll?id=" .. self.peer_id)
     local res, status, err = self:httpRequest(url, "GET", nil, 3, self:authHeaders())
     if status == 401 then
@@ -960,6 +1133,14 @@ function CoopReader:pollRemoteState()
     self.http_client_count = tonumber(data.httpClients) or 0
     self.http_client_count = math.max(0, self.http_client_count - 1) -- exclude this HTTP peer
 
+    -- Check if host opened a new document
+    if data.doc and type(data.doc) == "table" and data.doc.filename and self.sync_doc_open then
+        local remote_doc = data.doc.filename
+        if remote_doc ~= self.current_doc_name and remote_doc ~= self.last_downloaded_doc and not self.download_in_progress then
+            self:onRemoteDocOpen(remote_doc)
+        end
+    end
+
     local messages = data.messages or {}
     for _, frame in ipairs(messages) do self:handleRelayMessage(frame) end
 
@@ -972,8 +1153,29 @@ function CoopReader:pollRemoteState()
 end
 
 function CoopReader:onCloseDocument()
+    self.current_doc_path = nil
+    self.current_doc_name = nil
     if self.is_connected then
-        self:logDebug("Document closed, maintaining session state")
+        self:logDebug("Document closed; maintaining background sync session", true)
+        if not self.poll_active then
+            self:startPolling()
+        end
+    end
+end
+
+function CoopReader:onSuspend()
+    self.is_suspended = true
+    self:logDebug("Device suspended; pausing sync polling to conserve battery")
+end
+
+function CoopReader:onResume()
+    self.is_suspended = false
+    self:logDebug("Device resumed; resuming sync")
+    if self.is_connected then
+        self:ensureNetwork(function()
+            self:pollRemoteState()
+            self:schedulePoll()
+        end)
     end
 end
 

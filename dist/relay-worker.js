@@ -40,6 +40,48 @@ function validId(value) {
   return typeof value === 'string' && /^[\w-]{1,64}$/.test(value);
 }
 
+const DOC_CHUNK_SIZE = 65536;
+
+async function storeDocInStorage(storage, meta, arrayBuffer) {
+  const totalChunks = Math.ceil(arrayBuffer.byteLength / DOC_CHUNK_SIZE);
+  const u8 = new Uint8Array(arrayBuffer);
+  const oldMeta = await storage.get('doc:meta');
+  if (oldMeta && oldMeta.totalChunks) {
+    for (let i = 0; i < oldMeta.totalChunks; i++) {
+      try { await storage.delete(`doc:chunk:${i}`); } catch (_) {}
+    }
+  }
+  for (let i = 0; i < totalChunks; i++) {
+    const chunk = u8.slice(i * DOC_CHUNK_SIZE, (i + 1) * DOC_CHUNK_SIZE);
+    await storage.put(`doc:chunk:${i}`, chunk.buffer);
+  }
+  const fullMeta = { ...meta, totalChunks };
+  await storage.put('doc:meta', fullMeta);
+  return fullMeta;
+}
+
+async function loadDocFromStorage(storage, meta) {
+  if (!meta || !meta.totalChunks) {
+    return await storage.get('doc:bytes');
+  }
+  const chunks = [];
+  let totalLength = 0;
+  for (let i = 0; i < meta.totalChunks; i++) {
+    const chunk = await storage.get(`doc:chunk:${i}`);
+    if (!chunk) return null;
+    const u8 = new Uint8Array(chunk);
+    chunks.push(u8);
+    totalLength += u8.byteLength;
+  }
+  const merged = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.byteLength;
+  }
+  return merged.buffer;
+}
+
 export class Room {
   constructor(state, env) {
     this.state = state;
@@ -49,9 +91,15 @@ export class Room {
     this.httpPeers = new Map();     // id -> { token, role, name, lastSeen, queue }
     this.hostId = null;
     this.latestState = { page: 1, updated: Date.now() };
-    this.ready = this.storage.get('latestState').then(saved => {
-      if (saved && typeof saved === 'object') this.latestState = saved;
-    }).catch(() => {});
+    this.latestDoc = null;
+    this.ready = Promise.all([
+      this.storage.get('latestState').then(saved => {
+        if (saved && typeof saved === 'object') this.latestState = saved;
+      }).catch(() => {}),
+      this.storage.get('doc:meta').then(savedDoc => {
+        if (savedDoc && typeof savedDoc === 'object') this.latestDoc = savedDoc;
+      }).catch(() => {})
+    ]);
   }
 
   async persistLatestState() {
@@ -68,6 +116,7 @@ export class Room {
       room: roomId,
       page: this.latestState.page || 1,
       updated: this.latestState.updated || Date.now(),
+      doc: this.latestDoc || null,
       hostId: this.hostId,
       hostOnline: !!(this.hostId && (this.clients.has(this.hostId) || this.httpPeers.has(this.hostId))),
       ...this.getPeerCounts(),
@@ -344,6 +393,77 @@ export class Room {
       } catch (e) {
         return jsonResponse({ ok: false, error: String(e.message || e) }, 400);
       }
+    }
+
+    // Document upload endpoint (from host or peer sharing)
+    if (tail === '/doc' && req.method === 'POST') {
+      try {
+        const rawFilename = url.searchParams.get('filename') || req.headers.get('X-Filename') || 'document';
+        const filename = decodeURIComponent(rawFilename).replace(/[^\w.\- ]/g, '_').slice(0, 128);
+        const contentType = req.headers.get('Content-Type') || 'application/octet-stream';
+        const bytes = await req.arrayBuffer();
+        if (!bytes || bytes.byteLength === 0) {
+          return jsonResponse({ ok: false, error: 'empty document body' }, 400);
+        }
+        if (bytes.byteLength > 30 * 1024 * 1024) {
+          return jsonResponse({ ok: false, error: 'document too large (max 30MB)' }, 413);
+        }
+        const docMeta = {
+          filename,
+          size: bytes.byteLength,
+          mime: contentType,
+          updated: Date.now(),
+        };
+        const savedMeta = await storeDocInStorage(this.storage, docMeta, bytes);
+        this.latestDoc = savedMeta;
+
+        // Broadcast DOC_OPEN to all active WebSocket clients and HTTP mailbox queues
+        const docMsg = {
+          type: 'DOC_OPEN',
+          filename: savedMeta.filename,
+          size: savedMeta.size,
+          updated: savedMeta.updated,
+          url: `/room/${encodeURIComponent(this.roomId)}/doc`,
+        };
+        this.sendFrame(this.hostId || 'host', '*', docMsg);
+
+        return jsonResponse({ ok: true, doc: savedMeta });
+      } catch (e) {
+        return jsonResponse({ ok: false, error: String(e.message || e) }, 500);
+      }
+    }
+
+    // Document download endpoint
+    if (tail === '/doc' && req.method === 'GET') {
+      try {
+        const meta = this.latestDoc || (await this.storage.get('doc:meta'));
+        if (!meta) {
+          return jsonResponse({ ok: false, error: 'no document uploaded for this room' }, 404);
+        }
+        const bytes = await loadDocFromStorage(this.storage, meta);
+        if (!bytes) {
+          return jsonResponse({ ok: false, error: 'document content missing or expired' }, 404);
+        }
+        return new Response(bytes, {
+          status: 200,
+          headers: {
+            'Content-Type': meta.mime || 'application/octet-stream',
+            'Content-Disposition': `attachment; filename="${encodeURIComponent(meta.filename)}"`,
+            'Content-Length': String(bytes.byteLength || meta.size),
+            'X-Filename': encodeURIComponent(meta.filename),
+            ...CORS_HEADERS,
+          },
+        });
+      } catch (e) {
+        return jsonResponse({ ok: false, error: String(e.message || e) }, 500);
+      }
+    }
+
+    // Document metadata query
+    if (tail === '/doc/meta' && req.method === 'GET') {
+      const meta = this.latestDoc || (await this.storage.get('doc:meta'));
+      if (!meta) return jsonResponse({ ok: true, hasDoc: false });
+      return jsonResponse({ ok: true, hasDoc: true, doc: meta });
     }
 
     // WebSocket transport for WASM and GUI clients.

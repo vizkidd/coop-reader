@@ -1424,6 +1424,9 @@ function startHttpSyncPolling(hostId) {
           if (relayHostOnline && wasOnline === false) setStatus('Connected to host', 'success', 2500);
           if (!relayHostOnline && wasOnline !== false) setStatus('Relay connected; waiting for the host to come online…', 'warning', 5000);
           if (wasOnline !== relayHostOnline) updatePeerListUI();
+          if (st.doc && st.doc.filename && st.doc.filename !== cachedFilename) {
+            loadDocFromRelay(hostId, st.doc.filename);
+          }
           if (relayHostOnline && st.page != null) {
             const pg = parseInt(st.page, 10);
             if (pg && pg >= 1 && pg !== syncedPage) {
@@ -1972,6 +1975,12 @@ async function handleNetworkMessage(conn, data) {
   if (!data || typeof data !== 'object') return;
   conn._lastPong = Date.now();   // any traffic proves liveness
 
+  if (data.type === 'DOC_OPEN' && data.filename) {
+    const roomId = isHost ? myPeerId : lastJoinCode;
+    loadDocFromRelay(roomId, data.filename);
+    return;
+  }
+
   if (data.type === 'AUTH_REQUIRED') {
     let hash = pendingAuthHash;
     if (!hash) {
@@ -2272,8 +2281,48 @@ async function sendFileToConn(conn, filename, arrayBuffer, opts) {
     updateDiagnosticsUI(); refreshPeers();
   }
 }
+function uploadDocToRelay(filename, arrayBuffer) {
+  const roomId = isHost ? myPeerId : lastJoinCode;
+  if (!roomId || !arrayBuffer) return;
+  const relayHttp = (getNet().relay || DEFAULT_RELAY).replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+  fetch(`${relayHttp}/room/${encodeURIComponent(roomId)}/doc?filename=${encodeURIComponent(filename)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: arrayBuffer.slice(0)
+  }).then(r => r.json()).then(data => {
+    if (data && data.ok) {
+      netLog(`Uploaded document ${filename} to relay room ${roomId}`);
+    }
+  }).catch(err => {
+    console.warn('Relay doc upload error:', err);
+  });
+}
+
+let isDownloadingDoc = false;
+async function loadDocFromRelay(roomId, filename) {
+  if (!roomId || !filename || filename === cachedFilename || isDownloadingDoc) return;
+  isDownloadingDoc = true;
+  const relayHttp = (getNet().relay || DEFAULT_RELAY).replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+  try {
+    notify(`Downloading shared document: ${filename}…`, 'info', 4000);
+    const res = await fetch(`${relayHttp}/room/${encodeURIComponent(roomId)}/doc`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buf = await res.arrayBuffer();
+    if (buf && buf.byteLength > 0) {
+      await processAndRenderFileLocally(buf, filename, false);
+      notify(`Opened shared document: ${filename}`, 'success', 3000);
+    }
+  } catch (err) {
+    console.warn('Failed to download document from relay:', err);
+    notify(`Could not download ${filename} from host.`, 'warning', 4000);
+  } finally {
+    isDownloadingDoc = false;
+  }
+}
+
 function broadcastFile(filename, arrayBuffer) {
   for (const conn of connections) if (conn.open && conn._authenticated !== false) sendFileToConn(conn, filename, arrayBuffer.slice(0));
+  uploadDocToRelay(filename, arrayBuffer);
 }
 
 // ==================== FILE PROCESSING ====================
@@ -3135,10 +3184,16 @@ function startRelayJoin(direct) {
     }
     if (m.left && m.from === hostId) { try { ws.close(); } catch (_) {} return; }
     if (!m.p) return;
+    if (m.p.type === 'DOC_OPEN' && m.p.filename) {
+      loadDocFromRelay(hostId, m.p.filename);
+    }
     ws._rq = (ws._rq || Promise.resolve()).then(async () => {
       let p; try { p = await openMsg(m.p, peerRelayKey, hostId); } catch (_) { return; }
       if (!p) return;
       if (p.type === 'RELAY_CLOSE') { try { ws.close(); } catch (_) {} return; }
+      if (p.type === 'DOC_OPEN' && p.filename) {
+        loadDocFromRelay(hostId, p.filename);
+      }
       if (p.type === 'PAGE_CHANGE') {
         const pg = parseInt(p.page, 10);
         if (pg && pg >= 1) {
@@ -3167,6 +3222,9 @@ function openHostRelay() {
 function hostRelayMsg(m) {
   if (!isHost || !m.from) return;
   if (m.left || !m.p) return hostRelayPlain({ from: m.from, left: !!m.left, transport: m.transport || 'websocket' });
+  if (m.p && m.p.type === 'DOC_OPEN' && m.p.filename) {
+    loadDocFromRelay(myPeerId, m.p.filename);
+  }
   const q = hostWs; if (!q) return;
   q._rq = (q._rq || Promise.resolve()).then(async () => {
     let p;

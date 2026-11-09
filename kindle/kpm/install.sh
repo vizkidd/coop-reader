@@ -120,19 +120,25 @@ XMLEOF
 {
   "items": [
     {
-      "name": "Launch Coop Reader",
+      "name": "Coop Reader",
       "priority": 1,
-      "action": "bin/launch.sh"
-    },
-    {
-      "name": "Quick Clear Ghosting (EIPS)",
-      "priority": 2,
-      "action": "bin/refresh.sh"
-    },
-    {
-      "name": "Stop Coop Reader & Sleep Normal",
-      "priority": 3,
-      "action": "bin/stop.sh"
+      "items": [
+        {
+          "name": "Launch Coop Reader",
+          "priority": 1,
+          "action": "bin/launch.sh"
+        },
+        {
+          "name": "Quick Clear Ghosting (EIPS)",
+          "priority": 2,
+          "action": "bin/refresh.sh"
+        },
+        {
+          "name": "Stop Coop Reader & Sleep Normal",
+          "priority": 3,
+          "action": "bin/stop.sh"
+        }
+      ]
     }
   ]
 }
@@ -144,12 +150,18 @@ JSONEOF
 BASE_DIR="/mnt/us/extensions/coop-reader"
 PID_FILE="/tmp/coop_reader.pid"
 PORT=8765
-TARGET_URL="http://127.0.0.1:${PORT}/index.html"
-FALLBACK_FILE_URL="file://${BASE_DIR}/app/index.html"
+HTTP_URL="http://127.0.0.1:${PORT}/index.html"
+FALLBACK_URL="file://${BASE_DIR}/app/index.html"
 
 if which lipc-set-prop >/dev/null 2>&1; then
     lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null || true
 fi
+
+http_ready() {
+    if which curl >/dev/null 2>&1 && curl -fsS --max-time 1 "$HTTP_URL" >/dev/null 2>&1; then return 0; fi
+    if which wget >/dev/null 2>&1 && wget -q -T 1 -O /dev/null "$HTTP_URL" 2>/dev/null; then return 0; fi
+    return 1
+}
 
 DAEMON_RUNNING=0
 if [ -f "$PID_FILE" ]; then
@@ -167,17 +179,20 @@ if [ "$DAEMON_RUNNING" -eq 0 ]; then
         $PY_BIN "$BASE_DIR/bin/coop_daemon.py" --port "$PORT" --root "$BASE_DIR/app" >/tmp/coop_daemon.log 2>&1 &
         echo $! > "$PID_FILE"
         sleep 1
+    elif which busybox >/dev/null 2>&1 && busybox --list 2>/dev/null | grep -q '^httpd$'; then
+        busybox httpd -p "$PORT" -h "$BASE_DIR/app" >/tmp/coop_daemon.log 2>&1 &
+        echo $! > "$PID_FILE"
+        sleep 1
+    elif which httpd >/dev/null 2>&1; then
+        httpd -p "$PORT" -h "$BASE_DIR/app" >/tmp/coop_daemon.log 2>&1 &
+        echo $! > "$PID_FILE"
+        sleep 1
     fi
 fi
 
-LAUNCH_URL="$TARGET_URL"
-HTTP_READY=0
-if which curl >/dev/null 2>&1 && curl -fsS --max-time 2 "$TARGET_URL" >/dev/null 2>&1; then HTTP_READY=1; fi
-if [ "$HTTP_READY" -eq 0 ] && which wget >/dev/null 2>&1 && wget -q -T 2 -O /dev/null "$TARGET_URL" 2>/dev/null; then HTTP_READY=1; fi
-if [ "$HTTP_READY" -eq 0 ]; then
-    echo "Coop Reader daemon is not responding on 127.0.0.1:$PORT" >> /tmp/coop_daemon.log
-    if which eips >/dev/null 2>&1; then eips 0 0 "Coop Reader daemon failed" 2>/dev/null || true; fi
-    exit 1
+LAUNCH_URL="$FALLBACK_URL"
+if http_ready; then
+    LAUNCH_URL="$HTTP_URL"
 fi
 
 if which lipc-set-prop >/dev/null 2>&1; then
