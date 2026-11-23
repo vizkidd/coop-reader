@@ -5,24 +5,71 @@
       "priority": 1,
       "items": [
         {
-          "name": "Launch Coop Reader",
+          "name": "Coop Reader home screen",
           "priority": 1,
-          "action": "bin/launch.sh"
+          "action": "bin/koreader.sh",
+          "params": "panel",
+          "exitmode": "hide"
         },
         {
-          "name": "Start Background Sync Daemon",
+          "name": "Host a session",
           "priority": 2,
-          "action": "bin/bg_daemon.sh"
+          "action": "bin/koreader.sh",
+          "params": "host",
+          "exitmode": "hide"
         },
         {
-          "name": "Quick Clear Ghosting (EIPS)",
+          "name": "Join a session (enter the PIN)",
           "priority": 3,
+          "action": "bin/koreader.sh",
+          "params": "join",
+          "exitmode": "hide"
+        },
+        {
+          "name": "Settings",
+          "priority": 4,
+          "action": "bin/koreader.sh",
+          "params": "settings",
+          "exitmode": "hide"
+        },
+        {
+          "name": "Test the connection",
+          "priority": 5,
+          "action": "bin/koreader.sh",
+          "params": "test",
+          "exitmode": "hide"
+        },
+        {
+          "name": "Open KOReader (normal)",
+          "priority": 6,
+          "action": "bin/koreader.sh",
+          "exitmode": "hide"
+        },
+        {
+          "name": "Status and diagnostics",
+          "priority": 7,
+          "action": "bin/status.sh"
+        },
+        {
+          "name": "Install / update the KOReader plugin",
+          "priority": 8,
+          "action": "bin/install-plugin.sh"
+        },
+        {
+          "name": "Open the browser app (experimental)",
+          "priority": 9,
+          "action": "bin/launch-gui.sh",
+          "exitmode": "hide"
+        },
+        {
+          "name": "Clear screen ghosting",
+          "priority": 10,
           "action": "bin/refresh.sh"
         },
         {
-          "name": "Stop Coop Reader & Background Daemon",
-          "priority": 4,
-          "action": "bin/stop.sh"
+          "name": "Remove the KOReader plugin",
+          "priority": 11,
+          "action": "bin/uninstall-plugin.sh"
         }
       ]
     }

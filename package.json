@@ -1,16 +1,33 @@
 {
   "name": "coop-reader",
-  "version": "1.0.0",
+  "version": "2.1.1",
   "description": "WASM Collaborative Document Reader",
   "scripts": {
     "dev": "npx http-server ./src -p 3000 -c-1",
-    "build": "mkdir -p dist && cp -r src/* dist/ && bash ./kindle/build-kpm.sh",
-    "build:kindle": "bash ./kindle/build-kpm.sh",
+    "build": "mkdir -p dist && cp -r src/* dist/ && sh ./kindle/build-kindle.sh",
+    "build:kindle": "sh ./kindle/build-kindle.sh",
     "deploy:relay": "wrangler deploy",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "test:lua": "python3 tests/lua/run_core_tests.py && python3 tests/lua/run_plugin_tests.py",
+    "test:e2e": "node tests/e2e/docsync.e2e.mjs",
+    "test:all": "npm test && npm run test:lua && npm run test:browser && npm run test:browser:relay",
+    "test:browser": "for t in smoke session features security trust extras pwa; do node tests/browser/$t.browser.mjs || exit 1; done",
+    "test:browser:relay": "node tests/browser/relay.browser.mjs",
+    "test:relay-ws": "node tests/e2e/relay-ws.e2e.mjs"
   },
   "devDependencies": {
-    "http-server": "^14.1.1"
+    "http-server": "^14.1.1",
+    "puppeteer-core": "^23.0.0",
+    "@sparticuz/chromium": "^131.0.0",
+    "peer": "^1.0.2",
+    "peerjs": "1.5.2",
+    "pdfjs-dist": "3.11.174",
+    "pdf-lib": "1.17.1",
+    "docx-preview": "0.3.2",
+    "wrangler": "^4.0.0",
+    "ws": "^8.18.0",
+    "qrcode-generator": "1.4.4",
+    "jsqr": "1.4.0"
   },
   "type": "module"
 }

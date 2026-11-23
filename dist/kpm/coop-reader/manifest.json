@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "id": "coop-reader",
+  "name": "Coop Reader",
+  "author": "coop-reader",
+  "description": "Read together: shared pages, chat and book transfer between Kindles, KOReader and the web app. Opens a touch GUI (home screen, join with PIN, settings) inside KOReader.",
+  "version": [2,1,0],
+  "dependencies": [],
+  "supported_platforms": ["kindlehf", "kindlepw2", "kindlepw2hf", "kindlepw3", "kindle5"]
+}

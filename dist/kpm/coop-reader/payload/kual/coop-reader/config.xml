@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<extension>
+  <information>
+    <name>Coop Reader</name>
+    <version>2.1.0</version>
+    <author>coop-reader</author>
+    <id>coop-reader</id>
+  </information>
+  <menus>
+    <menu type="json">menu.json</menu>
+  </menus>
+</extension>

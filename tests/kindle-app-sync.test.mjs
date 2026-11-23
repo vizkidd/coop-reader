@@ -40,11 +40,17 @@ test('relay worker document endpoints work for Kindle app background sync', asyn
   assert.equal(dataInitState.ok, true);
   assert.equal(dataInitState.doc, null);
 
-  // 2. Upload document bytes to relay (as Kindle host would do)
+  // 2. Register the host (uploads now require a registered room member), then upload as the Kindle host would
+  const joinRes = await Worker.fetch(new Request(`https://relay.test/room/${roomId}/http/join`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: roomId, role: 'host', name: 'Kindle' }),
+  }), env);
+  const hostToken = (await joinRes.json()).token;
+  const anon = await Worker.fetch(new Request(`https://relay.test/room/${roomId}/doc?filename=x.txt`, { method: 'POST', body: 'x' }), env);
+  assert.equal(anon.status, 401, 'anonymous uploads must be rejected');
   const bookContent = new TextEncoder().encode('Chapter 1\nIt was the best of times.');
-  const reqUpload = new Request(`https://relay.test/room/${roomId}/doc?filename=great_expectations.txt`, {
+  const reqUpload = new Request(`https://relay.test/room/${roomId}/doc?filename=great_expectations.txt&id=${roomId}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream' },
+    headers: { 'Content-Type': 'application/octet-stream', Authorization: `Bearer ${hostToken}` },
     body: bookContent
   });
   const resUpload = await Worker.fetch(reqUpload, env);

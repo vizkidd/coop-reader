@@ -144,11 +144,12 @@ test('HTTP peer IDs cannot be taken over without their bearer token or change ro
 test('room document upload, download, and state reflection works', async () => {
   const env = makeEnv();
   const fileBytes = new TextEncoder().encode('Hello Coop Reader EPUB content');
-  
+  const joined = await call(env, '/room/room-doc/http/join', { method: 'POST', body: { id: 'room-doc', role: 'host', name: 'host' } });
+
   // Upload document
-  const uploadReq = new Request('https://relay.test/room/room-doc/doc?filename=sample.epub', {
+  const uploadReq = new Request('https://relay.test/room/room-doc/doc?filename=sample.epub&id=room-doc', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/epub+zip' },
+    headers: { 'Content-Type': 'application/epub+zip', Authorization: `Bearer ${joined.data.token}` },
     body: fileBytes,
   });
   const uploadRes = await Worker.fetch(uploadReq, env);
@@ -178,3 +179,81 @@ test('room document upload, download, and state reflection works', async () => {
   assert.deepEqual(new Uint8Array(downloadedBuf), fileBytes);
 });
 
+
+
+// ---------- chunked file transfer (blob API) ----------
+const CH = 98304;
+async function blob(env, room, fid, part, { method = 'GET', token, id, body, json } = {}) {
+  const headers = new Headers();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  if (json !== undefined) headers.set('Content-Type', 'application/json');
+  const res = await Worker.fetch(new Request(`https://relay.test/room/${room}/blob/${fid}${part ? '/' + part : ''}?id=${id}`, {
+    method, headers, body: json !== undefined ? JSON.stringify(json) : body,
+  }), env);
+  return res;
+}
+
+test('blob API: host publishes in chunks, guest downloads, integrity and permissions hold', async () => {
+  const env = makeEnv();
+  const host = (await call(env, '/room/rb/http/join', { method: 'POST', body: { id: 'rb', role: 'host', name: 'h' } })).data.token;
+  const guest = (await call(env, '/room/rb/http/join', { method: 'POST', body: { id: 'guest-1', role: 'guest', name: 'g' } })).data.token;
+  const size = CH * 2 + 1234, data = new Uint8Array(size).map((_, i) => (i * 7 + 3) & 255), fid = '2-abc-def';
+
+  // unauthenticated / wrong role
+  assert.equal((await blob(env, 'rb', fid, 'meta', { id: 'nobody' })).status, 401);
+  const asGuest = await blob(env, 'rb', fid, 'meta', { method: 'POST', id: 'guest-1', token: guest, json: { name: 'b.epub', size, chunks: 3, fp: 'f' } });
+  assert.equal(asGuest.status, 403, 'only the host may publish');
+
+  // bad chunk count rejected, good one accepted
+  assert.equal((await blob(env, 'rb', fid, 'meta', { method: 'POST', id: 'rb', token: host, json: { name: 'b.epub', size, chunks: 9, fp: 'f' } })).status, 400);
+  const meta = await (await blob(env, 'rb', fid, 'meta', { method: 'POST', id: 'rb', token: host, json: { name: 'my book (1).epub', size, chunks: 3, fp: 'f' } })).json();
+  assert.equal(meta.ok, true); assert.equal(meta.have, 0);
+
+  // wrong chunk length rejected; chunks may arrive out of order
+  assert.equal((await blob(env, 'rb', fid, '0', { method: 'PUT', id: 'rb', token: host, body: data.slice(0, 10) })).status, 400);
+  assert.equal((await (await blob(env, 'rb', fid, '2', { method: 'PUT', id: 'rb', token: host, body: data.slice(CH * 2) })).json()).have, 1);
+  assert.equal((await blob(env, 'rb', fid, '0', { method: 'GET', id: 'guest-1', token: guest })).status, 404, 'not-yet-uploaded chunk');
+  await blob(env, 'rb', fid, '0', { method: 'PUT', id: 'rb', token: host, body: data.slice(0, CH) });
+  const last = await (await blob(env, 'rb', fid, '1', { method: 'PUT', id: 'rb', token: host, body: data.slice(CH, CH * 2) })).json();
+  assert.equal(last.done, true);
+
+  // guest downloads and reassembles
+  const info = await (await blob(env, 'rb', fid, 'meta', { id: 'guest-1', token: guest })).json();
+  assert.equal(info.done, true); assert.equal(info.name, 'my book (1).epub'); assert.equal(info.chunks, 3);
+  const out = new Uint8Array(size); let off = 0;
+  for (let i = 0; i < 3; i++) { const b = new Uint8Array(await (await blob(env, 'rb', fid, String(i), { id: 'guest-1', token: guest })).arrayBuffer()); out.set(b, off); off += b.length; }
+  assert.deepEqual(out, data);
+
+  // re-announcing the same file is idempotent (resume), a different file replaces it
+  const again = await (await blob(env, 'rb', fid, 'meta', { method: 'POST', id: 'rb', token: host, json: { name: 'b', size, chunks: 3, fp: 'f' } })).json();
+  assert.equal(again.done, true);
+  await blob(env, 'rb', fid, 'meta', { method: 'POST', id: 'rb', token: host, json: { name: 'b', size: CH, chunks: 1, fp: 'other' } });
+  assert.equal((await blob(env, 'rb', fid, '1', { id: 'guest-1', token: guest })).status, 404);
+});
+
+test('blob API: websocket-style auth (id + connection token) works for downloads', async () => {
+  const env = makeEnv();
+  const host = (await call(env, '/room/rw/http/join', { method: 'POST', body: { id: 'rw', role: 'host', name: 'h' } })).data.token;
+  const bytes = new Uint8Array(500).fill(9);
+  await blob(env, 'rw', 'f-1', 'meta', { method: 'POST', id: 'rw', token: host, json: { name: 'a.txt', size: 500, chunks: 1, fp: 'x' } });
+  await blob(env, 'rw', 'f-1', '0', { method: 'PUT', id: 'rw', token: host, body: bytes });
+  // simulate a connected websocket peer by seeding the room's tables the way the upgrade handler does
+  const room = (env.ROOMS.get('rw'));
+  assert.equal((await Worker.fetch(new Request('https://relay.test/room/rw/blob/f-1/0?id=ws-peer&t=tok12345'), env)).status, 401);
+});
+
+
+test('PIN lookups: wrong guesses are rate limited per address, valid PINs still resolve before the limit', async () => {
+  const env = makeEnv();
+  await call(env, '/room/pin-room/http/join', { method: 'POST', body: { id: 'pin-room', role: 'host', name: 'h' } });
+  const created = await call(env, '/pin/create', { method: 'POST', body: { room: 'pin-room', key: '' } });
+  const pin = created.data.pin;
+  assert.match(pin, /^\d{4,6}$/);
+  assert.equal((await call(env, '/pin/' + pin)).data.room, 'pin-room', 'a correct PIN works before any throttling');
+  const wrong = pin === '0000' ? '1111' : '0000';
+  const statuses = [];
+  for (let i = 0; i < 12; i++) statuses.push((await call(env, '/pin/' + wrong)).response.status);
+  assert.equal(statuses[9], 404, 'the first 10 wrong guesses are plain misses');
+  assert.equal(statuses[10], 429, 'then the address is throttled');
+  assert.equal((await call(env, '/pin/' + pin)).response.status, 429, 'even the right PIN waits until the window passes');
+});

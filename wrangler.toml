@@ -2,6 +2,17 @@ name = "coop-relay"
 main = "src/relay-worker.js"
 compatibility_date = "2024-09-01"
 
+# Relay limits. 0 = no limit.
+#  MAX_BLOB_MB   largest single file the relay accepts as a fallback transfer (0 = unlimited; direct P2P / LAN transfers never touch the relay)
+#  ROOM_QUOTA_MB storage per room; the oldest files are evicted first. Cloudflare's FREE plan allows 1 GB per Durable Object and 5 GB per
+#                account, the paid plan 10 GB per object, so 900 is the free-plan default.
+[vars]
+MAX_BLOB_MB = "0"
+ROOM_QUOTA_MB = "900"
+# Optional TURN credentials for WebRTC (Cloudflare Realtime TURN, free up to 1,000 GB/month egress): create a TURN key in the dashboard, then
+#   npx wrangler secret put TURN_KEY_ID        npx wrangler secret put TURN_KEY_API_TOKEN
+# The web app fetches short-lived credentials from GET /ice. Without the secrets the endpoint answers with an empty list.
+
 [[durable_objects.bindings]]
 name = "ROOMS"
 class_name = "Room"

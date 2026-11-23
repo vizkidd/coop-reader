@@ -1,1182 +1,986 @@
 --[[
-    Coop Reader Sync Plugin for KOReader
-    Allows reading together with desktop and mobile peers running Coop Reader.
-    Synchronizes page turns in both directions via WebSocket relay or local bridge.
---]]
+Coop Reader for KOReader.
+
+Reads together with other Kindles/KOReader devices and the Coop Reader web app (WASM) through the relay.
+  * Session state lives at MODULE level, so it survives opening another book and FileManager <-> Reader
+    switches (KOReader recreates plugin instances each time). Syncing keeps running in the background for as
+    long as KOReader runs and the device is awake / on Wi-Fi.
+  * Opening a book is synced (host -> everyone). Page sync is optional and can be toggled at any time.
+  * Books are transferred on demand through the relay in small verified chunks.
+  * Controls: top-menu entry, a small on-screen "Coop" button (tap = panel, hold = chat), a footer chip, and
+    gesture actions (Settings > Taps and gestures > "Coop Reader: ...").
+
+The protocol and all non-UI logic live in coop_core.lua (unit-tested against the real relay, see tests/lua).
+]]
 
 local Dispatcher = require("dispatcher")
 local Event = require("ui/event")
-local InfoMessage = require("ui/widget/infomessage")
-local InputDialog = require("ui/widget/inputdialog")
-local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
+local InfoMessage = require("ui/widget/infomessage")
+local ConfirmBox = require("ui/widget/confirmbox")
+local InputDialog = require("ui/widget/inputdialog")
+local ButtonDialog = require("ui/widget/buttondialog")
+local TextViewer = require("ui/widget/textviewer")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local json = require("json")
 local logger = require("logger")
-
 local socket = require("socket")
 local http = require("socket.http")
+local ltn12 = require("ltn12")
+local lfs = require("libs/libkoreader-lfs")
+local _ = require("gettext")
 local https = nil
 pcall(function() https = require("ssl.https") end)
-local ltn12 = require("ltn12")
-
+local bit = require("bit")
 local NetworkMgr = nil
 pcall(function() NetworkMgr = require("ui/network/manager") end)
+local DataStorage = nil
+pcall(function() DataStorage = require("datastorage") end)
+local Device = nil
+pcall(function() Device = require("device") end)
 
-local CoopReader = WidgetContainer:extend{
-    name = "coopreader",
-    is_doc_only = false,
-    session_id = nil,
-    relay_base_url = "https://coop-relay.coop-reader.workers.dev",
-    daemon_base_url = "http://127.0.0.1:8765",
-    is_connected = false,
-    is_syncing = true,
-    last_page = 1,
-    poll_active = false,
-    poll_scheduled = false,
-    debug_logs = {},
-    max_logs = 60,
-    log_file_path = "/tmp/coopreader_debug.log",
-    history = {},
-    is_host = false,
-    pin = nil,
-    http_token = nil,
-    peer_id = nil,
-    peer_role = nil,
-    relay_key = nil,
-    peer_profiles = {},
-    session_generation = 0,
-    applying_remote_page = false,
-    peer_count = 0,
-    http_client_count = 0,
-    last_sync_time = nil,
-    last_poll_status = "none",
-    sync_success_count = 0,
-    sync_fail_count = 0,
-    first_sync_shown = false,
-    current_doc_name = nil,
-    current_doc_path = nil,
-    last_synced_doc = nil,
-    last_downloaded_doc = nil,
-    sync_doc_open = true,
-    is_suspended = false,
-    download_in_progress = false,
+-- coop_core.lua sits next to this file
+do
+    local src = debug.getinfo(1, "S").source or ""
+    local dir = src:match("^@(.*)/[^/]*$")
+    if dir and not package.path:find(dir, 1, true) then package.path = dir .. "/?.lua;" .. package.path end
+end
+local Core = require("coop_core")
+math.randomseed(os.time())
+
+-- ============================================================ shared state (module level)
+local ST = {
+    cfg = {
+        relay_base_url = Core.DEFAULT_RELAY,
+        name = nil,                 -- device name shown to others
+        sync_page = true,           -- follow the host's page (toggle any time)
+        sync_open = true,           -- follow the host when it opens a book
+        auto_download = true,       -- fetch a missing book without asking
+        show_button = true,         -- on-screen Coop button
+        resume = true,              -- reconnect to the last session when KOReader starts
+        resume_state = nil,
+        lan_transfer = true,        -- serve books straight to readers on the same Wi-Fi (the relay is then not used for the transfer)
+        recent = {},                -- last sessions: {room=, role=, ts=}
+    },
+    logs = {}, active = nil, suspended = false, applying = false,
+    fp_cache = nil, last_sent = nil, overlay = nil, overlay_text = nil, panel = nil, chat_dialog = nil,
 }
+local LOG_FILE = "/tmp/coopreader_debug.log"
 
--- ==================== INITIALIZATION & MENU ====================
+local function now() return (socket.gettime and socket.gettime()) or os.time() end
 
-function CoopReader:init()
-    self:loadSettings()
-    self:logDebug("Plugin initialized (Relay: " .. tostring(self.relay_base_url) .. ")")
-    self.ui.menu:registerToMainMenu(self)
+function ST.log(msg)
+    msg = tostring(msg)
+    local line = os.date("%H:%M:%S") .. " " .. msg
+    ST.logs[#ST.logs + 1] = line
+    while #ST.logs > 120 do table.remove(ST.logs, 1) end
+    pcall(function() logger.info("CoopReader: " .. msg) end)
+    pcall(function()
+        local f = io.open(LOG_FILE, "a")
+        if f then f:write(line .. "\n"); f:close() end
+    end)
 end
 
-function CoopReader:loadSettings()
-    local paths = {
-        "/mnt/us/koreader/settings/coopreader.json",
-        "/mnt/us/extensions/coop-reader/settings.json",
-        "/tmp/coopreader_settings.json"
-    }
-    for _, path in ipairs(paths) do
+function ST.toast(text, secs)
+    text = tostring(text)
+    local ok = pcall(function()
+        local Notification = require("ui/widget/notification")
+        Notification:notify(text)
+    end)
+    if not ok then pcall(function() UIManager:show(InfoMessage:new{ text = text, timeout = secs or 3 }) end) end
+    ST.log("toast: " .. text)
+end
+
+function ST.alert(text, secs)
+    pcall(function() UIManager:show(InfoMessage:new{ text = tostring(text), timeout = secs or 6 }) end)
+end
+
+-- ============================================================ settings
+local function settings_dir()
+    local d
+    pcall(function() d = DataStorage and DataStorage:getSettingsDir() end)
+    return d or "/mnt/us/koreader/settings"
+end
+local function settings_paths()
+    return { settings_dir() .. "/coopreader.json", "/mnt/us/koreader/settings/coopreader.json" }
+end
+
+function ST.load_settings()
+    for _, path in ipairs(settings_paths()) do
         local f = io.open(path, "r")
         if f then
-            local content = f:read("*a")
-            f:close()
-            local ok, data = pcall(function() return json.decode(content) end)
-            if ok and data and type(data) == "table" then
-                if data.relay_base_url and #data.relay_base_url > 0 then
-                    self.relay_base_url = data.relay_base_url
-                    self:logDebug("Loaded relay URL: " .. self.relay_base_url)
-                end
-                return
+            local content = f:read("*a"); f:close()
+            local ok, data = pcall(json.decode, content)
+            if ok and type(data) == "table" then
+                for k, v in pairs(data) do if ST.cfg[k] ~= nil or k == "name" or k == "resume_state" or k == "recent" then ST.cfg[k] = v end end
+                break
             end
         end
     end
+    if type(ST.cfg.relay_base_url) ~= "string" or ST.cfg.relay_base_url == "" then ST.cfg.relay_base_url = Core.DEFAULT_RELAY end
+    if not ST.cfg.name or ST.cfg.name == "" then
+        local model = (Device and Device.model) or "Kindle"
+        ST.cfg.name = tostring(model) .. " (KOReader)"
+    end
 end
 
-function CoopReader:saveSettings()
-    local data = { relay_base_url = self.relay_base_url }
-    local content = json.encode(data)
-    local paths = {
-        "/mnt/us/koreader/settings/coopreader.json",
-        "/mnt/us/extensions/coop-reader/settings.json",
-        "/tmp/coopreader_settings.json"
-    }
-    for _, path in ipairs(paths) do
+function ST.save_settings()
+    local content = json.encode(ST.cfg)
+    for _, path in ipairs(settings_paths()) do
         local f = io.open(path, "w")
-        if f then
-            f:write(content)
-            f:close()
-            self:logDebug("Saved settings to " .. path)
-            return true
-        end
+        if f then f:write(content); f:close(); return true end
     end
     return false
 end
 
-function CoopReader:getWifiIp()
-    local ip = nil
-    if NetworkMgr then
-        pcall(function()
-            if NetworkMgr.getWifiIp then ip = NetworkMgr:getWifiIp() end
-            if not ip and NetworkMgr.getIp then ip = NetworkMgr:getIp() end
-        end)
+-- ============================================================ HTTP (LuaSocket/LuaSec, with a safe curl fallback)
+local function shell_quote(s) return "'" .. tostring(s):gsub("'", "'\\''") .. "'" end
+local curl_ok = nil
+local function have_curl()
+    if curl_ok == nil then
+        local r = os.execute("command -v curl >/dev/null 2>&1")
+        curl_ok = (r == 0 or r == true)
     end
-    if ip and #ip > 0 and ip ~= "127.0.0.1" then return ip end
-
-    local handle = io.popen("ip -4 addr show wlan0 2>/dev/null | grep -o 'inet [0-9.]*' | cut -d' ' -f2 || ifconfig wlan0 2>/dev/null | grep -o 'inet addr:[0-9.]*' | cut -d: -f2")
-    if handle then
-        local out = handle:read("*a")
-        handle:close()
-        if out then
-            out = out:gsub("%s+", "")
-            if #out > 0 then return out end
-        end
-    end
-    return "Wi-Fi (Active)"
+    return curl_ok
 end
 
--- ==================== DOCUMENT SYNCHRONIZATION ====================
+local function friendly_error(err)
+    err = tostring(err or "")
+    if err:find("timeout", 1, true) then return "timed out (slow Wi-Fi or relay unreachable)" end
+    if err:find("refused", 1, true) then return "connection refused" end
+    if err:find("host not found", 1, true) or err:find("name resolution", 1, true) then return "DNS failed (no internet?)" end
+    if err:find("handshake", 1, true) or err:find("wantread", 1, true) or err:find("closed", 1, true) then return "TLS failed (check the Kindle's date/time and Wi-Fi)" end
+    return err
+end
 
-function CoopReader:getCurrentDocumentPath()
-    local path = nil
-    pcall(function()
-        if self.ui and self.ui.document and self.ui.document.file then
-            path = self.ui.document.file
-        elseif self.view and self.view.document and self.view.document.file then
-            path = self.view.document.file
+-- request(method, url, {body=, headers=, timeout=}) -> status, body, err      (binary safe)
+local function http_request(method, url, opts)
+    opts = opts or {}
+    local timeout = opts.timeout or 6
+    local headers = { ["User-Agent"] = "KOReader-CoopReader/" .. Core.VERSION, ["Accept"] = "*/*" }
+    for k, v in pairs(opts.headers or {}) do headers[k] = v end
+    local chunks = {}
+    local old_timeout = http.TIMEOUT
+    http.TIMEOUT = timeout                       -- LuaSocket ignores a "timeout" field in the request table
+    local ok, r, c = pcall(function()
+        local fn = (url:sub(1, 8) == "https://" and https and https.request) or http.request
+        local req = { url = url, method = method, headers = headers, sink = ltn12.sink.table(chunks) }
+        if opts.body ~= nil then
+            headers["Content-Length"] = tostring(#opts.body)
+            req.source = ltn12.source.string(opts.body)
         end
+        return fn(req)
     end)
-    return path
+    http.TIMEOUT = old_timeout
+    if ok and r and tonumber(c) then return tonumber(c), table.concat(chunks), nil end
+    local why = (ok and tostring(c)) or tostring(r)
+
+    if have_curl() then                          -- some firmware builds lack a working LuaSec
+        local bodyf, outf = os.tmpname(), os.tmpname()
+        local parts = { "curl -sS -m " .. tostring(math.ceil(timeout)), "-X " .. shell_quote(method) }
+        for k, v in pairs(headers) do parts[#parts + 1] = "-H " .. shell_quote(k .. ": " .. v) end
+        if opts.body ~= nil then
+            local f = io.open(bodyf, "wb")
+            if f then f:write(opts.body); f:close(); parts[#parts + 1] = "--data-binary @" .. shell_quote(bodyf) end
+        end
+        parts[#parts + 1] = "-o " .. shell_quote(outf) .. " -w '%{http_code}' " .. shell_quote(url) .. " 2>/dev/null"
+        local h = io.popen(table.concat(parts, " "))
+        local code = h and tonumber(h:read("*a")) or nil
+        if h then h:close() end
+        local body = ""
+        local f = io.open(outf, "rb")
+        if f then body = f:read("*a") or ""; f:close() end
+        os.remove(bodyf); os.remove(outf)
+        if code and code > 0 then return code, body, nil end
+    end
+    return nil, nil, friendly_error(why)
 end
 
-function CoopReader:uploadDocumentToRelay(filepath, filename)
-    if not self.session_id or not filepath or not filename then return end
-    self.last_synced_doc = filename
-    self:logDebug("Syncing document to room: " .. filename, true)
-
-    local url = self.relay_base_url .. "/room/" .. self.session_id .. "/doc?filename=" .. filename
-    local escaped_url = string.format("%q", url)
-    local escaped_path = string.format("%q", filepath)
-    local cmd = string.format("curl -s -m 90 --max-time 90 -X POST -H 'Content-Type: application/octet-stream' --data-binary @%s %s 2>/dev/null &", escaped_path, escaped_url)
-    os.execute(cmd)
-    self:logDebug("Document upload initiated in background: " .. filename)
+-- ============================================================ documents on this device
+local function home_dir()
+    local d
+    pcall(function() d = G_reader_settings and G_reader_settings:readSetting("home_dir") end)
+    return d
 end
 
-function CoopReader:findLocalDocument(filename)
-    if not filename then return nil end
-    local candidates = {
-        "/mnt/us/documents/" .. filename,
-        "/mnt/us/documents/coop-reader/" .. filename,
-        "/mnt/us/documents/Downloads/" .. filename,
-    }
-    for _, path in ipairs(candidates) do
-        local f = io.open(path, "rb")
-        if f then
-            f:close()
-            return path
+local function download_dir()
+    local base = (lfs.attributes("/mnt/us/documents", "mode") == "directory") and "/mnt/us/documents" or (home_dir() or (DataStorage and DataStorage:getDataDir()) or "/tmp")
+    local dir = base .. "/CoopReader"
+    if lfs.attributes(dir, "mode") ~= "directory" then lfs.mkdir(dir) end
+    return dir
+end
+
+local function find_local(offer)
+    local want_name, want_size = tostring(offer.name or ""):lower(), tonumber(offer.size)
+    if want_name == "" or not want_size then return nil end
+    local budget = 4000
+    local function scan(dir, depth)
+        local ok, iter, state = pcall(lfs.dir, dir)
+        if not ok then return nil end
+        for entry in iter, state do
+            if entry ~= "." and entry ~= ".." then
+                budget = budget - 1
+                if budget <= 0 then return nil end
+                local p = dir .. "/" .. entry
+                local attr = lfs.attributes(p)
+                if attr and attr.mode == "directory" and depth < 3 and entry:sub(1, 1) ~= "." then
+                    local r = scan(p, depth + 1)
+                    if r then return r end
+                elseif attr and attr.mode == "file" and entry:lower() == want_name and attr.size == want_size then
+                    if Core.fingerprint(bit, p) == offer.fp then return p end
+                end
+            end
         end
     end
-    local search_cmd = string.format("find /mnt/us/documents -name %q 2>/dev/null | head -n 1", filename)
-    local h = io.popen(search_cmd)
-    if h then
-        local found = h:read("*l")
-        h:close()
-        if found and #found > 0 then
-            return found
+    local roots = { download_dir(), "/mnt/us/documents", home_dir() }
+    for _, root in ipairs(roots) do
+        if root and lfs.attributes(root, "mode") == "directory" then
+            local r = scan(root, 0)
+            if r then return r end
         end
     end
     return nil
 end
 
-function CoopReader:onRemoteDocOpen(filename)
-    if not filename or filename == self.current_doc_name or self.download_in_progress then return end
-    self.last_downloaded_doc = filename
-    self:logDebug("Host opened shared book: " .. filename, true)
+local function ui_of_active() return ST.active and ST.active.ui or nil end
 
-    local local_path = self:findLocalDocument(filename)
-    if local_path then
-        self:logDebug("Opening local copy: " .. local_path)
-        self:openDocumentInKOReader(local_path)
-    else
-        self:downloadAndOpenDocument(filename)
-    end
-end
-
-function CoopReader:downloadAndOpenDocument(filename)
-    if self.download_in_progress or not self.session_id then return end
-    self.download_in_progress = true
-    local target_dir = "/mnt/us/documents/coop-reader"
-    os.execute("mkdir -p " .. target_dir)
-    local target_path = target_dir .. "/" .. filename
-    local url = self.relay_base_url .. "/room/" .. self.session_id .. "/doc"
-    self:logDebug("Downloading " .. filename .. " from relay...", true)
-
-    local escaped_url = string.format("%q", url)
-    local escaped_path = string.format("%q", target_path)
-    local cmd = string.format("curl -s -m 90 --max-time 90 -o %s %s 2>/dev/null", escaped_path, escaped_url)
-    os.execute(cmd)
-    self.download_in_progress = false
-
-    local f = io.open(target_path, "rb")
-    if f then
-        local size = f:seek("end")
-        f:close()
-        if size and size > 0 then
-            self:logDebug(string.format("Downloaded %s (%d bytes)", filename, size), true)
-            self:openDocumentInKOReader(target_path)
-            return
-        end
-    end
-    self:logDebug("Failed to download document: " .. filename, true)
-end
-
-function CoopReader:openDocumentInKOReader(filepath)
-    if not filepath then return end
-    self.current_doc_path = filepath
-    self.current_doc_name = filepath:match("([^/]+)$")
-    self:logDebug("Opening in KOReader: " .. filepath, true)
-
-    local opened = false
+local function get_page(ui)
+    local p = 1
     pcall(function()
-        local ReaderUI = require("apps/reader/readerui")
-        if ReaderUI and ReaderUI.showReader then
-            ReaderUI:showReader(filepath)
-            opened = true
+        if ui.paging and ui.paging.current_page then p = ui.paging.current_page
+        elseif ui.document and ui.document.getCurrentPage then p = ui.document:getCurrentPage() end
+    end)
+    return math.max(1, math.floor(tonumber(p) or 1))
+end
+
+local function get_total(ui)
+    local n = 0
+    pcall(function() n = ui.document:getPageCount() end)
+    return math.max(0, math.floor(tonumber(n) or 0))
+end
+
+local function current_doc()
+    local ui = ui_of_active()
+    local doc = ui and ui.document
+    if not doc or not doc.file then return nil end
+    local path = doc.file
+    local size = lfs.attributes(path, "size")
+    if not size then return nil end
+    local c = ST.fp_cache
+    if not c or c.path ~= path or c.size ~= size then
+        c = { path = path, size = size, fp = Core.fingerprint(bit, path) }
+        ST.fp_cache = c
+    end
+    return { path = path, name = path:match("([^/]+)$"), size = size, fp = c.fp, page = get_page(ui), total = get_total(ui),
+             fixed = (doc.info and doc.info.has_pages) and true or false }
+end
+
+local function open_document(path)
+    UIManager:nextTick(function()
+        local ok, err = pcall(function()
+            local ReaderUI = require("apps/reader/readerui")
+            if ReaderUI.instance then
+                if ReaderUI.instance.switchDocument then ReaderUI.instance:switchDocument(path)
+                else ReaderUI.instance:onClose(); ReaderUI:showReader(path) end
+            else
+                ReaderUI:showReader(path)
+            end
+        end)
+        if not ok then
+            ST.log("open failed: " .. tostring(err))
+            ST.alert("Could not open the book:\n" .. tostring(err))
         end
     end)
-    if not opened then
-        pcall(function()
-            Dispatcher:execute("open_document", filepath)
-            opened = true
-        end)
+end
+
+-- ============================================================ session wiring
+local function network_ok()
+    if not NetworkMgr then return true end
+    local ok, up = pcall(function() return NetworkMgr:isConnected() end)
+    return (not ok) or up ~= false
+end
+
+local schedule_poll, schedule_pump
+
+function ST.ensure_core()
+    if ST.session then
+        ST.relay:set_base(ST.cfg.relay_base_url)
+        return
     end
-    if not opened then
+    ST.relay = Core.new_relay(ST.cfg.relay_base_url, http_request, json)
+    ST.session = Core.new_session({
+        relay = ST.relay, bit = bit, json = json, settings = ST.cfg,
+        now = now, log = ST.log, toast = ST.toast,
+        doc = current_doc,
+        goto_page = function(n)
+            local ui = ui_of_active()
+            if not ui then return end
+            ST.applying = true
+            ui:handleEvent(Event:new("GotoPage", n))
+            ST.last_sent = n
+            UIManager:scheduleIn(2, function() ST.applying = false end)
+        end,
+        open_doc = function(path, offer) ST.log("opening " .. tostring(path)); open_document(path) end,
+        find_local = find_local,
+        download_dir = download_dir,
+        lan_share = function(fid, path, name, size) return ST.lan_share(fid, path, name, size) end,
+        ask = function(title, text, yes)
+            UIManager:show(ConfirmBox:new{ text = title .. "\n\n" .. text, ok_text = _("Download"), cancel_text = _("Not now"), ok_callback = yes })
+        end,
+        schedule = function(fn, secs) UIManager:scheduleIn(secs, fn) end,
+        chat_open = function() return ST.chat_dialog ~= nil end,
+        changed = function() ST.refresh_indicators() end,
+    })
+end
+
+schedule_pump = function()
+    if ST.pump_fn or not ST.session or #ST.session.jobs == 0 then return end
+    ST.pump_fn = function()
+        ST.pump_fn = nil
+        local ok, more = pcall(ST.session.pump)
+        if not ok then ST.log("transfer error: " .. tostring(more)); more = false end
+        if more then schedule_pump() end
+    end
+    UIManager:scheduleIn(0.05, ST.pump_fn)
+end
+
+schedule_poll = function(delay)
+    if ST.poll_fn then UIManager:unschedule(ST.poll_fn); ST.poll_fn = nil end
+    if not ST.session or not ST.session.connected then return end
+    ST.poll_fn = function()
+        ST.poll_fn = nil
+        local s = ST.session
+        if not s or not s.connected or ST.suspended then return end
+        if not network_ok() then schedule_poll(10); return end
+        local ok, err = pcall(s.poll)
+        if not ok then ST.log("poll error: " .. tostring(err)) end
+        schedule_pump()
+        schedule_poll(s.next_delay())
+    end
+    UIManager:scheduleIn(delay or ST.session.next_delay(), ST.poll_fn)
+end
+
+function ST.connect(room, role)
+    ST.ensure_core()
+    local ok, err = ST.session.start(room, role)
+    if not ok then
+        ST.alert("Could not " .. (role == "host" and "start" or "join") .. " the session:\n" .. tostring(err), 8)
+        return false
+    end
+    ST.cfg.resume_state = { room = room, role = role, ts = os.time() }
+    ST.remember(room, role)
+    ST.save_settings()
+    ST.last_sent = nil
+    schedule_poll(1)
+    ST.refresh_indicators()
+    ST.log("connected as " .. role .. " to " .. room)
+    return true
+end
+
+function ST.disconnect(quiet)
+    ST.lan_stop()
+    if ST.poll_fn then UIManager:unschedule(ST.poll_fn); ST.poll_fn = nil end
+    if ST.session then ST.session.stop(true) end
+    ST.cfg.resume_state = nil
+    ST.save_settings()
+    ST.refresh_indicators()
+    if not quiet then ST.toast("Disconnected from the Coop Reader session", 2) end
+end
+
+local function with_network(fn)
+    if not NetworkMgr or network_ok() then return fn() end
+    local ok = pcall(function() NetworkMgr:runWhenOnline(fn) end)
+    if not ok then fn() end
+end
+
+-- ============================================================ LAN direct transfer (relay optional for book transfer)
+-- A tiny read-only HTTP server: it only answers requests that carry this session's random token and only for books that
+-- were explicitly shared. It runs while a session is open and stops on disconnect.
+local function random_token()
+    local f = io.open("/dev/urandom", "rb")
+    local raw = f and f:read(16); if f then f:close() end
+    if raw and #raw == 16 then return (raw:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
+    return Core.rand_hex(32)
+end
+
+local function local_ip()   -- connecting a UDP socket sends nothing; it only makes the OS pick the Wi-Fi interface address
+    local ok, ip = pcall(function() local u = socket.udp(); u:setpeername("203.0.113.1", 9); local a = u:getsockname(); u:close(); return a end)
+    if ok and type(ip) == "string" and ip ~= "0.0.0.0" and not ip:match("^127%.") then return ip end
+end
+
+ST.lan = { server = nil, state = { token = nil, files = {}, read = function(path, off, len)
+    local f = io.open(path, "rb"); if not f then return nil end
+    f:seek("set", off); local b = f:read(len); f:close(); return b
+end } }
+
+function ST.lan_poll()
+    ST.lan_poll_fn = nil
+    local L = ST.lan
+    if not L.server then return end
+    local c = L.server:accept()
+    if c then
         pcall(function()
-            self.ui:handleEvent(Event:new("OpenDocument", filepath))
+            c:settimeout(2)
+            local line = c:receive("*l")
+            local method, path = tostring(line or ""):match("^(%u+)%s+(%S+)")
+            local headers = {}
+            for _ = 1, 40 do
+                local h = c:receive("*l")
+                if not h or h == "" then break end
+                local k, v = h:match("^([^:]+):%s*(.*)$")
+                if k then headers[k:lower()] = v end
+            end
+            if method then
+                local code, body, ctype = Core.lan_handle(L.state, method, (path:gsub("%?.*$", "")), headers, json)
+                local reason = ({ [200] = "OK", [401] = "Unauthorized", [404] = "Not Found", [405] = "Method Not Allowed" })[code] or "Error"
+                c:send(string.format("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n", code, reason, ctype, #body))
+                c:send(body)
+            end
         end)
+        pcall(function() c:close() end)
+    end
+    ST.lan_poll_fn = function() ST.lan_poll() end
+    UIManager:scheduleIn(c and 0.02 or 0.15, ST.lan_poll_fn)
+end
+
+function ST.lan_start()
+    if ST.lan.server then return true end
+    if not ST.cfg.lan_transfer then return false end
+    local ip = local_ip(); if not ip then return false end
+    local ok, srv = pcall(socket.bind, "*", 0)
+    if not ok or not srv then return false end
+    srv:settimeout(0)
+    local _, port = srv:getsockname()
+    if not tonumber(port) then pcall(function() srv:close() end); return false end
+    ST.lan.server, ST.lan.ip, ST.lan.port, ST.lan.state.token = srv, ip, tonumber(port), random_token()
+    ST.log("LAN transfer listening on " .. ip .. ":" .. tostring(port))
+    ST.lan_poll()
+    return true
+end
+
+function ST.lan_stop()
+    if ST.lan_poll_fn then UIManager:unschedule(ST.lan_poll_fn); ST.lan_poll_fn = nil end
+    if ST.lan.server then pcall(function() ST.lan.server:close() end) end
+    ST.lan.server, ST.lan.state.files = nil, {}
+end
+
+function ST.lan_share(fid, path, name, size)
+    if not ST.lan_start() then return nil end
+    ST.lan.state.files[fid] = { path = path, name = name, size = size, fp = fid, chunks = math.ceil(size / Core.CHUNK), ext = (tostring(name):match("%.([%w]+)$") or ""):lower() }
+    return { url = "http://" .. ST.lan.ip .. ":" .. tostring(ST.lan.port), token = ST.lan.state.token }
+end
+
+-- ============================================================ recent sessions + launch intents (KUAL / KPM / gesture)
+function ST.remember(room, role)
+    local list, out = ST.cfg.recent or {}, {}
+    out[1] = { room = room, role = role, ts = os.time() }
+    for _, r in ipairs(list) do if type(r) == "table" and r.room ~= room and #out < 5 then out[#out + 1] = r end end
+    ST.cfg.recent = out
+end
+
+local function intent_path() return settings_dir() .. "/coopreader.intent" end
+function ST.run_intent(text)
+    local verb, arg = tostring(text):match("^(%a+):?(.*)$")
+    if verb == "host" then ST.host()
+    elseif verb == "join" then if arg ~= "" then ST.join(arg) else ST.prompt_join() end
+    elseif verb == "settings" then ST.show_settings()
+    elseif verb == "test" then ST.test_connection()
+    else ST.show_panel() end
+end
+function ST.consume_intent()   -- written by the KUAL / KPM launchers: "panel", "host", "join", "join:<pin>", "settings", "test"
+    local f = io.open(intent_path(), "r"); if not f then return end
+    local text = Core.trim(f:read("*l") or ""); f:close(); os.remove(intent_path())
+    if text == "" then return end
+    UIManager:scheduleIn(1.5, function() ST.run_intent(text) end)
+end
+
+function ST.host()
+    with_network(function()
+        ST.ensure_core()
+        local room = "kroom-" .. Core.rand_hex(8)
+        if not ST.connect(room, "host") then return end
+        local pin, perr = ST.relay:pin_create(room)
+        ST.session.pin = pin
+        if not pin then ST.log("PIN registration failed: " .. tostring(perr)) end
+        ST.show_info(true)
+    end)
+end
+
+function ST.join(input)
+    input = (Core.trim(input):gsub("%s+", ""))
+    if input == "" then return end
+    with_network(function()
+        ST.ensure_core()
+        local room
+        if input:match("^%d%d%d%d%d?%d?%d?%d?$") then
+            local r, err = ST.relay:pin_resolve(input)
+            if not r then
+                ST.alert("That PIN was not found on the relay.\n(" .. tostring(err) .. ")\nCheck the PIN, the relay address in Settings, and that the host is still hosting.", 8)
+                return
+            end
+            room = r
+        else
+            room = input:match("^([%w_-]+)")
+        end
+        if not room then ST.alert("Invalid code. Enter the PIN or the room code.", 5); return end
+        if ST.connect(room, "guest") then ST.show_info(false) end
+    end)
+end
+
+function ST.try_resume()
+    if ST.resume_tried then return end
+    ST.resume_tried = true
+    local r = ST.cfg.resume and ST.cfg.resume_state
+    if type(r) ~= "table" or not r.room or (os.time() - (tonumber(r.ts) or 0)) > 12 * 3600 then return end
+    UIManager:scheduleIn(4, function()
+        with_network(function() ST.log("resuming " .. tostring(r.role) .. " session " .. tostring(r.room)); ST.connect(r.room, r.role) end)
+    end)
+end
+
+-- ============================================================ on-screen indicators
+function ST.chip_text()
+    local s = ST.session
+    if not s or not s.connected then return "Coop: off" end
+    local t = "Coop " .. (s.is_host and "host" or "peer") .. " · " .. tostring(s.peer_count())
+    if s.unread > 0 then t = t .. " · !" .. tostring(s.unread) end
+    if s.fails > 2 then t = t .. " · offline" end
+    return t
+end
+
+-- Small floating button; tap = panel, hold = chat.
+local CoopButton
+local function build_button_class()
+    local InputContainer = require("ui/widget/container/inputcontainer")
+    local FrameContainer = require("ui/widget/container/framecontainer")
+    local TextWidget = require("ui/widget/textwidget")
+    local GestureRange = require("ui/gesturerange")
+    local Geom = require("ui/geometry")
+    local Font = require("ui/font")
+    local Size = require("ui/size")
+    local Blitbuffer = require("ffi/blitbuffer")
+    local Screen = Device.screen
+    local B = InputContainer:extend{ name = "coop_button", modal = false }
+    function B:init()
+        self.label = TextWidget:new{ text = self.text or "Coop", face = Font:getFace("cfont", 16) }
+        self.frame = FrameContainer:new{
+            background = Blitbuffer.COLOR_WHITE, bordersize = Size.border.thin, padding = Size.padding.small, margin = 0,
+            radius = (Size.radius and Size.radius.window) or 0, self.label,
+        }
+        local fs = self.frame:getSize()
+        self.dimen = Geom:new{ x = Screen:getWidth() - fs.w - Screen:scaleBySize(6), y = Screen:getHeight() - fs.h - Screen:scaleBySize(52), w = fs.w, h = fs.h }
+        self.ges_events = {
+            TapCoop = { GestureRange:new{ ges = "tap", range = self.dimen } },
+            HoldCoop = { GestureRange:new{ ges = "hold", range = self.dimen } },
+        }
+    end
+    function B:paintTo(bb, x, y) self.frame:paintTo(bb, self.dimen.x, self.dimen.y) end
+    function B:onTapCoop() ST.show_panel(); return true end
+    function B:onHoldCoop() ST.show_chat(); return true end
+    return B
+end
+
+function ST.hide_button()
+    if ST.overlay then pcall(function() UIManager:close(ST.overlay) end) end
+    ST.overlay, ST.overlay_text = nil, nil
+end
+
+-- force = true re-creates it on top of a freshly opened UI (reader / file manager)
+function ST.show_button(force)
+    local s = ST.session
+    if not (ST.cfg.show_button and s and s.connected and Device) then ST.hide_button(); return end
+    local txt = ST.chip_text()
+    if ST.overlay and ST.overlay_text == txt and not force then return end   -- avoid needless e-ink flashes
+    ST.hide_button()
+    local ok, err = pcall(function()
+        CoopButton = CoopButton or build_button_class()
+        ST.overlay = CoopButton:new{ text = txt }
+        ST.overlay_text = txt
+        UIManager:show(ST.overlay, "ui", ST.overlay.dimen)
+    end)
+    if not ok then ST.log("overlay unavailable: " .. tostring(err)); ST.overlay, ST.overlay_text = nil, nil end
+end
+
+function ST.refresh_indicators()
+    pcall(function()
+        local ui = ui_of_active()
+        if ui and ui.view and ui.view.footer then ui:handleEvent(Event:new("UpdateFooter", true)) end
+    end)
+    ST.show_button()
+end
+
+-- ============================================================ dialogs
+local function close_panel() if ST.panel then pcall(function() UIManager:close(ST.panel) end); ST.panel = nil end end
+
+local function act(fn) return function() close_panel(); fn() end end
+
+function ST.show_chat()
+    local s = ST.session
+    if not s or not s.connected then ST.toast("Join or host a session first", 2); return end
+    close_panel()
+    s.unread = 0
+    ST.refresh_indicators()
+    local lines = {}
+    for i = math.max(1, #s.chat - 6), #s.chat do lines[#lines + 1] = tostring(s.chat[i].name or "?") .. ": " .. tostring(s.chat[i].text) end
+    local dlg
+    local function closer() if dlg then UIManager:close(dlg) end; ST.chat_dialog = nil end
+    dlg = InputDialog:new{
+        title = _("Coop Reader chat"),
+        description = #lines > 0 and table.concat(lines, "\n") or _("No messages yet."),
+        input = "", input_hint = _("Type a message"),
+        buttons = { {
+            { text = _("Close"), callback = closer },
+            { text = _("History"), callback = function()
+                closer()
+                local all = {}
+                for _, m in ipairs(s.chat) do all[#all + 1] = os.date("%H:%M", math.floor((tonumber(m.ts) or 0) / 1000)) .. "  " .. tostring(m.name) .. ": " .. tostring(m.text) end
+                UIManager:show(TextViewer:new{ title = _("Chat history"), text = #all > 0 and table.concat(all, "\n") or _("No messages yet.") })
+            end },
+            { text = _("Send"), is_enter_default = true, callback = function()
+                local t = dlg:getInputText()
+                closer()
+                if t and Core.trim(t) ~= "" then s.send_chat(t) end
+                ST.show_chat()
+            end },
+        } },
+    }
+    ST.chat_dialog = dlg
+    UIManager:show(dlg)
+    pcall(function() dlg:onShowKeyboard() end)
+end
+
+function ST.show_info(just_started)
+    local s = ST.session
+    local L = {}
+    if not s or not s.connected then
+        L[#L + 1] = "Not connected."
+    else
+        L[#L + 1] = (s.is_host and "HOSTING" or "JOINED") .. "  (" .. ST.chip_text() .. ")"
+        if s.is_host then
+            L[#L + 1] = ""
+            L[#L + 1] = s.pin and ("Kindle PIN:   " .. s.pin) or "Kindle PIN:   unavailable (relay unreachable) - share the room code"
+            L[#L + 1] = "Room code:    " .. tostring(s.room)
+        else
+            L[#L + 1] = "Host room:    " .. tostring(s.room)
+            local hd = s.host_doc
+            L[#L + 1] = "Host book:    " .. (hd and (tostring(hd.name) .. string.format(" (%.1f MB)", (tonumber(hd.size) or 0) / 1048576)) or "(none announced)")
+        end
+        local d = current_doc()
+        L[#L + 1] = "Your book:    " .. (d and d.name or "(none open)")
+        L[#L + 1] = "Page sync:    " .. (ST.cfg.sync_page and "ON" or "OFF") .. "     Book sync: " .. (ST.cfg.sync_open and "ON" or "OFF")
+        L[#L + 1] = "Relay:        " .. ST.cfg.relay_base_url
+        L[#L + 1] = "Connection:   " .. (s.fails == 0 and "OK" or ("problems (" .. tostring(s.last_error or "?") .. ")"))
+        L[#L + 1] = ""
+        L[#L + 1] = "People in the room:"
+        local any = false
+        for id, p in pairs(s.peers) do
+            any = true
+            L[#L + 1] = "  - " .. tostring(p.name or id) .. (p.page and ("   p." .. tostring(p.page)) or "") .. (p.detached and "  (detached)" or "")
+        end
+        if not any then L[#L + 1] = "  (" .. tostring(s.peer_count()) .. " connected)" end
+        if just_started and s.is_host then
+            L[#L + 1] = ""
+            L[#L + 1] = "Open a book in KOReader: everyone follows. Keep Wi-Fi on."
+        end
+    end
+    UIManager:show(TextViewer:new{ title = "Coop Reader", text = table.concat(L, "\n") })
+end
+
+function ST.show_comments()
+    local s = ST.session
+    local L = {}
+    if s then for _, c in ipairs(s.comments) do L[#L + 1] = string.format("p.%s  %s: %s", tostring(c.page or "?"), tostring(c.name), tostring(c.text)) end end
+    UIManager:show(TextViewer:new{ title = _("Comments from the room"), text = #L > 0 and table.concat(L, "\n") or _("No comments yet.") })
+end
+
+function ST.prompt_join()
+    local dlg
+    dlg = InputDialog:new{
+        title = _("Join a Coop Reader session"),
+        description = _("Enter the host's Kindle PIN or room code."),
+        input = "", input_hint = _("PIN or room code"),
+        buttons = { {
+            { text = _("Cancel"), callback = function() UIManager:close(dlg) end },
+            { text = _("Join"), is_enter_default = true, callback = function() local t = dlg:getInputText(); UIManager:close(dlg); ST.join(t) end },
+        } },
+    }
+    UIManager:show(dlg)
+    pcall(function() dlg:onShowKeyboard() end)
+end
+
+function ST.prompt_text(title, current, on_ok)
+    local dlg
+    dlg = InputDialog:new{
+        title = title, input = current or "",
+        buttons = { {
+            { text = _("Cancel"), callback = function() UIManager:close(dlg) end },
+            { text = _("Save"), is_enter_default = true, callback = function() local t = dlg:getInputText(); UIManager:close(dlg); on_ok(Core.trim(t)) end },
+        } },
+    }
+    UIManager:show(dlg)
+    pcall(function() dlg:onShowKeyboard() end)
+end
+
+function ST.test_connection()
+    ST.ensure_core()
+    with_network(function()
+        local L = {}
+        local host = ST.cfg.relay_base_url:match("^https?://([^/:]+)")
+        local ip
+        pcall(function() ip = socket.dns.toip(host) end)
+        L[#L + 1] = "Relay:  " .. ST.cfg.relay_base_url
+        L[#L + 1] = "DNS:    " .. (ip and ("ok (" .. ip .. ")") or "FAILED - no internet or DNS")
+        local t0 = now()
+        local st, data, err = ST.relay:health()
+        local ms = math.floor((now() - t0) * 1000)
+        if st == 200 and data and data.ok then
+            L[#L + 1] = "Relay:  reachable (" .. tostring(ms) .. " ms), protocol " .. tostring(data.protocol) .. ", features: " .. table.concat(data.features or {}, ", ")
+            local has_blobs = false
+            for _, f in ipairs(data.features or {}) do if f == "blobs" then has_blobs = true end end
+            if not has_blobs then L[#L + 1] = "WARNING: this relay is too old for book transfer. Redeploy relay-worker.js." end
+        else
+            L[#L + 1] = "Relay:  NOT reachable (" .. tostring(err or ("HTTP " .. tostring(st))) .. ")"
+            L[#L + 1] = "Check Wi-Fi, the Kindle's date/time, and the relay address (Settings)."
+        end
+        L[#L + 1] = "Wi-Fi:  " .. (network_ok() and "connected" or "OFF")
+        ST.log("test: " .. table.concat(L, " | "))
+        UIManager:show(TextViewer:new{ title = _("Connection test"), text = table.concat(L, "\n") })
+    end)
+end
+
+function ST.share_now()
+    local s = ST.session
+    if not s or not s.connected or not s.is_host then ST.toast("Only the host can share its book", 2); return end
+    if not current_doc() then ST.toast("Open a book first", 2); return end
+    s.doc_opened()
+    ST.toast("Announced the current book to the room", 2)
+end
+
+function ST.get_host_book()
+    local s = ST.session
+    if not s or not s.connected or s.is_host then return end
+    if not s.host_doc then ST.toast("The host has not opened a book yet", 2); return end
+    s.on_offer(s.host_doc)
+    schedule_pump()
+end
+
+function ST.toggle(key, label)
+    ST.cfg[key] = not ST.cfg[key]
+    ST.save_settings()
+    ST.toast(label .. (ST.cfg[key] and " ON" or " OFF"), 2)
+    if key == "show_button" then ST.show_button(true) end
+    if key == "sync_page" and ST.cfg.sync_page and ST.session and ST.session.connected then
+        if ST.session.is_host then
+            local d = current_doc()
+            if d then ST.session.page_changed(d.page, d.total, d.fixed) end
+        else
+            ST.session.send(ST.session.room, { type = "REQ_SYNC" })
+        end
     end
 end
 
-function CoopReader:onReaderReady()
-    self:logDebug("Reader is ready with active document")
-    local doc_path = self:getCurrentDocumentPath()
-    if doc_path then
-        self.current_doc_path = doc_path
-        local filename = doc_path:match("([^/]+)$")
-        if filename then
-            self.current_doc_name = filename
-            self:logDebug("Active document: " .. filename)
-            if self.is_connected and (self.is_host or self.sync_doc_open) and filename ~= self.last_synced_doc then
-                self:uploadDocumentToRelay(doc_path, filename)
-            end
+local function status_line()
+    local s = ST.session
+    if s and s.connected then return ST.chip_text() end
+    return _("Not in a session") .. "  ·  " .. tostring(ST.cfg.relay_base_url):gsub("^https?://", "")
+end
+
+function ST.show_help()
+    local lines = {
+        "Coop Reader — read together",
+        "",
+        "HOST: tap \"Host a session\". Share the 4-8 digit PIN shown (or the room code). Anyone can join from a browser, another Kindle or KOReader.",
+        "JOIN: tap \"Join with PIN\" and type the PIN. Your page follows the host; tap Page sync to read on your own.",
+        "BOOKS: if you do not have the host's book it is fetched for you. On the same Wi-Fi it comes straight from the host's Kindle; otherwise through the relay server.",
+        "PRIVACY: the relay only forwards small messages (page numbers, chat) and, when needed, the book file for up to 2 hours.",
+        "",
+        "Gesture: assign \"Coop Reader: panel\" to a tap zone to open this screen from any book.",
+    }
+    UIManager:show(TextViewer:new{ title = _("How Coop Reader works"), text = table.concat(lines, "\n") })
+end
+
+function ST.show_recent()
+    close_panel()
+    local B = {}
+    for _, r in ipairs(ST.cfg.recent or {}) do
+        if type(r) == "table" and r.room then
+            local label = string.format("%s  %s  (%s)", r.role == "host" and "👑" or "👤", tostring(r.room):sub(1, 14), os.date("%d %b %H:%M", tonumber(r.ts) or 0))
+            B[#B + 1] = { { text = label, callback = act(function() with_network(function() ST.connect(r.room, r.role == "host" and "guest" or r.role); ST.show_info(false) end) end) } }
         end
     end
-    if self.is_connected and self.is_syncing then
-        local p = self:getCurrentPage()
-        self:logDebug("Publishing initial page/status: " .. tostring(p))
-        self:sendPageUpdate(p)
+    if #B == 0 then B[1] = { { text = _("No recent sessions yet"), enabled = false, callback = function() end } } end
+    B[#B + 1] = { { text = _("Back"), callback = act(ST.show_panel) } }
+    ST.panel = ButtonDialog:new{ title = _("Recent sessions"), title_align = "center", buttons = B }
+    UIManager:show(ST.panel)
+end
+
+function ST.show_settings()
+    close_panel()
+    local B = {}
+    local function toggle_row(key, label, after)
+        B[#B + 1] = { { text = (ST.cfg[key] and "☑  " or "☐  ") .. label, callback = act(function() ST.toggle(key, label); if after then after() end; ST.show_settings() end) } }
+    end
+    toggle_row("sync_page", _("Follow the host's page"))
+    toggle_row("sync_open", _("Follow the host's book"))
+    toggle_row("auto_download", _("Fetch missing books automatically"))
+    toggle_row("lan_transfer", _("Send/receive books directly on the same Wi-Fi"), function() if not ST.cfg.lan_transfer then ST.lan_stop() end end)
+    toggle_row("show_button", _("Show the on-screen Coop button"))
+    toggle_row("resume", _("Reconnect to the last session at startup"))
+    B[#B + 1] = { { text = _("Device name: ") .. tostring(ST.cfg.name), callback = act(function() ST.prompt_text(_("Name shown to others"), ST.cfg.name, function(t) if t ~= "" then ST.cfg.name = t; ST.save_settings() end; ST.show_settings() end) end) } }
+    B[#B + 1] = { { text = _("Relay: ") .. tostring(ST.cfg.relay_base_url):gsub("^https?://", ""), callback = act(function() ST.prompt_text(_("Relay address (https://...)"), ST.cfg.relay_base_url, function(t) if t ~= "" then ST.cfg.relay_base_url = t; ST.save_settings(); if ST.relay then ST.relay:set_base(t) end end; ST.show_settings() end) end) } }
+    B[#B + 1] = { { text = _("Test connection"), callback = act(ST.test_connection) }, { text = _("Debug log"), callback = act(function() UIManager:show(TextViewer:new{ title = _("Coop Reader log"), text = #ST.logs > 0 and table.concat(ST.logs, "\n") or _("(empty)") }) end) } }
+    B[#B + 1] = { { text = _("Back"), callback = act(ST.show_panel) } }
+    ST.panel = ButtonDialog:new{ title = _("Coop Reader settings"), title_align = "center", buttons = B }
+    UIManager:show(ST.panel)
+end
+
+-- The home screen: big touch buttons, same screen from the reader menu, a gesture, or the KUAL / KPM launcher.
+function ST.show_panel()
+    close_panel()
+    local s = ST.session
+    local B = {}
+    local function row(...) B[#B + 1] = { ... } end
+    local function btn(text, fn) return { text = text, callback = act(fn) } end
+    local title = status_line()
+    if s and s.connected then
+        row(btn(_("💬 Chat") .. (s.unread > 0 and (" (" .. s.unread .. ")") or ""), ST.show_chat), btn(_("👥 Who's here"), function() ST.show_info(false) end))
+        row(btn(_("Page sync: ") .. (ST.cfg.sync_page and _("ON") or _("OFF")), function() ST.toggle("sync_page", "Page sync"); ST.show_panel() end),
+            btn(_("Book sync: ") .. (ST.cfg.sync_open and _("ON") or _("OFF")), function() ST.toggle("sync_open", "Book sync"); ST.show_panel() end))
+        if s.is_host then row(btn(_("📖 Share this book now"), ST.share_now), btn(_("📝 Comments"), ST.show_comments))
+        else row(btn(_("📖 Get host's book"), ST.get_host_book), btn(_("📝 Comments"), ST.show_comments)) end
+        row(btn(_("⚙ Settings"), ST.show_settings), btn(_("⏏ Disconnect"), function() ST.disconnect() end))
+        row({ text = _("Close"), callback = close_panel })
+    else
+        row(btn(_("👑 Host a session"), ST.host), btn(_("👤 Join with PIN"), ST.prompt_join))
+        row(btn(_("🕘 Recent sessions"), ST.show_recent), btn(_("⚙ Settings"), ST.show_settings))
+        row(btn(_("📶 Test connection"), ST.test_connection), btn(_("❓ How it works"), ST.show_help))
+        row({ text = _("Close"), callback = close_panel })
+    end
+    ST.panel = ButtonDialog:new{ title = title, title_align = "center", buttons = B }
+    UIManager:show(ST.panel)
+end
+
+-- ============================================================ plugin class
+local CoopReader = WidgetContainer:extend{ name = "coopreader", is_doc_only = false }
+CoopReader._ST = ST   -- exposed for the test-suite
+
+function CoopReader:init()
+    if not ST.loaded then ST.loaded = true; ST.load_settings() end
+    ST.active = self
+    ST.ensure_core()
+    if not ST.dispatcher_done then
+        ST.dispatcher_done = true
+        pcall(function()
+            Dispatcher:registerAction("coopreader_panel", { category = "none", event = "CoopReaderPanel", title = _("Coop Reader: panel"), general = true })
+            Dispatcher:registerAction("coopreader_chat", { category = "none", event = "CoopReaderChat", title = _("Coop Reader: chat"), general = true })
+        end)
+    end
+    if self.ui and self.ui.menu then self.ui.menu:registerToMainMenu(self) end
+    pcall(function()
+        if self.ui and self.ui.view and self.ui.view.footer and self.ui.view.footer.addAdditionalFooterContent then
+            self.ui.view.footer:addAdditionalFooterContent(function() return ST.session and ST.session.connected and ST.chip_text() or "" end)
+        end
+    end)
+    ST.try_resume()
+    ST.consume_intent()
+    -- a new UI replaced the old one: put the button back on top of it
+    if ST.session and ST.session.connected then
+        UIManager:nextTick(function() ST.show_button(true) end)
+        if not ST.poll_fn then schedule_poll(1) end
     end
 end
 
 function CoopReader:addToMainMenu(menu_items)
-    menu_items.coop_reader = {
-        text = "Coop Reader Sync",
+    menu_items.coopreader = {
+        text = _("Coop Reader"),
         sorting_hint = "tools",
-        sub_item_table = {
-            {
-                text = "Host New Session (Create PIN)...",
-                callback = function()
-                    self:promptHostSession()
-                end,
-            },
-            {
-                text = "Join Reading Session (PIN or Code)...",
-                callback = function()
-                    self:promptJoinSession()
-                end,
-            },
-            {
-                text = "Set Relay Server URL...",
-                callback = function()
-                    self:promptSetRelayUrl()
-                end,
-            },
-            {
-                text = "Toggle Page Sync",
-                checked_func = function()
-                    return self.is_syncing
-                end,
-                callback = function()
-                    self.is_syncing = not self.is_syncing
-                    local msg = self.is_syncing and "Coop Reader: Sync Active (Following Host)" or "Coop Reader: Detached (Reading Independently)"
-                    self:logDebug(msg, true)
-                    if self.is_connected then
-                        if self.is_syncing and not self.is_host then
-                            self:sendRelayMessage(self.session_id, { type = "REQ_SYNC" })
-                        else
-                            self:sendPageUpdate(self:getCurrentPage())
-                        end
-                    end
-                end,
-            },
-            {
-                text = "Sync Document Opening",
-                checked_func = function()
-                    return self.sync_doc_open
-                end,
-                callback = function()
-                    self.sync_doc_open = not self.sync_doc_open
-                    local msg = self.sync_doc_open and "Coop Reader: Document Sync Active (Follows Host Books)" or "Coop Reader: Document Sync Off (Manual Book Selection)"
-                    self:logDebug(msg, true)
-                end,
-            },
-            {
-                text = "Test Relay Connection",
-                callback = function()
-                    self:testConnection()
-                end,
-            },
-            {
-                text = "Session Status",
-                enabled_func = function()
-                    return self.session_id ~= nil
-                end,
-                callback = function()
-                    self:showSessionStatus()
-                end,
-            },
-            {
-                text = "View Debug Log",
-                callback = function()
-                    self:showDebugLog()
-                end,
-            },
-            {
-                text = "Disconnect Session",
-                enabled_func = function()
-                    return self.session_id ~= nil
-                end,
-                callback = function()
-                    self:disconnect()
-                end,
-            },
-        }
+        sub_item_table_func = function()
+            return {
+                { text_func = function() return ST.chip_text() end, keep_menu_open = true, callback = function() ST.show_panel() end },
+                { text = _("Host a session"), enabled_func = function() return not (ST.session and ST.session.connected) end, callback = function() ST.host() end },
+                { text = _("Join a session (PIN / code)"), enabled_func = function() return not (ST.session and ST.session.connected) end, callback = function() ST.prompt_join() end },
+                { text = _("Chat"), enabled_func = function() return ST.session and ST.session.connected end, callback = function() ST.show_chat() end },
+                { text = _("Who's here / session info"), callback = function() ST.show_info(false) end },
+                { text = _("Comments from the room"), callback = function() ST.show_comments() end },
+                { text = _("Share this book now (host)"), enabled_func = function() return ST.session and ST.session.connected and ST.session.is_host end, callback = function() ST.share_now() end },
+                { text = _("Get the host's book"), enabled_func = function() return ST.session and ST.session.connected and not ST.session.is_host end, callback = function() ST.get_host_book() end },
+                { text = _("Disconnect"), enabled_func = function() return ST.session and ST.session.connected end, callback = function() ST.disconnect() end, separator = true },
+                { text = _("Settings"), sub_item_table = {
+                    { text = _("Sync pages with the host"), checked_func = function() return ST.cfg.sync_page end, keep_menu_open = true, callback = function() ST.toggle("sync_page", "Page sync") end },
+                    { text = _("Follow the host's book"), checked_func = function() return ST.cfg.sync_open end, keep_menu_open = true, callback = function() ST.toggle("sync_open", "Book sync") end },
+                    { text = _("Download missing books automatically"), checked_func = function() return ST.cfg.auto_download end, keep_menu_open = true, callback = function() ST.toggle("auto_download", "Auto-download") end },
+                    { text = _("Show the on-screen Coop button"), checked_func = function() return ST.cfg.show_button end, keep_menu_open = true, callback = function() ST.toggle("show_button", "Coop button") end },
+                    { text = _("Reconnect to the last session at startup"), checked_func = function() return ST.cfg.resume end, keep_menu_open = true, callback = function() ST.toggle("resume", "Auto-resume") end },
+                    { text = _("Device name"), keep_menu_open = true, callback = function() ST.prompt_text(_("Name shown to others"), ST.cfg.name, function(t) if t ~= "" then ST.cfg.name = t; ST.save_settings() end end) end },
+                    { text = _("Relay address"), keep_menu_open = true, callback = function() ST.prompt_text(_("Relay address (https://...)"), ST.cfg.relay_base_url, function(t) if t ~= "" then ST.cfg.relay_base_url = (t:gsub("/+$", "")); ST.save_settings(); ST.ensure_core() end end) end },
+                } },
+                { text = _("Recent sessions"), callback = function() ST.show_recent() end },
+                { text = _("Direct Wi-Fi book transfer"), checked_func = function() return ST.cfg.lan_transfer end, keep_menu_open = true, callback = function() ST.toggle("lan_transfer", "Direct Wi-Fi book transfer"); if not ST.cfg.lan_transfer then ST.lan_stop() end end },
+                { text = _("Test connection"), callback = function() ST.test_connection() end },
+                { text = _("Debug log"), callback = function()
+                    UIManager:show(TextViewer:new{ title = _("Coop Reader log"), text = #ST.logs > 0 and table.concat(ST.logs, "\n") or _("(empty)") })
+                end },
+            }
+        end,
     }
 end
 
-function CoopReader:promptSetRelayUrl()
-    local dialog
-    dialog = InputDialog:new{
-        title = "Set Relay Server URL",
-        input = self.relay_base_url,
-        input_type = "string",
-        description = "Enter Cloudflare Worker HTTPS URL:\n(e.g., https://coop-relay.YOUR_NAME.workers.dev)",
-        buttons = {
-            {
-                {
-                    text = "Reset Default",
-                    callback = function()
-                        self.relay_base_url = "https://coop-relay.coop-reader.workers.dev"
-                        self:saveSettings()
-                        UIManager:close(dialog)
-                        self:logDebug("Reset relay URL to default", true)
-                        self:testConnection()
-                    end,
-                },
-                {
-                    text = "Cancel",
-                    id = "cancel",
-                    callback = function()
-                        UIManager:close(dialog)
-                    end,
-                },
-                {
-                    text = "Save",
-                    is_positive = true,
-                    is_enter_default = true,
-                    callback = function()
-                        local new_url = dialog:getInputText()
-                        UIManager:close(dialog)
-                        if new_url and #new_url > 0 then
-                            new_url = new_url:gsub("%s+", ""):gsub("/+$", "")
-                            if not new_url:find("^https?://") then
-                                new_url = "https://" .. new_url
-                            end
-                            self.relay_base_url = new_url
-                            self:saveSettings()
-                            self:logDebug("Updated Relay Server URL to: " .. self.relay_base_url, true)
-                            self:testConnection()
-                        end
-                    end,
-                },
-            },
-        },
-    }
-    UIManager:show(dialog)
-    dialog:onShowKeyboard()
-end
-
--- ==================== LOGGING & DIAGNOSTICS ====================
-
-function CoopReader:logDebug(msg, show_toast)
-    local timestamp = os.date("%H:%M:%S")
-    local line = string.format("[%s] %s", timestamp, tostring(msg))
-    
-    -- In-memory log buffer
-    table.insert(self.debug_logs, line)
-    if #self.debug_logs > self.max_logs then
-        table.remove(self.debug_logs, 1)
-    end
-    
-    -- Print to logger/stdout
-    pcall(function() logger.info("CoopReader: " .. line) end)
-    print("CoopReader: " .. line)
-    
-    -- Append to debug log file
-    pcall(function()
-        local f = io.open(self.log_file_path, "a")
-        if f then
-            f:write(line .. "\n")
-            f:close()
-        end
-    end)
-    
-    -- Optional toast notification on e-ink screen
-    if show_toast then
-        pcall(function()
-            UIManager:show(InfoMessage:new{ text = tostring(msg), timeout = 3 })
-        end)
+-- ---- hooks -------------------------------------------------------------------------------------
+function CoopReader:onReaderReady()
+    ST.active = self
+    ST.fp_cache = nil
+    ST.last_sent = nil
+    if ST.session and ST.session.connected then
+        pcall(ST.session.document_ready)
+        ST.show_button(true)
+        schedule_pump()
     end
 end
 
-function CoopReader:showDebugLog()
-    local text = table.concat(self.debug_logs, "\n")
-    if #text == 0 then
-        text = "No debug messages recorded yet.\nTap 'Test Relay Connection' or 'Join Reading Session' to generate activity."
-    end
-    
-    pcall(function()
-        local viewer = TextViewer:new{
-            title = "Coop Reader Debug Log",
-            text = text,
-        }
-        UIManager:show(viewer)
-    end)
-end
-
-function CoopReader:showSessionStatus()
-    local lines = {}
-    table.insert(lines, "═══════════════════════════════════")
-    table.insert(lines, "  COOP READER SESSION STATUS")
-    table.insert(lines, "═══════════════════════════════════")
-    table.insert(lines, "")
-
-    if self.session_id then
-        table.insert(lines, "Room ID:     " .. tostring(self.session_id))
-        table.insert(lines, "Host ID:     " .. tostring(self.session_id))
-    else
-        table.insert(lines, "Room ID:     (not connected)")
-    end
-
-    table.insert(lines, "Role:        " .. (self.is_host and "HOST" or "PEER"))
-    table.insert(lines, "Peer ID:     " .. tostring(self.peer_id or "(none)"))
-    if self.pin then
-        table.insert(lines, "Kindle PIN:  " .. tostring(self.pin))
-    elseif self.is_host then
-        table.insert(lines, "Kindle PIN:  unavailable (share full room code)")
-    end
-    table.insert(lines, "Connected:   " .. (self.is_connected and "YES" or "NO"))
-    table.insert(lines, "Document:    " .. tostring(self.current_doc_name or "(none)"))
-    table.insert(lines, "Doc Sync:    " .. (self.sync_doc_open and "ACTIVE" or "OFF"))
-    table.insert(lines, "Page Sync:   " .. (self.is_syncing and "ACTIVE" or "DETACHED"))
-    table.insert(lines, "")
-
-    table.insert(lines, "--- Connection Details ---")
-    table.insert(lines, "Relay URL:   " .. tostring(self.relay_base_url))
-    table.insert(lines, "Wi-Fi IP:    " .. tostring(self:getWifiIp()))
-    table.insert(lines, "Local Page:  " .. tostring(self:getCurrentPage()))
-    table.insert(lines, "Last Synced: " .. tostring(self.last_page))
-    table.insert(lines, "")
-
-    table.insert(lines, "--- Peers ---")
-    table.insert(lines, "WebSocket:   " .. tostring(self.peer_count) .. " peer(s)")
-    table.insert(lines, "HTTP/Kindle: " .. tostring(self.http_client_count) .. " peer(s)")
-    table.insert(lines, "Total:       " .. tostring(self.peer_count + self.http_client_count) .. " peer(s)")
-    table.insert(lines, "Transport:   Authenticated HTTP mailbox")
-    table.insert(lines, "")
-
-    table.insert(lines, "--- Sync Statistics ---")
-    table.insert(lines, "Poll Status: " .. tostring(self.last_poll_status))
-    table.insert(lines, "Syncs OK:    " .. tostring(self.sync_success_count))
-    table.insert(lines, "Syncs Fail:  " .. tostring(self.sync_fail_count))
-    if self.last_sync_time then
-        table.insert(lines, "Last Sync:   " .. os.date("%H:%M:%S", self.last_sync_time))
-    else
-        table.insert(lines, "Last Sync:   (never)")
-    end
-    table.insert(lines, "")
-    table.insert(lines, "Polling:     " .. (self.poll_active and "ACTIVE (every 2s)" or "STOPPED"))
-
-    local text = table.concat(lines, "\n")
-    pcall(function()
-        local viewer = TextViewer:new{
-            title = "Coop Reader — Session Status",
-            text = text,
-        }
-        UIManager:show(viewer)
-    end)
-end
-
-function CoopReader:testConnection()
-    self:logDebug("Testing connection to: " .. self.relay_base_url, true)
-    
-    self:ensureNetwork(function()
-        local url = self.relay_base_url .. "/room/__test_ping__/state"
-        local res, status, err = self:httpRequest(url, "GET", nil, 5)
-        
-        if status == 200 or status == 404 or (res and #res > 0) then
-            local msg = string.format("Relay is reachable! (HTTP status: %s)\nURL: %s", tostring(status), self.relay_base_url)
-            self:logDebug(msg, true)
-            pcall(function()
-                UIManager:show(InfoMessage:new{ text = "✓ Relay Connected!\n" .. self.relay_base_url, timeout = 4 })
-            end)
-        else
-            -- Try local daemon fallback
-            local d_url = self.daemon_base_url .. "/api/status"
-            local d_res, d_status = self:httpRequest(d_url, "GET", nil, 2)
-            if d_status == 200 then
-                self:logDebug("Relay unreachable, but local daemon is active on 127.0.0.1:8765", true)
-                pcall(function()
-                    UIManager:show(InfoMessage:new{ text = "Local daemon active (127.0.0.1:8765)\nRelay offline: " .. self.relay_base_url, timeout = 5 })
-                end)
-            else
-                local err_msg = string.format("Cannot connect to:\n%s\nError: %s (Status: %s)\nUse 'Set Relay Server URL' to update.", self.relay_base_url, tostring(err), tostring(status))
-                self:logDebug(err_msg, true)
-                pcall(function()
-                    UIManager:show(InfoMessage:new{ text = "✗ Relay Unreachable!\n" .. self.relay_base_url .. "\nCheck Wi-Fi or update Relay URL under menu.", timeout = 6 })
-                end)
-            end
-        end
-    end)
-end
-
--- ==================== NETWORK & WI-FI CHECK ====================
-
-function CoopReader:ensureNetwork(callback)
-    if not NetworkMgr then
-        self:logDebug("NetworkMgr unavailable, proceeding directly")
-        callback()
-        return
-    end
-
-    local is_connected = false
-    pcall(function() is_connected = NetworkMgr:isConnected() end)
-    
-    if not is_connected then
-        self:logDebug("Wi-Fi is disconnected. Prompting to connect...", true)
-        pcall(function()
-            NetworkMgr:runWhenOnline(function()
-                self:logDebug("Wi-Fi connected successfully")
-                callback()
-            end)
-        end)
-    else
-        self:logDebug("Wi-Fi is connected")
-        callback()
-    end
-end
-
--- Safe HTTP/HTTPS request with LuaSec and cURL fallback
-local function shellQuote(value)
-    return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
-end
-
-function CoopReader:httpRequest(url, method, post_body, timeout, extra_headers)
-    method = method or "GET"
-    timeout = timeout or 4
-    extra_headers = extra_headers or {}
-    local response_body = {}
-    local request_headers = {
-        ["User-Agent"] = "KOReader-CoopReader/2.0",
-        ["Accept"] = "application/json",
-    }
-    for key, value in pairs(extra_headers) do request_headers[key] = value end
-
-    -- Prefer KOReader's LuaSocket/LuaSec stack.
-    local ok, status, headers, err_str = pcall(function()
-        local is_https = url:sub(1, 8) == "https://"
-        local request_fn = (is_https and https and https.request) or http.request
-        local req = {
-            url = url,
-            method = method,
-            sink = ltn12.sink.table(response_body),
-            timeout = timeout,
-            headers = request_headers,
-        }
-        if post_body ~= nil and method ~= "GET" then
-            req.headers["Content-Type"] = "application/json"
-            req.headers["Content-Length"] = tostring(string.len(post_body))
-            req.source = ltn12.source.string(post_body)
-        end
-        local _, code, hdrs = request_fn(req)
-        return code, hdrs
-    end)
-
-    local body = table.concat(response_body)
-    local numeric_status = tonumber(status)
-    if ok and numeric_status then return body, numeric_status, nil end
-
-    -- Kindle firmware versions differ in their LuaSec availability. Fall back
-    -- to curl without using shell-interpolated, double-quoted user input.
-    self:logDebug("LuaSocket/LuaSec unavailable; trying curl for " .. tostring(url))
-    local parts = {
-        "curl -sS --connect-timeout " .. tostring(timeout) .. " --max-time " .. tostring(timeout),
-        "-X " .. shellQuote(method),
-    }
-    for key, value in pairs(request_headers) do
-        table.insert(parts, "-H " .. shellQuote(tostring(key) .. ": " .. tostring(value)))
-    end
-    if post_body ~= nil and method ~= "GET" then
-        table.insert(parts, "--data-binary " .. shellQuote(post_body))
-    end
-    table.insert(parts, "-w " .. shellQuote("\\n%{http_code}"))
-    table.insert(parts, shellQuote(url) .. " 2>/dev/null")
-    local handle = io.popen(table.concat(parts, " "))
-    if handle then
-        local output = handle:read("*a") or ""
-        handle:close()
-        local code = output:match("(%d%d%d)%s*$")
-        if code then
-            local response = output:sub(1, #output - #code):gsub("\n$", "")
-            return response, tonumber(code), nil
-        end
-        if #output > 0 then return output, 200, nil end
-    end
-    return nil, 0, tostring(status or err_str or "Request failed")
-end
-
--- ==================== SESSION HOST, JOIN & SHORT CODES ====================
-
-function CoopReader:promptHostSession()
-    self:ensureNetwork(function()
-        self:startHostingSession()
-    end)
-end
-
-function CoopReader:startHostingSession()
-    if self.is_connected then self:disconnect() end
-    self:logDebug("Creating a relay-backed KOReader session...", true)
-
-    local chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-    local suffix = ""
-    math.randomseed(os.time() + math.floor((socket.gettime and socket.gettime() or 0) * 1000))
-    for i = 1, 8 do
-        local r = math.random(1, #chars)
-        suffix = suffix .. chars:sub(r, r)
-    end
-    local room_id = "kroom-" .. suffix
-    local ok = self:startSession(room_id, "host")
-    if not ok then return end
-
-    -- PINs are created only in the shared relay registry. Never display a
-    -- locally fabricated code that other devices cannot resolve.
-    local pin_url = self.relay_base_url:gsub("/+$", "") .. "/pin/create"
-    local pin_body = json.encode({ room = room_id, key = "" })
-    local res, status, err = self:httpRequest(pin_url, "POST", pin_body, 5)
-    local data = nil
-    if res and status == 200 then pcall(function() data = json.decode(res) end) end
-    self.pin = (data and data.ok and data.pin) and tostring(data.pin) or nil
-    if self.pin then self:logDebug("Relay PIN registered: " .. self.pin)
-    else self:logDebug("Room is active, but relay PIN registration failed: " .. tostring(err or status), true) end
-
-    local current_page = self:getCurrentPage()
-    self.last_page = current_page
-    self:sendPageUpdate(current_page)
-
-    local info_text = string.format(
-        "Relay-backed session is active.\n\nRoom ID:\n%s\n\n%s\n\nFull room code:\n%s\n\nRelay:\n%s\n\nPeer count will update in Session Status. Keep KOReader open and connected to Wi-Fi.",
-        room_id,
-        self.pin and ("Kindle PIN:\n" .. self.pin) or "Kindle PIN: unavailable — share the full room code",
-        room_id,
-        self.relay_base_url
-    )
-    pcall(function()
-        UIManager:show(TextViewer:new{ title = "Coop Reader — Hosting Session", text = info_text })
-    end)
-end
-
-function CoopReader:promptJoinSession()
-    -- Explicitly verify Wi-Fi connection BEFORE showing session code dialog
-    self:ensureNetwork(function()
-        self:showJoinDialog()
-    end)
-end
-
-function CoopReader:showJoinDialog()
-    local dialog
-    dialog = InputDialog:new{
-        title = "Join Coop Reader Session",
-        input = self.session_id or "",
-        input_type = "string",
-        description = "Enter 4–8 digit PIN (from Host screen)\nor full session code / host ID:",
-        buttons = {
-            {
-                {
-                    text = "Cancel",
-                    id = "cancel",
-                    callback = function()
-                        UIManager:close(dialog)
-                    end,
-                },
-                {
-                    text = "Join",
-                    is_positive = true,
-                    is_enter_default = true,
-                    callback = function()
-                        local code = dialog:getInputText()
-                        UIManager:close(dialog)
-                        if code and #code > 0 then
-                            self:resolveAndConnect(code:gsub("%s+", ""))
-                        end
-                    end,
-                },
-            },
-        },
-    }
-    UIManager:show(dialog)
-    dialog:onShowKeyboard()
-end
-
-function CoopReader:resolveAndConnect(input_code)
-    self:logDebug("Processing session code: " .. input_code, true)
-    input_code = tostring(input_code or ""):gsub("%s+", "")
-    if input_code == "" then return false end
-
-    local is_short_pin = input_code:match("^%d%d%d%d%d?%d?%d?%d?$") ~= nil
-    if is_short_pin then
-        self:logDebug("Resolving relay PIN " .. input_code)
-        local pin_url = self.relay_base_url:gsub("/+$", "") .. "/pin/" .. input_code
-        local res, status, err = self:httpRequest(pin_url, "GET", nil, 5)
-        local parsed = nil
-        if res and status == 200 then pcall(function() parsed = json.decode(res) end) end
-        if not (parsed and parsed.ok and parsed.room) then
-            self:logDebug("PIN lookup failed (HTTP " .. tostring(status) .. "): " .. tostring(err), true)
-            UIManager:show(InfoMessage:new{
-                text = "That PIN was not found on the configured relay. Check the PIN and relay URL, or ask the host to share the full room code.",
-                timeout = 6
-            })
-            return false
-        end
-        return self:startSession(parsed.room, "guest", parsed.key or "")
-    end
-
-    local room_id, key = input_code:match("^([%w_-]+)%.([%w_%-]+)$")
-    if not room_id then room_id = input_code:match("^([%w_-]+)$") end
-    if not room_id then
-        UIManager:show(InfoMessage:new{ text = "Invalid room code. Enter the short PIN or room-id[.key] code.", timeout = 5 })
-        return false
-    end
-    return self:startSession(room_id, "guest", key or "")
-end
-
-function CoopReader:roomUrl(suffix)
-    return self.relay_base_url:gsub("/+$", "") .. "/room/" .. tostring(self.session_id or "") .. (suffix or "")
-end
-
-function CoopReader:authHeaders()
-    if not self.http_token then return {} end
-    return { Authorization = "Bearer " .. self.http_token }
-end
-
-function CoopReader:registerHttpPeer()
-    if not self.session_id or not self.peer_id or not self.peer_role then return false end
-    local body = json.encode({
-        id = self.peer_id,
-        role = self.peer_role,
-        name = "Kindle KOReader",
-        token = self.http_token or nil,
-    })
-    local res, status, err = self:httpRequest(self:roomUrl("/http/join"), "POST", body, 5)
-    local data = nil
-    if res and status == 200 then pcall(function() data = json.decode(res) end) end
-    if not (data and data.ok and data.token) then
-        self:logDebug("Relay registration failed (HTTP " .. tostring(status) .. "): " .. tostring((data and data.error) or err or "no response"), true)
-        self.http_token = nil
-        return false
-    end
-    self.http_token = data.token
-    self.peer_count = tonumber(data.clients) or 0
-    self.http_client_count = math.max(0, (tonumber(data.httpClients) or 0) - 1) -- exclude this HTTP peer
-    self:logDebug("Registered relay mailbox as " .. self.peer_role .. " (" .. tostring(self.peer_id) .. ")")
-    return true, data
-end
-
-function CoopReader:sendRelayMessage(to, message)
-    if not self.is_connected or not self.http_token or not self.peer_id then return false end
-    local body = json.encode({ id = self.peer_id, to = to or self.session_id, p = message })
-    local res, status, err = self:httpRequest(self:roomUrl("/http/send"), "POST", body, 4, self:authHeaders())
-    if status == 200 and res then
-        local data = nil
-        pcall(function() data = json.decode(res) end)
-        if data and data.ok then return true end
-        self:logDebug("Relay accepted request but did not confirm delivery")
-        return true
-    end
-    self:logDebug("Relay send failed (HTTP " .. tostring(status) .. "): " .. tostring(err or res or "no response"))
-    return false
-end
-
-function CoopReader:applyRemotePage(page)
-    local remote_page = tonumber(page)
-    if not remote_page or remote_page < 1 then return end
-    remote_page = math.floor(remote_page)
-    if remote_page == self:getCurrentPage() then
-        self.last_page = remote_page
-        return
-    end
-    self.last_page = remote_page
-    self.applying_remote_page = true
-    pcall(function() self.ui:handleEvent(Event:new("GotoPage", remote_page)) end)
-    self.applying_remote_page = false
-    self:logDebug("Applied host page " .. tostring(remote_page))
-end
-
-function CoopReader:handleRelayMessage(frame)
-    if type(frame) ~= "table" then return end
-    local from = tostring(frame.from or self.session_id or "")
-    if frame.left then
-        self.peer_profiles[from] = nil
-        self:logDebug("Peer left the session: " .. from)
-        return
-    end
-    local payload = frame.p or frame.payload or {}
-    if type(payload) ~= "table" then return end
-    if payload.raw and type(payload.raw) == "string" then
-        local ok, decoded = pcall(function() return json.decode(payload.raw) end)
-        if not ok or type(decoded) ~= "table" then return end
-        payload = decoded
-    elseif payload.e then
-        self:logDebug("Received an encrypted browser message this KOReader plugin cannot decrypt", true)
-        return
-    end
-
-    local kind = payload.type
-    if kind == "RELAY_HELLO" then
-        if self.is_host then
-            self.peer_profiles[from] = self.peer_profiles[from] or { name = payload.name or "Reader" }
-            self:sendRelayMessage(from, { type = "PROFILE", peerId = self.peer_id, name = "Kindle KOReader" })
-            self:sendRelayMessage(from, { type = "SYNC", state = { currentPage = self:getCurrentPage() } })
-        end
-    elseif kind == "REQ_SYNC" then
-        if self.is_host then
-            self:sendRelayMessage(from, { type = "SYNC", state = { currentPage = self:getCurrentPage() } })
-            self:sendRelayMessage(from, { type = "PAGE_CHANGE", page = self:getCurrentPage() })
-        end
-    elseif kind == "SYNC" then
-        if not self.is_host and self.is_syncing then
-            local state = payload.state or {}
-            self:applyRemotePage(state.currentPage or state.page)
-        end
-    elseif kind == "PAGE_CHANGE" then
-        -- PAGE_CHANGE is authoritative and may only come from the room host.
-        if not self.is_host and from == self.session_id and self.is_syncing then
-            self:applyRemotePage(payload.page)
-        end
-    elseif kind == "PAGE_INFO" then
-        if self.is_host then
-            self.peer_profiles[from] = self.peer_profiles[from] or {}
-            self.peer_profiles[from].page = tonumber(payload.page) or payload.page
-            self.peer_profiles[from].detached = payload.detached and true or false
-        end
-    elseif kind == "PROFILE" then
-        self.peer_profiles[from] = self.peer_profiles[from] or {}
-        self.peer_profiles[from].name = payload.name or self.peer_profiles[from].name or "Reader"
-    elseif kind == "PING" then
-        self:sendRelayMessage(from, { type = "PONG", t = payload.t or os.time() })
-    elseif kind == "PONG" then
-        self.last_poll_status = "OK"
-    elseif kind == "DOC_OPEN" then
-        if self.sync_doc_open and payload.filename and payload.filename ~= self.current_doc_name then
-            self:onRemoteDocOpen(payload.filename)
-        end
-    elseif kind == "AUTH_REQUIRED" then
-        -- KOReader's Lua runtime currently has no compatible WebCrypto AES/SHA
-        -- implementation. Fail closed instead of leaving a false-connected peer.
-        self:disconnect()
-        UIManager:show(InfoMessage:new{
-            text = "This session requires a password. Password-protected browser sessions are not supported by the KOReader plugin yet. Ask the host to create an unprotected room.",
-            timeout = 8
-        })
-    elseif kind == "HOST_KICK" or kind == "RELAY_CLOSE" then
-        if not self.is_host then
-            self:logDebug("Host ended this session", true)
-            self:disconnect()
-        end
-    elseif kind == "CHAT" or kind == "ANNOT" or kind == "ANNOT_ALL" then
-        self:logDebug("Received " .. tostring(kind) .. "; this message type is not yet rendered in the KOReader UI")
-    end
-end
-
-function CoopReader:startSession(room_id, role, key)
-    role = role or "guest"
-    if not room_id or not room_id:match("^[%w_-]+$") then
-        self:logDebug("Invalid room ID", true)
-        return false
-    end
-    if self.is_connected then self:disconnect() end
-
-    self.session_generation = (self.session_generation or 0) + 1
-    self.session_id = room_id
-    self.peer_role = role
-    self.is_host = role == "host"
-    self.peer_id = self.is_host and room_id or ("khttp-" .. tostring(os.time()) .. tostring(math.random(10000, 99999)))
-    self.relay_key = key or ""
-    self.http_token = nil
-    self.is_connected = false
-    self.is_syncing = true
-    self.first_sync_shown = false
-    self.sync_success_count = 0
-    self.sync_fail_count = 0
-    self.peer_profiles = {}
-    self.peer_count = 0
-    self.http_client_count = 0
-
-    local registered, room_data = self:registerHttpPeer()
-    if not registered then
-        self.session_id = nil
-        self.peer_id = nil
-        self.peer_role = nil
-        self.is_host = false
-        self.pin = nil
-        self:logDebug("Could not join the relay room. The app has not marked this session connected.", true)
-        return false
-    end
-
-    self.is_connected = true
-    self.last_poll_status = "Connected"
-    self.last_page = self:getCurrentPage()
-    self:logDebug("Relay mailbox connected: " .. room_id .. " (" .. role .. ")", true)
-
-    if self.is_host then
-        self:sendRelayMessage("*", { type = "PROFILE", peerId = self.peer_id, name = "Kindle KOReader" })
-        self:sendPageUpdate(self:getCurrentPage())
-        local active_doc = self:getCurrentDocumentPath()
-        if active_doc then
-            local filename = active_doc:match("([^/]+)$")
-            if filename then
-                self.current_doc_name = filename
-                self.current_doc_path = active_doc
-                self:uploadDocumentToRelay(active_doc, filename)
-            end
-        end
-    else
-        self:sendRelayMessage(self.session_id, { type = "RELAY_HELLO", peerId = self.peer_id, name = "Kindle KOReader", transport = "http" })
-        self:sendRelayMessage(self.session_id, { type = "REQ_SYNC" })
-        self:sendRelayMessage(self.session_id, { type = "PROFILE", peerId = self.peer_id, name = "Kindle KOReader" })
-        if room_data.doc and room_data.doc.filename and self.sync_doc_open then
-            self:onRemoteDocOpen(room_data.doc.filename)
+local function on_local_page()
+    local s = ST.session
+    if ST.applying or not s or not s.connected or not ST.cfg.sync_page then return end
+    s.touch()
+    if ST.page_task then UIManager:unschedule(ST.page_task) end
+    ST.page_task = function()
+        ST.page_task = nil
+        local d = current_doc()
+        if d and d.page ~= ST.last_sent then
+            ST.last_sent = d.page
+            s.page_changed(d.page, d.total, d.fixed)
         end
     end
-
-    self:startPolling()
-    local peers = (tonumber(room_data.clients) or 0) + (tonumber(room_data.httpClients) or 0) - 1
-    if peers < 0 then peers = 0 end
-    local info = string.format(
-        "%s\nRoom: %s\nPeer count: %d\nCurrent page: %s\nRelay: %s\nTransport: HTTP mailbox",
-        self.is_host and "Hosting session" or "Joined session",
-        room_id,
-        peers,
-        tostring(room_data.page or self:getCurrentPage()),
-        self.relay_base_url
-    )
-    UIManager:show(InfoMessage:new{ text = info, timeout = 6 })
-    return true
+    UIManager:scheduleIn(0.8, ST.page_task)   -- debounce quick page flips
 end
 
-function CoopReader:refreshHttpRegistration()
-    if not self.session_id or not self.peer_id then return false end
-    local ok = self:registerHttpPeer()
-    if ok then
-        self:logDebug("Relay mailbox registration refreshed")
-        return true
-    end
-    return false
-end
-
-function CoopReader:disconnect()
-    local room_id = self.session_id
-    local peer_id = self.peer_id
-    local token = self.http_token
-    self.poll_active = false
-    self.session_generation = (self.session_generation or 0) + 1
-    if room_id and peer_id and token then
-        local headers = { Authorization = "Bearer " .. token }
-        local url = self.relay_base_url:gsub("/+$", "") .. "/room/" .. room_id .. "/http/leave"
-        local body = json.encode({ id = peer_id })
-        self:httpRequest(url, "POST", body, 2, headers)
-    end
-    self.is_connected = false
-    self.session_id = nil
-    self.peer_id = nil
-    self.peer_role = nil
-    self.http_token = nil
-    self.relay_key = nil
-    self.is_host = false
-    self.pin = nil
-    self.peer_profiles = {}
-    self.peer_count = 0
-    self.http_client_count = 0
-    self.last_poll_status = "disconnected"
-    self.first_sync_shown = false
-    self.last_synced_doc = nil
-    self.last_downloaded_doc = nil
-    self.download_in_progress = false
-    self:logDebug("Disconnected from Coop Reader session", true)
-end
-
-function CoopReader:getCurrentPage()
-    local page = 1
-    pcall(function()
-        if self.ui and self.ui.paging and self.ui.paging.current_page then
-            page = self.ui.paging.current_page
-        elseif self.view and self.view.state and self.view.state.page then
-            page = self.view.state.page
-        elseif self.ui and self.ui.document and self.ui.document.getCurrentPage then
-            page = self.ui.document:getCurrentPage()
-        end
-    end)
-    return page or 1
-end
-
-function CoopReader:onPageUpdate(pageno)
-    if not self.is_connected or self.applying_remote_page or pageno == self.last_page then return end
-    self.last_page = pageno
-    self:logDebug("Local page turned to: " .. tostring(pageno))
-    self:sendPageUpdate(pageno)
-end
-
-function CoopReader:sendPageUpdate(pageno)
-    if not self.is_connected or not self.session_id then return false end
-    pageno = math.max(1, math.floor(tonumber(pageno) or self:getCurrentPage()))
-    self.last_page = pageno
-    local message
-    local target
-    if self.is_host then
-        message = { type = "PAGE_CHANGE", page = pageno }
-        target = "*"
-    else
-        -- A guest reports its position; it must never overwrite the host page.
-        message = { type = "PAGE_INFO", page = pageno, detached = not self.is_syncing }
-        target = self.session_id
-    end
-    local ok = self:sendRelayMessage(target, message)
-    if ok then
-        self.last_sync_time = os.time()
-        self.sync_success_count = self.sync_success_count + 1
-    else
-        self.sync_fail_count = self.sync_fail_count + 1
-    end
-    -- Preserve local daemon metrics/refresh functionality without using it as
-    -- the room transport; the shared relay mailbox is authoritative.
-    local daemon_sync_url = self.daemon_base_url .. "/api/sync-page?page=" .. tostring(pageno) .. "&session=" .. self.session_id
-    self:httpRequest(daemon_sync_url, "GET", nil, 1)
-    return ok
-end
-
-function CoopReader:startPolling()
-    self.poll_active = true
-    self:schedulePoll()
-end
-
-function CoopReader:schedulePoll()
-    if not self.poll_active or not self.session_id or self.is_suspended then return end
-    local generation = self.session_generation
-    UIManager:scheduleIn(2, function()
-        if not self.poll_active or not self.session_id or self.is_suspended or generation ~= self.session_generation then return end
-        self:pollRemoteState()
-        self:schedulePoll()
-    end)
-end
-
-function CoopReader:pollRemoteState()
-    -- Poll and heartbeat even while detached so the room membership does not expire.
-    if not self.is_connected or not self.session_id or not self.http_token or self.is_suspended then return end
-    local url = self:roomUrl("/http/poll?id=" .. self.peer_id)
-    local res, status, err = self:httpRequest(url, "GET", nil, 3, self:authHeaders())
-    if status == 401 then
-        self.last_poll_status = "Re-registering"
-        if self:refreshHttpRegistration() then
-            self:sendRelayMessage(self.is_host and "*" or self.session_id, { type = self.is_host and "PROFILE" or "REQ_SYNC", peerId = self.peer_id, name = "Kindle KOReader" })
-        end
-        return
-    end
-    if not res or status ~= 200 then
-        self.last_poll_status = "HTTP " .. tostring(status)
-        self.sync_fail_count = self.sync_fail_count + 1
-        if self.sync_fail_count > 0 and self.sync_fail_count % 5 == 0 then
-            self:logDebug("Relay polling failing: HTTP " .. tostring(status) .. " — " .. tostring(err), true)
-        end
-        return
-    end
-
-    local data = nil
-    local ok = pcall(function() data = json.decode(res) end)
-    if not ok or type(data) ~= "table" or not data.ok then
-        self.last_poll_status = "Parse error"
-        self.sync_fail_count = self.sync_fail_count + 1
-        return
-    end
-    self.last_poll_status = "OK"
-    self.last_sync_time = os.time()
-    self.peer_count = tonumber(data.clients) or 0
-    self.http_client_count = tonumber(data.httpClients) or 0
-    self.http_client_count = math.max(0, self.http_client_count - 1) -- exclude this HTTP peer
-
-    -- Check if host opened a new document
-    if data.doc and type(data.doc) == "table" and data.doc.filename and self.sync_doc_open then
-        local remote_doc = data.doc.filename
-        if remote_doc ~= self.current_doc_name and remote_doc ~= self.last_downloaded_doc and not self.download_in_progress then
-            self:onRemoteDocOpen(remote_doc)
-        end
-    end
-
-    local messages = data.messages or {}
-    for _, frame in ipairs(messages) do self:handleRelayMessage(frame) end
-
-    if not self.first_sync_shown then
-        self.first_sync_shown = true
-        local total = self.peer_count + self.http_client_count
-        self:logDebug(string.format("Relay mailbox active; %d other peer(s)", total), true)
-    end
-    self.sync_success_count = self.sync_success_count + 1
-end
+function CoopReader:onPageUpdate(pageno) on_local_page() end
+function CoopReader:onPosUpdate(pos, pageno) on_local_page() end   -- reflowable books report positions
 
 function CoopReader:onCloseDocument()
-    self.current_doc_path = nil
-    self.current_doc_name = nil
-    if self.is_connected then
-        self:logDebug("Document closed; maintaining background sync session", true)
-        if not self.poll_active then
-            self:startPolling()
-        end
-    end
+    if ST.page_task then UIManager:unschedule(ST.page_task); ST.page_task = nil end
+    if ST.active == self then ST.active = nil end
+    ST.fp_cache = nil
 end
 
 function CoopReader:onSuspend()
-    self.is_suspended = true
-    self:logDebug("Device suspended; pausing sync polling to conserve battery")
+    ST.suspended = true
+    if ST.poll_fn then UIManager:unschedule(ST.poll_fn); ST.poll_fn = nil end
 end
 
 function CoopReader:onResume()
-    self.is_suspended = false
-    self:logDebug("Device resumed; resuming sync")
-    if self.is_connected then
-        self:ensureNetwork(function()
-            self:pollRemoteState()
-            self:schedulePoll()
-        end)
-    end
+    ST.suspended = false
+    if ST.session and ST.session.connected then ST.session.touch(); schedule_poll(2) end
 end
+
+function CoopReader:onNetworkConnected()
+    if ST.session and ST.session.connected then schedule_poll(1) end
+end
+
+function CoopReader:onExit()
+    ST.lan_stop()
+    if ST.session and ST.session.connected then pcall(function() ST.relay:leave() end) end
+end
+
+function CoopReader:onCoopReaderPanel() ST.show_panel(); return true end
+function CoopReader:onCoopReaderChat() ST.show_chat(); return true end
 
 return CoopReader

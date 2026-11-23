@@ -846,7 +846,7 @@
     var relayHttp = CONFIG.defaultRelay.replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
     updateSyncStatus('Sharing ' + filename + '…', 'warning');
 
-    var url = relayHttp + '/room/' + encodeURIComponent(state.sessionId) + '/doc?filename=' + encodeURIComponent(filename);
+    var url = relayHttp + '/room/' + encodeURIComponent(state.sessionId) + '/doc?filename=' + encodeURIComponent(filename) + '&id=' + encodeURIComponent(state.myPeerId) + '&t=' + encodeURIComponent(relayToken);   // uploads need a registered room member
     try {
       var xhr = new XMLHttpRequest();
       xhr.open('POST', url, true);

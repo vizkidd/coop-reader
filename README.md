@@ -13,7 +13,7 @@ Read documents together in real time. Everything runs in the browser (static fil
 - **Create / join** with a session code or a share link (`/coop-reader/<session-id>`).
 - **Optional password** (salted hash). The share link can include it.
 - **Auto-reconnect:** peers rejoin automatically after drops, reloads, or switching apps; heartbeat detects dead connections.
-- **Profile picture and name** shown to others.
+- **Profile dialog at start** (name + picture, camera or file), shown next to cursors, chat and comments.
 
 ### Documents
 
@@ -33,13 +33,13 @@ DOCX, XLSX, EPUB and MOBI/AZW3 are shown as extracted text, not with their origi
 
 - Page sync across everyone; **detach** to browse on your own, then **re-sync** to the host's page.
 - Contents panel and previous/next chapter buttons.
-- Zoom, fit to width/height, fullscreen (with a fallback for iPhone), swipe and keyboard navigation.
+- Zoom (buttons, **pinch**, double-tap, trackpad pinch), fit to width/height, fullscreen (with a fallback for iPhone), swipe and keyboard navigation.
 - Live cursors for mouse and touch, shown relative to the page so they line up across devices.
 
 ### Annotations and comments
 
-- Pen, highlight and numbered comment notes, with colour choice and an eraser (peers erase only their own; the host can clear a page).
-- Tap a comment to read it; the **Comments** list jumps to any comment.
+- Pen, highlight and **comments**, with colour choice and an eraser (peers erase only their own; the host can clear a page). Pencil-safe: a stylus never scrolls the page.
+- **Comments are anchored**: click a spot, or select text and press *Comment on selection*. Click a pin or highlighted text to open its **thread** (avatar, name, time, replies, resolve). Dense areas merge into a numbered badge; pins keep their size while following zoom. The **Comments** list jumps to any thread.
 - Synced live to everyone, including late joiners.
 - **Export:** annotated **PDF** (drawings, highlights, numbered notes, plus a comments page that supports Latin, Greek, Cyrillic, Vietnamese and Devanagari text; CJK, Arabic and emoji print as “?”) and annotated **PNG** (with a comment legend). For DOCX/XLSX/EPUB/MOBI/TXT, which cannot hold them, you can download an **annotations report (.md)** instead.
 - Host / solo annotations are saved in your browser (local storage) and restored when you reopen the same file. **Annotations data (.json)** can be downloaded and re-imported with **Import**. Peers always receive the host's copy; opening a different file starts clean.
@@ -53,7 +53,7 @@ DOCX, XLSX, EPUB and MOBI/AZW3 are shown as extracted text, not with their origi
 ### Host controls (👥 panel and menu)
 
 - See each peer's connection route and current page.
-- **Mute**, **ping** and **kick** peers.
+- **Mute**, **ping** and **kick** peers. Kicking also **moves everyone else to a new session id** (old link, password, relay room and PIN stop working). Option: log out peers who leave the reader tab; option: allow peers to turn pages.
 - **Send file** to one peer: it arrives as a private Save / Dismiss prompt and never changes anyone's shared document.
 - Toggle: peers may **download**, **open files**, **annotate and comment**.
 - Toggle speaking / typing / activity indicators for everyone.
@@ -61,7 +61,7 @@ DOCX, XLSX, EPUB and MOBI/AZW3 are shown as extracted text, not with their origi
 
 ### Connectivity (menu → 🌐 Network)
 
-Connections try these routes in order: 1. **Direct** WebRTC (STUN). 2. **TURN relay** if you configure one (credentials URL or ICE JSON). Needed across Wi-Fi / mobile data in many cases. 3. **Peer relay:** another connected peer dials the stuck newcomer and forwards data (one hop; the helper can see the traffic). 4. **WebSocket relay server** (browser/WASM and Kindle GUI messages are end-to-end encrypted; the random key travels in the invite link, or in the host code as `id.key`, and is never sent to the relay — joining through the relay needs the full link or code). The KOReader HTTP-mailbox bridge instead uses HTTPS plus a per-peer bearer token and currently sends only page/profile/presence messages in plaintext to the relay. Deploy `relay-worker.js` (below), or rely on the built-in default address, which is used **only if it answers a reachability check**.
+Connections try these routes in order and move to a better one in the background when it becomes possible: 1. **Direct** WebRTC (same network / STUN). 2. **TURN relay** if you configure one (or deploy the relay with Cloudflare TURN secrets: `/ice`) (credentials URL or ICE JSON). Needed across Wi-Fi / mobile data in many cases. 3. **Peer relay:** another connected peer dials the stuck newcomer and forwards data (one hop; the helper can see the traffic). 4. **WebSocket relay server** (browser/WASM and Kindle GUI messages are end-to-end encrypted; the random key travels in the invite link, or in the host code as `id.key`, and is never sent to the relay — joining through the relay needs the full link or code). The KOReader HTTP-mailbox bridge instead uses HTTPS plus a per-peer bearer token and currently sends only page/profile/presence messages in plaintext to the relay. Deploy `relay-worker.js` (below), or rely on the built-in default address, which is used **only if it answers a reachability check**.
 
 Options: - **Automatic** (default) or **Relay server only** mode. - **Private mode:** forces all WebRTC through TURN to hide your IP from other participants (requires TURN; connections fail without it). - Peers see how each person is connected: ⚡ direct, 🔒 TURN, 🔗 via peer, 🌐 relay server. - **Connection health:** a banner warns about an unreachable signaling server, a disconnected relay, a lost host connection, and relay routes (no voice), with retry buttons. **Log** (in the menu) shows a copyable connection log. Relay connections send keepalives, so silent drops are detected and reconnected.
 
@@ -79,9 +79,17 @@ Screen stays awake during a session, password entry uses an in-page dialog, and 
 
 ------------------------------------------------------------------------
 
-## Kindle Edition (Jailbroken Kindles)
+## Kindle and KOReader
 
-`coop-reader` is ported to jailbroken Amazon Kindles for synchronised reading across e-ink devices: - **Kindle Package Manager (KPM)**: `dist/coop-reader.kpkg` is a repository package artifact; install by package ID (`;kpm install coop-reader`) only after a KPM repository publishes it. For local USB install, use the KUAL ZIP. - **KUAL Extension**: `dist/coop-reader-kual.zip` for direct USB extraction to `/mnt/us/extensions/`. - **KOReader Plugin**: `dist/coopreader.koplugin.zip` for page-sync and peer-presence integration directly inside KOReader. - The Kindle GUI and KOReader plugin are not feature-equivalent: KOReader currently supports page sync, profiles/presence, PIN/full-code join, status and disconnect; chat, annotations, file transfer, voice and password-protected rooms are not implemented in the KOReader plugin. - See [`kindle/README.md`](kindle/README.md) for install instructions, supported features, relay deployment and known limitations.
+Jailbroken Kindles (and any KOReader device) can read in the same session as the web app, through the relay.
+The Kindle client is a **KOReader plugin**; a KUAL menu installs and launches it. **No Python or other extras are
+needed on the Kindle.** See [kindle/README.md](kindle/README.md) for install steps, features and troubleshooting.
+
+- Opening a book is synced: when the host opens a book everyone else gets it (matching copy found on the device, or
+  downloaded on demand through the relay and verified). Page sync is optional and can be switched on/off at any time.
+- Page position is shared as a fraction of the book for reflowable formats, so Kindle and web pages line up.
+- Chat in both directions with on-screen notifications; room members and the host's book can be viewed on the Kindle.
+- Sessions keep running in the background while KOReader runs (also while you switch books or sit in the file list).
 
 ## Files
 
@@ -89,8 +97,10 @@ Screen stays awake during a session, password entry uses an in-page dialog, and 
 index.html        the app (all UI and networking)
 worker.js         Pyodide document parser (DOCX / XLSX / EPUB / MOBI / TXT)
 404.html          redirects deep links (/<session-id>) back to the app (GitHub Pages)
-relay-worker.js   optional WebSocket relay (Cloudflare Worker + Durable Object)
+relay-worker.js   optional relay (Cloudflare Worker + Durable Object): WebSocket rooms, HTTP mailbox for Kindles, PINs, chunked file transfer
 wrangler.toml     config for deploying the relay
+kindle/           KOReader plugin, KUAL extension, browser app and build script
+tests/            relay, Lua plugin and end-to-end tests (npm run test:all)
 ```
 
 Keep `index.html`, `worker.js` and `404.html` in the same folder.
@@ -102,6 +112,15 @@ npx http-server -p 3000      # or any static server
 ```
 
 Open `http://localhost:3000`. A secure context (https or localhost) is required for WebRTC, clipboard and microphone.
+
+## Why a relay, and the free plan
+See **docs/SECURITY.md** (who may command whom, signed host commands), **docs/SELFHOST.md** (run everything yourself), **docs/RELAY.md** (why it exists, what it costs on Cloudflare's free plan, how to tune it) and **docs/REVIEW.md** (bugs fixed, feature map, roadmap).
+
+## Large files
+No file size limit: documents are streamed in slices and spooled to disk on the receiving device; PDFs are opened with range requests. Only formats that must be parsed completely in memory (DOCX/XLSX/EPUB) depend on available RAM.
+
+## Tests
+`npm test` (unit), `npm run test:lua`, `npm run test:browser` and `npm run test:browser:relay` (real Chromium + the real Workers runtime, need the dev dependencies), `npm run test:all`.
 
 ## Deploy the relay (optional, recommended)
 

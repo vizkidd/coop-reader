@@ -12,8 +12,18 @@
   <link rel="preconnect" href="https://cdnjs.cloudflare.com">
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <script src="config.js"></script>
+  <script src="js/coop-profile.js"></script>
+  <script src="js/coop-codec.js"></script>
+  <script src="js/coop-trust.js"></script>
+  <script src="js/coop-net.js"></script>
+  <script src="js/coop-session.js"></script>
+  <script src="js/coop-store.js"></script>
+  <script src="js/coop-comments.js"></script>
+  <script src="js/coop-input.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.2/dist/docx-preview.min.js"></script>
-  <script data-name="BMC-Widget" data-cfasync="false" src="https://cdnjs.buymeacoffee.com/1.0.0/widget.prod.min.js" data-id="vishveshkac" data-description="Support me on Buy me a coffee!" data-message="" data-color="#FF813F" data-position="Right" data-x_margin="18" data-y_margin="18"></script>
   <style>
     :root {
       --primary:#2563eb; --primary-hover:#1d4ed8; --primary-soft:#eff6ff;
@@ -112,7 +122,8 @@
     #viewer-toolbar button{min-height:38px}
     #annot-group{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
     #viewer-wrap{position:relative;margin:0 16px}
-    #viewer-container{position:relative;margin:0;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-sm);min-height:55vh;display:flex;align-items:flex-start;overflow:auto;touch-action:pan-x pan-y;-webkit-overflow-scrolling:touch}
+    #annot-svg{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+#viewer-container{position:relative;margin:0;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-sm);min-height:55vh;display:flex;align-items:flex-start;overflow:auto;touch-action:pan-x pan-y;-webkit-overflow-scrolling:touch}
     .net-opt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;cursor:pointer}
     .net-opt small{display:block;opacity:.7;font-weight:400;margin-top:2px}.net-opt input{margin-top:4px;flex-shrink:0}
     .net-card h4{margin:14px 0 6px}.net-row{display:flex;gap:8px;align-items:center}.net-row input{flex:1;min-width:0}
@@ -280,6 +291,7 @@
     <span class="menu-label">Share link</span>
     <label class="check-label"><input type="checkbox" id="share-include-pw" />Include password</label>
     <button class="secondary" onclick="copyShareLink()">Copy link</button>
+    <button class="secondary" onclick="CoopExtras.showInvite()" title="Show a QR code of the invite link">QR</button>
     <button class="secondary" onclick="copyHostCode()">Copy code</button>
   </div>
   <div class="menu-group host-only" id="kindle-share-group" style="display:none; align-items:center; gap:8px;">
@@ -324,7 +336,7 @@
   <div id="annot-group" style="display:none">
     <button class="secondary" data-tool="pen" onclick="setTool('pen')">✏️ Pen</button>
     <button class="secondary" data-tool="hl" onclick="setTool('hl')">🖍 Highlight</button>
-    <button class="secondary" data-tool="note" onclick="setTool('note')">📝 Comment</button>
+    <button class="secondary" data-tool="note" onclick="setTool('note')" title="Click a spot to comment there. To comment on text, select it and press 💬.">💬 Comment</button>
     <button class="secondary" data-tool="erase" onclick="setTool('erase')">🧽 Erase</button>
     <input type="color" id="annot-color" value="#e11d48" aria-label="Colour" style="width:42px;height:38px;padding:2px" />
     <button class="secondary host-only" onclick="clearPageAnnots()">Clear page</button>
@@ -379,7 +391,7 @@
     </p>
     <div style="margin:20px 0;">
       <a href="https://buymeacoffee.com/vishveshkac" target="_blank" rel="noopener" id="bmc-modal-btn">
-        <img src="https://img.buymeacoffee.com/button-api/?text=Donate&emoji=📖&slug=vishveshkac&button_colour=FFDD00&font_colour=000000&font_family=Lato&outline_colour=000000&coffee_colour=ffffff" alt="Donate" style="max-width:100%;height:auto;cursor:pointer;" />
+        <img data-src="https://img.buymeacoffee.com/button-api/?text=Donate&emoji=📖&slug=vishveshkac&button_colour=FFDD00&font_colour=000000&font_family=Lato&outline_colour=000000&coffee_colour=ffffff" alt="Donate" style="max-width:100%;height:auto;cursor:pointer;" />
       </a>
     </div>
     <div id="bmc-timer-status" style="font-size:0.84rem;color:var(--text-muted);margin-top:12px;"></div>
@@ -389,13 +401,15 @@
   </div>
 </div>
 
-<div id="peers-modal" class="modal" onclick="if(event.target===this)closeModal('peers-modal')"><div class="modal-content"><h3>Peers</h3><div id="peers-list"></div><input type="file" id="peer-file-input" hidden />
+<div id="peers-modal" class="modal" onclick="if(event.target===this)closeModal('peers-modal')"><div class="modal-content"><h3>Peers</h3><p id="trust-line" hidden style="font-size:.85rem;margin:4px 0 8px;word-break:break-word"></p><div id="peers-list"></div><input type="file" id="peer-file-input" hidden />
   <h3 style="margin-top:14px">Indicators &amp; permissions</h3>
   <label class="check-label"><input type="checkbox" id="hs-speaking" onchange="updateHostSettings()" />Show who is speaking</label>
   <label class="check-label"><input type="checkbox" id="hs-typing" onchange="updateHostSettings()" />Show who is typing</label>
   <label class="check-label"><input type="checkbox" id="hs-interact" onchange="updateHostSettings()" />Show who is interacting</label>
   <label class="check-label"><input type="checkbox" id="hs-uploads" onchange="updateHostSettings()" />Allow peers to open files</label>
   <label class="check-label"><input type="checkbox" id="hs-annot" onchange="updateHostSettings()" />Allow peers to annotate &amp; comment</label>
+  <label class="check-label"><input type="checkbox" id="hs-nav" onchange="updateHostSettings()" />Let peers turn pages for everyone</label>
+  <label class="check-label"><input type="checkbox" id="hs-idle" onchange="updateHostSettings()" />Log out peers who leave the reader tab <select id="hs-idle-sec" onchange="updateHostSettings()" aria-label="Grace period"><option value="30">after 30 s</option><option value="60" selected>after 1 min</option><option value="120">after 2 min</option><option value="300">after 5 min</option></select></label>
   <div class="modal-actions"><button class="secondary" onclick="closeModal('peers-modal')">Close</button></div></div></div>
 
 <div id="toc-modal" class="modal" onclick="if(event.target===this)closeModal('toc-modal')"><div class="modal-content"><h3>Contents</h3><div id="toc-list"></div><div class="modal-actions"><button class="secondary" onclick="closeModal('toc-modal')">Close</button></div></div></div>
@@ -422,10 +436,12 @@
 <script>
 // ==================== CONFIG ====================
 const CONFIG = {
-  chunkSize: 64*1024, maxBufferedAmount: 256*1024, maxChunks: 10000,
+  chunkSize: 64*1024, maxBufferedAmount: 1024*1024, maxFileBytes: 2 ** 40,   // no practical file size limit: only free storage on the receiving device
+  maxChunks: 10000,
   maxInFlightChunks: 128,
-  transferTimeout: 120000, maxRenderDpr: 2, maxCanvasPixels: 4*1024*1024,
-  heartbeatInterval: 5000, heartbeatTimeout: 60000, connectTimeout: 30000, gestureThreshold: 65,
+  transferTimeout: 120000, maxRenderDpr: 2, maxCanvasPixels: (navigator.maxTouchPoints > 1 ? 8 : 16) * 1024 * 1024,   // sharper zoom; phones and tablets stay below their canvas memory limit
+ 
+  heartbeatInterval: 10000, heartbeatTimeout: 60000, connectTimeout: 30000, gestureThreshold: 65,
   reconnectDelay: 1200, statsInterval: 5000, signalingTimeout: 8000,
   chatHistoryLimit: 100, workerTimeout: 300000,
   iceServers: [
@@ -449,7 +465,7 @@ let connectionGeneration = 0;
 let state = { currentPage: 1, totalPages: 1, fileType: '', downloadAllowed: false };
 let sessionAuth = { required: false, salt: null, hash: null };
 let pendingAuthHash = null;
-let cachedFileBytes = null, cachedFilename = '';
+let cachedFileBytes = null, cachedFilename = '', cachedFp = '';
 let pdfDoc = null, currentZoom = 1, hasFitted = false, userZoomed = false;
 let lastJoinCode = null, lastAuthHash = null, rejoinTimer = null, rejoinAttempts = 0, preAuthDrops = 0, detached = false, syncedPage = 1, tocItems = [];
 let remoteCursors = {};
@@ -479,7 +495,8 @@ const chatMessagesEl = document.getElementById('chat-messages');
 const chatEmptyEl = document.getElementById('chat-empty');
 const cursorLayer = document.getElementById('cursor-layer');
 const cursorTimeouts = new Map();
-const CURSOR_HIDE_AFTER_MS = 30000, CURSOR_THROTTLE_MS = 50;
+const lowBw = () => { try { return localStorage.getItem('coop-lowbw') === '1'; } catch (_) { return false; } };   // Network dialog > Low-bandwidth mode
+const CURSOR_HIDE_AFTER_MS = 30000, CURSOR_THROTTLE_MS = 90;   // ~11 updates/s is plenty and halves cursor bandwidth
 let lastMouseClientX = null, lastMouseClientY = null;
 let lastCursorBroadcastTs = 0;
 
@@ -652,10 +669,13 @@ function saveServerConfig() {
   if (peer) { try{peer.destroy()}catch(_){} peer=null; myPeerId=null; connections=[]; isHost=false; cleanupVoice(); setStatus('Disconnected.','warning'); }
 }
 function resetServerConfig() { localStorage.removeItem('coop-server-config'); closeModal('server-modal'); notify('Reset to default.','success'); }
-function getIceServers() { return window.__iceResolved || CONFIG.iceServers; }
-function peerOptions() {
-  const saved = JSON.parse(localStorage.getItem('coop-server-config') || '{}');
-  const opts = { config: { iceServers: getIceServers(), iceCandidatePoolSize: 10, iceTransportPolicy: getNet().priv ? 'relay' : 'all' } };
+function getIceServers() { return window.__iceResolved || (window.COOP_CONFIG && window.COOP_CONFIG.ice) || CONFIG.iceServers; }
+const hasTurn = () => CoopNet.iceServersFor('turn', getIceServers()).length > 0;
+const STAGES = { stunMs: 6000, turnMs: 8000, peerMs: 5000 };   // p2p/STUN first, then TURN, then a peer helper, then the relay server
+function peerOptions(stage) {   // stage 'stun': direct + STUN only (TURN is not even contacted); default: everything
+  const saved = { ...((window.COOP_CONFIG && window.COOP_CONFIG.peer) || {}), ...JSON.parse(localStorage.getItem('coop-server-config') || '{}') };
+  const servers = stage === 'stun' ? CoopNet.iceServersFor('stun', getIceServers()) : getIceServers();
+  const opts = { config: { iceServers: servers, iceCandidatePoolSize: stage === 'stun' ? 2 : 0, iceTransportPolicy: getNet().priv ? 'relay' : 'all' } };   // no candidate pool: it would allocate TURN relays up front
   if (saved.host) opts.host = saved.host;
   if (saved.port) opts.port = saved.port;
   if (saved.path) opts.path = saved.path;
@@ -724,7 +744,7 @@ function resetWorker() {
 setStatus('Ready.', 'success');
 (function () { const p = new URLSearchParams(location.hash.slice(1)).get('ice'); if (p) { try { localStorage.setItem('coop-ice-servers', p); } catch (_) {} notify('Using the host\'s network (TURN) settings.', 'info', 3000); } })();
 (function () { const r = new URLSearchParams(location.hash.slice(1)).get('relay'); if (r && /^wss?:\/\//i.test(r)) { try { localStorage.setItem('coop-net', JSON.stringify({ ...getStoredNet(), relay: r })); } catch (_) {} notify("Using the host's relay server.", 'info', 3000); } })();
-resolveIce().finally(checkForAutoJoin);
+Promise.all([resolveIce().catch(() => {}), (window.CoopProfile ? CoopProfile.ready : Promise.resolve())]).finally(checkForAutoJoin);   // wait for the name/picture dialog so joins never use a placeholder name
 tryRestoreFromOPFS();
 
 // ==================== GESTURES ====================
@@ -776,13 +796,16 @@ viewerContainer.addEventListener('mouseleave', () => {
   if (myPeerId) broadcast({ type: 'CURSOR_HIDE', peerId: myPeerId });
 });
 function contentEl() {
-  return document.getElementById(state.fileType==='pdf' ? 'pdf-canvas' : state.fileType==='image' ? 'image-view' : 'text-content');
+  return document.getElementById(state.fileType==='pdf' ? 'pdf-canvas' : state.fileType==='image' ? 'image-view' : state.fileType==='docx' ? 'docx-view' : 'text-content');   // (docx used to resolve to a hidden element, so annotations were unusable there)
 }
 function sendCursor(cx, cy) {
-  if (!myPeerId) return;
+  if (!myPeerId || lowBw()) return;
   const now = Date.now(); if (now - lastCursorBroadcastTs < CURSOR_THROTTLE_MS) return; lastCursorBroadcastTs = now;
   const r = contentEl().getBoundingClientRect(); if (!r.width || !r.height) return;
-  broadcast({ type:'CURSOR_MOVE', x:(cx-r.left)/r.width, y:(cy-r.top)/r.height, page:state.currentPage, name:myDisplayName, peerId:myPeerId });
+  const rx = +((cx-r.left)/r.width).toFixed(4), ry = +((cy-r.top)/r.height).toFixed(4);
+  if (Math.abs(rx - (sendCursor._x ?? -9)) < 0.002 && Math.abs(ry - (sendCursor._y ?? -9)) < 0.002) return;   // did not move
+  sendCursor._x = rx; sendCursor._y = ry;
+  broadcast({ type:'CURSOR_MOVE', x:rx, y:ry, page:state.currentPage, peerId:myPeerId });
 }
 function broadcastCursor() { if (lastMouseClientX != null) sendCursor(lastMouseClientX, lastMouseClientY); }
 const remoteCursorPos = {};
@@ -792,7 +815,7 @@ function placeCursor(peerId) {
   el.style.left = (r.left - w.left + p.x*r.width) + 'px'; el.style.top = (r.top - w.top + p.y*r.height) + 'px';
 }
 function updateRemoteCursor(peerId, x, y, name, page) {
-  if (!cursorLayer) return;
+  if (!cursorLayer || lowBw()) return;
   if (page && page !== state.currentPage) { hideRemoteCursor(peerId); return; }
   let el = remoteCursors[peerId];
   if (!el) { el = document.createElement('div'); el.className = 'remote-cursor'; cursorLayer.appendChild(el); remoteCursors[peerId] = el; }
@@ -830,6 +853,7 @@ function checkForAutoJoin() {
   const hashParams = new URLSearchParams(location.hash.slice(1));
   const pwHashFromUrl = hashParams.get('pw');
   const rkFromUrl = hashParams.get('rk');
+  const fpFromUrl = hashParams.get('fp'); if (fpFromUrl && /^[\w-]{22}$/.test(fpFromUrl)) inviteFp = fpFromUrl;
   if (rkFromUrl && KEY_RE.test(rkFromUrl)) { peerRelayKey = rkFromUrl; try { sessionStorage.setItem('coop-rk', rkFromUrl); } catch (_) {} }
   if (pwHashFromUrl) {
     pendingAuthHash = pwHashFromUrl;
@@ -918,6 +942,7 @@ function attachConnectionHandlers(conn) {
   conn.on('data', (data) => handleNetworkMessage(conn, data));
   conn.on('close', () => {
     if (myGen !== connectionGeneration) return;
+    if (conn._replaced || conn._probe) return;   // moved to a new session id / better route on purpose: not a disconnect
     connections = connections.filter(c => c !== conn);
     removeRemoteCursor(conn.peer);
     const call = audioCalls.get(conn.peer);
@@ -951,7 +976,6 @@ function attachConnectionHandlers(conn) {
       if (!e.candidate) return;
       const c = e.candidate;
       conn._iceCandidates.push({ type:c.type, protocol:c.protocol, address:c.address, url:c.url });
-      if (c.type==='relay') conn._isRelay = true;
       updateDiagnosticsUI();
     });
     pc.addEventListener('iceconnectionstatechange', () => {
@@ -979,15 +1003,20 @@ function attachConnectionHandlers(conn) {
       try{conn.close()}catch(_){}
       return;
     }
-    try{conn.send({type:'PING'})}catch(_){}
-  }, CONFIG.heartbeatInterval);
+    try{ (conn._q = conn._q || new CoopNet.QualityTracker()).ping(); conn.send({type:'PING', t:Date.now()}); }catch(_){}
+  }, lowBw() ? CONFIG.heartbeatInterval * 3 : CONFIG.heartbeatInterval);
   const statsTimer = setInterval(async () => {
     if (!conn.open || !conn.peerConnection) return;
     try {
       const reports = await conn.peerConnection.getStats();
+      const all = []; reports.forEach(r => all.push(r));
+      const sel = CoopNet.selectedRoute(all);
+      if (sel) {   // what actually carries the data: p2p | stun | turn
+        conn._route = sel.route; conn._isRelay = sel.route === 'turn';
+        if (sel.rtt != null) conn._stats.rtt = sel.rtt;
+      }
       reports.forEach(r => {
-        if (r.type==='candidate-pair' && r.state==='succeeded') {
-          conn._stats.rtt = (r.currentRoundTripTime||0)*1000;
+        if (r.type==='candidate-pair' && r.state==='succeeded' && (r.nominated || r.selected)) {
           conn._stats.packetsLost = r.packetsLost ?? null;
           conn._stats.bytesReceived = r.bytesReceived ?? 0;
         }
@@ -1063,15 +1092,18 @@ function attachPeerMediaHandlers() {
 
 // ==================== INITIAL DATA SYNC ====================
 function sendInitialDataToConn(conn) {
+  if (conn && conn._initSent) return;   // a rejoining peer may ask twice (open session + token); send everything once
+  if (conn) conn._initSent = true;
   profiles[myPeerId] = myProfile();
   if (conn && conn._kindle) {
     try { conn.send({ type:'PROFILE', peerId: myPeerId, ...myProfile() }); } catch(_){}
     try { conn.send({ type:'SYNC', state }); } catch(_){}
-    try { conn.send({ type:'PAGE_CHANGE', page: state.currentPage }); } catch(_){}
+    try { conn.send({ type:'PAGE_CHANGE', ...pagePayload(state.currentPage) }); } catch(_){}
+    announceDoc(conn);
     return;
   }
   try { conn.send({ type:'SETTINGS', s: hostSettings }); } catch(_){}
-  try { conn.send({ type:'ANNOT_ALL', all: annots }); } catch(_){}
+  sendAnnotAll(conn);
   for (const [id, p] of Object.entries(profiles)) try { conn.send({ type:'PROFILE', peerId: id, ...p }); } catch(_){}
   try { conn.send({ type:'SYNC', state }); } catch(_){}
   try { conn.send({ type:'CHAT_HISTORY', messages: chatMessages.slice(-CONFIG.chatHistoryLimit) }); } catch(_){}
@@ -1086,6 +1118,8 @@ function sendInitialDataToConn(conn) {
 
 // ==================== HOST / JOIN ====================
 async function startHost() {
+  await ensureIce();
+  hostSigner = new CoopTrust.HostSigner(await CoopTrust.createIdentity());   // new key for every session: the link fingerprint changes with it
   hideError();
   connectionGeneration++;
   cleanupVoice();
@@ -1106,16 +1140,37 @@ async function startHost() {
   showBmcModal('create');
   peer = new Peer(peerOptions());
   attachPeerMediaHandlers();
-  
-  let hasOpened = false;
-  peer.on('open', (id) => {
+  wireHostPeer(peer, {});
+}
+
+// Host commands and state are signed per recipient (see js/coop-trust.js). Wrapping send() covers every call site, PeerJS or virtual (relay / bridge).
+function trustAttach(conn) {
+  if (!hostSigner || conn._kindle || conn._trustWrapped) return;   // Kindles cannot verify signatures: they rely on the relay's sender stamp
+  conn._trustWrapped = true;
+  const raw = conn.send.bind(conn); let pending = 0;
+  const hello = () => { try { raw({ type: 'HOST_KEY', pk: hostSigner.id.pub }); } catch (_) {} };
+  conn.send = function (m, ...rest) {
+    // PeerJS splits big messages by calling this.send(chunk, true) itself: those internal calls must reach the original untouched
+    if (rest.length || !m || typeof m !== 'object' || m.__peerData !== undefined) return raw(m, ...rest);
+    if (!pending && !hostSigner.needs(m, conn)) return raw(m);
+    pending++;   // once something is being signed, later messages queue behind it so order is kept
+    conn._sq = (conn._sq || Promise.resolve()).then(async () => { try { raw(hostSigner.needs(m, conn) ? await hostSigner.sign(m, conn.peer) : m); } catch (e) { console.warn('send failed', e); } pending--; });
+  };
+  if (conn.open) hello(); else conn.on('open', hello);
+}
+function wireHostPeer(p, opts) {
+  let hasOpened = !!opts.alreadyOpen;
+  p.on('open', (id) => {
+    if (p._retired) return;
     myPeerId = id;
     if (!hasOpened) {
       hasOpened = true;
       setStatus(`Hosting — code: ${id}${sessionAuth.required?' 🔒':''}`,'success');
-      notify(`Session created${sessionAuth.required?' (password protected)':''}.`,'success');
-      const url = buildShareUrl(id);
-      navigator.clipboard?.writeText(url).then(() => notify('Link copied.','info',3000)).catch(()=>{});
+      if (!opts.rotated) {
+        notify(`Session created${sessionAuth.required?' (password protected)':''}.`,'success');
+        const url = buildShareUrl(id);
+        navigator.clipboard?.writeText(url).then(() => notify('Link copied.','info',3000)).catch(()=>{});
+      }
       registerKindlePin(id, relayKeyB64);
     } else {
       setStatus(`Hosting — reconnected`, 'success');
@@ -1130,34 +1185,37 @@ async function startHost() {
     }
   });
   
-  peer.on('error', (err) => {
+  p.on('error', (err) => {
     console.error('PeerJS error:', err);
     if (err.type === 'network') {
       setStatus('Signaling lost — reconnecting…', 'warning');
-      if (!peer.disconnected) {
-        try { peer.reconnect(); } catch (_) {}
+      if (!p.disconnected) {
+        try { p.reconnect(); } catch (_) {}
       }
       return;
     }
     if (err.type === 'peer-unavailable' && (isHost || connections.some(c => c.open))) { notify('A peer is unreachable (it may have left).','warning',3000); return; }
     if (err.type === 'negotiation-failed' || (err.type === 'webrtc' && connections.some(c => c.open))) return;
-    if (err.type==='unavailable-id') { setTimeout(startHost,500); return; }
+    if (err.type==='unavailable-id') { if (!opts.rotated) setTimeout(startHost,500); return; }
     showError(err);
   });
   
-  peer.on('disconnected', () => {
+  p.on('disconnected', () => {
     setStatus('Signaling lost — reconnecting…','warning');
-    setTimeout(() => { try{peer.reconnect()}catch(_){} }, CONFIG.reconnectDelay);
+    setTimeout(() => { try{p.reconnect()}catch(_){} }, CONFIG.reconnectDelay);
   });
   
-  peer.on('connection', (conn) => {
-    if (connections.some(c => c.peer===conn.peer && c.open)) { try{conn.close()}catch(_){} return; }
+  p.on('connection', (conn) => {
+    trustAttach(conn);   // before any other 'open' handler: HOST_KEY must be the first thing a guest receives
+    if (p._retired) { try{conn.close()}catch(_){} return; }                                   // the old session id of a rotated session accepts nobody
+    if (conn.metadata && conn.metadata.upgrade) { CoopLive.hostAcceptUpgrade(conn); return; }   // a peer moving to a better route
+    if (!CoopLive.rotationActive() && connections.some(c => c.peer===conn.peer && c.open)) { try{conn.close()}catch(_){} return; }
     connections.push(conn);
     updatePeerListUI(); updateChatAvailability();
     conn._authenticated = !sessionAuth.required;
     // PeerJS never emits 'close' for a conn that never opened -> prune it ourselves
     setTimeout(() => { if (!conn.open) { connections = connections.filter(c => c !== conn); try{conn.close()}catch(_){} updatePeerListUI(); updateChatAvailability(); } }, CONFIG.connectTimeout);
-    setTimeout(() => { if (!conn.open && connections.includes(conn)) tryBridge(conn, []); }, 10000);
+    setTimeout(() => { if (!conn.open && connections.includes(conn)) tryBridge(conn, []); }, hasTurn() ? STAGES.stunMs + STAGES.turnMs : STAGES.stunMs);   // peer helpers come after TURN
     
     // Cleanup unauthenticated peers that hang
     let authTimeout = null;
@@ -1187,6 +1245,13 @@ function scheduleRejoin() {
   rejoinTimer = setTimeout(() => { rejoinTimer = null; pendingAuthHash = lastAuthHash; joinSession(lastJoinCode, true); }, delay);
 }
 let targetIsKindleRoom = false;
+const authBlock = new Map();   // peer id -> time until which password attempts are refused
+const trust = new CoopTrust.GuestTrust();   // guest side: the pinned host key and replay state
+let hostSigner = null;                        // host side: this session's signing identity
+let inviteFp = '';                            // fingerprint from the invite link / pasted code (root of trust)
+let preferredPeerId = null;
+let joinStageOverride = null;   // 'all' when the STUN-only stage ran out of time
+let pendingRejoin = null;   // {token, epoch, sent}: set when the host rotated the session id (see coop-live.js)
 
 async function joinSession(targetCode, isRetry) {
   hideError();
@@ -1230,8 +1295,9 @@ async function joinSession(targetCode, isRetry) {
   const code = dot > 0 ? rawCode.slice(0, dot) : rawCode;   // host code may be "id.key"
   targetIsKindleRoom = code.startsWith('kroom') || code.startsWith('kindle');
   if (dot > 0) {
-    const candidateKey = rawCode.slice(dot + 1);
+    const [candidateKey, codeFp] = rawCode.slice(dot + 1).split('.');
     if (!KEY_RE.test(candidateKey)) return notify('The room code contains an invalid encryption key.', 'warning');
+    if (codeFp && /^[\w-]{22}$/.test(codeFp)) inviteFp = codeFp;
     peerRelayKey = candidateKey;
     try { sessionStorage.setItem('coop-rk', peerRelayKey); } catch (_) {}
   } else if (!isRetry) {
@@ -1241,11 +1307,12 @@ async function joinSession(targetCode, isRetry) {
     try { sessionStorage.removeItem('coop-rk'); } catch (_) {}
   }
   if (code === myPeerId) return notify('You cannot join your own session.','warning');
+  if (!isRetry) { trust.reset(inviteFp); }   // a new session: forget the previous host key (retries keep it)
   lastJoinCode = code;
   if (!isRetry) relayHostOnline = null;
   if (!isRetry) { rejoinAttempts = 0; preAuthDrops = 0; } clearTimeout(rejoinTimer); rejoinTimer = null;
   try { sessionStorage.setItem('coop-session', code); } catch (_) {}
-  if (relayV) { const old = relayV; relayV = null; try { old._sock.close(); } catch (_) {} }
+  if (relayV) { const old = relayV; relayV = null; try { old._sock._intentional = true; old._sock.close(); } catch (_) {} }
   // Relay-only joins (Kindle rooms and relay-server-only mode) do not need
   // WebRTC. Defer the RTCPeerConnection check until the PeerJS fallback path.
   connectionGeneration++;
@@ -1270,11 +1337,16 @@ async function joinSession(targetCode, isRetry) {
 
   if (!window.RTCPeerConnection) { showError({type:'browser-incompatible'}); return; }
   setStatus(`Connecting to ${code}…`,'info');
-  peer = new Peer(peerOptions());
+  await ensureIce();
+  const second = joinStageOverride === 'all', stage = joinStageOverride || (!getNet().priv && hasTurn() ? 'stun' : 'all'); joinStageOverride = null;
+  const myGenJoin = connectionGeneration;
+  const keepId = preferredPeerId; preferredPeerId = null;   // after a session rotation we try to keep our own id (comments stay ours)
+  peer = keepId ? new Peer(keepId, peerOptions(stage)) : new Peer(peerOptions(stage));
   attachPeerMediaHandlers();
   
   peer.on('error', (err) => {
     console.error('PeerJS error:', err);
+    if (err.type === 'unavailable-id' && keepId && myGenJoin === connectionGeneration) { try { peer.destroy(); } catch (_) {} joinSession(code + (peerRelayKey ? '.' + peerRelayKey : ''), true); return; }   // id still held by the signalling server: continue with a fresh one
     if (err.type === 'network') {
       setStatus('Signaling lost — reconnecting…', 'warning');
       if (!peer.disconnected) { try { peer.reconnect(); } catch (_) {} }
@@ -1309,7 +1381,12 @@ async function joinSession(targetCode, isRetry) {
     const conn = peer.connect(code, { reliable: true });
     conn._authenticated = false;
     peer.on('connection', c => acceptBridge(c, conn));
-    scheduleRelayJoin(conn);
+    scheduleRelayJoin(conn, stage, second);
+    if (stage === 'stun') setTimeout(() => {   // nothing direct after the STUN stage: retry with TURN allowed (new Peer, same session)
+      if (conn.open || myGenJoin !== connectionGeneration || !connections.includes(conn) || bridgeV || relayV || lastJoinCode !== code) return;
+      netLog('no direct/STUN route after ' + STAGES.stunMs / 1000 + ' s — allowing TURN');
+      joinStageOverride = 'all'; joinSession(code + (peerRelayKey ? '.' + peerRelayKey : ''), true);
+    }, STAGES.stunMs);
     const timeout = setTimeout(() => {
       if (!conn.open && !bridgeV && !relayV) { showError({type:'peer-unavailable'}); try{conn.close()}catch(_){} scheduleRejoin(); }
     }, CONFIG.connectTimeout);
@@ -1335,6 +1412,7 @@ function buildShareUrl(code, includeHash=false) {
   if (shareIceRaw) url += (url.includes('#') ? '&' : '#') + 'ice=' + encodeURIComponent(shareIceRaw);
   if (getStoredNet().relay) url += (url.includes('#') ? '&' : '#') + 'relay=' + encodeURIComponent(getStoredNet().relay);
   if (relayKeyB64) url += (url.includes('#') ? '&' : '#') + 'rk=' + relayKeyB64;
+  if (hostSigner) url += (url.includes('#') ? '&' : '#') + 'fp=' + hostSigner.id.fp;   // lets guests refuse a substituted host key
   return url;
 }
 function copyShareLink() {
@@ -1350,7 +1428,7 @@ function copyShareLink() {
 }
 function copyHostCode() {
   if (!myPeerId) return;
-  navigator.clipboard?.writeText(myPeerId + (relayKeyB64 ? '.' + relayKeyB64 : '')).then(
+  navigator.clipboard?.writeText(myPeerId + (relayKeyB64 ? '.' + relayKeyB64 + (hostSigner ? '.' + hostSigner.id.fp : '') : '')).then(
     () => notify('Host code copied (includes the relay encryption key).','success'),
     () => notify('Copy failed','error')
   );
@@ -1407,14 +1485,17 @@ function syncHttpRelayPage(page) {
   fetch(`${relayHttp}/room/${encodeURIComponent(myPeerId)}/sync?page=${page}&from=${encodeURIComponent(myPeerId)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ page: page, from: myPeerId })
+    body: JSON.stringify({ page: page, from: myPeerId, ...pagePayload(page) })
   }).catch(() => {});
 }
 
 function startHttpSyncPolling(hostId) {
   if (httpSyncInterval) clearInterval(httpSyncInterval);
   const relayHttp = (getNet().relay || DEFAULT_RELAY).replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+  let tick = 0;
   httpSyncInterval = setInterval(() => {
+    if (document.hidden) return;
+    if (relayV && relayV.open && (++tick % 12) !== 0) return;   // socket open: one safety check every ~30 s instead of every 2.5 s
     fetch(`${relayHttp}/room/${encodeURIComponent(hostId)}/state`)
       .then(r => r.json())
       .then(st => {
@@ -1517,7 +1598,7 @@ function saveBlob(blob, name) {
   a.href = url; a.download = name; a.style.display = 'none'; document.body.appendChild(a); a.click();
   setTimeout(() => { try { document.body.removeChild(a); } catch (_) {} URL.revokeObjectURL(url); }, 1000);
 }
-const docKey = () => 'coop-annots:' + cachedFilename + ':' + (cachedFileBytes ? cachedFileBytes.byteLength : 0);
+const docKey = () => 'coop-annots:' + cachedFilename + ':' + (cachedFileBytes ? cachedFileBytes.size : 0);
 let annotSaveT = null;
 function scheduleAnnotSave() {   // host / solo only; peers always get the host's copy
   if (!(isHost || !lastJoinCode) || !cachedFileBytes || !cachedFilename) return;
@@ -1538,7 +1619,7 @@ function importAnnots(file) {
       const d = JSON.parse(t); if (d.app !== 'coop-reader' || !d.annots) throw 0;
       if (hasAnnots() && !confirm('Replace the current annotations with the imported ones?')) return;
       const out = {}; for (const [pg, l] of Object.entries(d.annots)) out[pg] = (Array.isArray(l) ? l : []).map(cleanItem).filter(Boolean);
-      annots = out; annotSig = ''; scheduleAnnotSave(); if (isHost) broadcast({ type:'ANNOT_ALL', all: annots });
+      annots = out; annotSig = ''; scheduleAnnotSave(); if (isHost) broadcastAnnotAll();
       notify(`Imported ${Object.values(out).reduce((n, l) => n + l.length, 0)} annotations` + (d.file && d.file !== cachedFilename ? ` (made for “${d.file}”)` : ''), 'success', 4500);
     } catch (_) { notify('That is not a coop-reader annotations file.', 'error'); }
   });
@@ -1586,7 +1667,7 @@ function wrapRuns(U, text, size, maxW) {
 function drawRuns(pg, U, text, x, y, size) { for (const r of runsOf(U, text)) { pg.drawText(r.t, { x, y, size, font: r.f }); x += r.f.widthOfTextAtSize(r.t, size); } }
 async function exportAnnotatedPdf() {
   await loadPdfLib(); const { PDFDocument, rgb, StandardFonts } = PDFLib;
-  const doc = await PDFDocument.load(cachedFileBytes.slice(0), { ignoreEncryption: true });
+  const doc = await PDFDocument.load(await cachedFileBytes.arrayBuffer(), { ignoreEncryption: true });
   const font = await doc.embedFont(StandardFonts.Helvetica), pages = doc.getPages(), comments = [];
   const hex = h => rgb(parseInt(h.slice(1,3),16)/255, parseInt(h.slice(3,5),16)/255, parseInt(h.slice(5,7),16)/255);
   for (const [pg, list] of Object.entries(annots)) {
@@ -1598,18 +1679,22 @@ async function exportAnnotatedPdf() {
     for (const a of list) {
       if (a.t === 'pen') { for (let i = 1; i < a.pts.length; i++) page.drawLine({ start: P(a.pts[i-1][0], a.pts[i-1][1]), end: P(a.pts[i][0], a.pts[i][1]), thickness: 2, color: hex(a.c) }); }
       else if (a.t === 'hl') { const p1 = P(a.r[0], a.r[1]), p2 = P(a.r[0] + a.r[2], a.r[1] + a.r[3]); page.drawRectangle({ x: Math.min(p1.x, p2.x), y: Math.min(p1.y, p2.y), width: Math.abs(p2.x - p1.x), height: Math.abs(p2.y - p1.y), color: hex(a.c), opacity: .35 }); }
-      else if (a.t === 'note') {
-        comments.push({ pg: +pg, n: comments.length + 1, by: a.name, text: a.text }); const q = P(a.x, a.y);
+      else if (a.t === 'cm') {
+        comments.push({ pg: +pg, n: comments.length + 1, thread: a.th, quote: a.quote, rs: a.rs }); const q = P(a.x, a.y);
+        if (a.k === 'tx') for (const r of a.q) { const p1 = P(r[0], r[1]), p2 = P(r[0] + r[2], r[1] + r[3]); page.drawRectangle({ x: Math.min(p1.x, p2.x), y: Math.min(p1.y, p2.y), width: Math.abs(p2.x - p1.x), height: Math.abs(p2.y - p1.y), color: hex(a.c), opacity: .3 }); }
         page.drawCircle({ x: q.x, y: q.y, size: 8, color: rgb(1, .85, .2), borderColor: rgb(.54, .43, 0), borderWidth: .8 });
         page.drawText(String(comments.length), { x: q.x - (comments.length > 9 ? 4.5 : 2.5), y: q.y - 3, size: 8, font, color: rgb(0, 0, 0) });
       }
     }
   }
   if (comments.length) {
-    const U = await unicodeFonts(doc, comments.map(c => (c.by || '') + c.text).join(''), font);
+    const U = await unicodeFonts(doc, comments.map(c => (c.quote || '') + c.thread.map(m => (m.name || '') + m.text).join('')).join(''), font);
     let pg = doc.addPage([595, 842]), y = 800; drawRuns(pg, U, 'Comments', 40, y, 16); y -= 26;
     for (const c of comments) {
-      for (const l of wrapRuns(U, `${c.n}. [p.${c.pg}] ${c.by || 'peer'}: ${c.text}`, 10, 515)) { if (y < 50) { pg = doc.addPage([595, 842]); y = 800; } drawRuns(pg, U, l, 40, y, 10); y -= 14; }
+      const lines = [`${c.n}. [p.${c.pg}]${c.rs ? ' (resolved)' : ''}`];
+      if (c.quote) lines.push(...wrapRuns(U, '“' + c.quote + '”', 10, 500));
+      c.thread.forEach((m, i) => lines.push(...wrapRuns(U, `${i ? '   ↳ ' : '   '}${m.name || 'peer'}: ${m.text}`, 10, 500)));
+      for (const l of lines) { if (y < 50) { pg = doc.addPage([595, 842]); y = 800; } drawRuns(pg, U, l, 40, y, 10); y -= 14; }
       y -= 4;
     }
   }
@@ -1617,15 +1702,15 @@ async function exportAnnotatedPdf() {
 }
 function exportAnnotatedImage() {
   const img = document.getElementById('image-view'), W = img.naturalWidth, H = img.naturalHeight, lw = Math.max(2, W / 300);
-  const notes = (annots[1] || []).filter(a => a.t === 'note'), fs = Math.max(14, Math.round(W / 60)), pad = fs * 1.4;
-  const lines = []; notes.forEach((a, i) => wrapText(`${i+1}. ${a.name || 'peer'}: ${a.text}`, Math.max(30, Math.floor(W / (fs * .55)))).forEach(l => lines.push(l)));
+  const notes = (annots[1] || []).filter(a => a.t === 'cm'), fs = Math.max(14, Math.round(W / 60)), pad = fs * 1.4;
+  const lines = []; notes.forEach((a, i) => a.th.forEach((m, k) => wrapText(`${k ? '   ↳ ' : (i + 1) + '. '}${m.name || 'peer'}: ${m.text}`, Math.max(30, Math.floor(W / (fs * .55)))).forEach(l => lines.push(l))));
   const legendH = lines.length ? Math.round((lines.length + 1) * pad) : 0, cv = document.createElement('canvas'); cv.width = W; cv.height = H + legendH;
   const g = cv.getContext('2d'); g.drawImage(img, 0, 0);
   let n = 0;
   (annots[1] || []).forEach(a => {
     if (a.t === 'pen') { g.strokeStyle = a.c; g.lineWidth = lw; g.lineCap = g.lineJoin = 'round'; g.beginPath(); a.pts.forEach((p, k) => k ? g.lineTo(p[0]*W, p[1]*H) : g.moveTo(p[0]*W, p[1]*H)); g.stroke(); }
     else if (a.t === 'hl') { g.globalAlpha = .35; g.fillStyle = a.c; g.fillRect(a.r[0]*W, a.r[1]*H, a.r[2]*W, a.r[3]*H); g.globalAlpha = 1; }
-    else if (a.t === 'note') { const r = fs * .8; g.fillStyle = '#ffd933'; g.strokeStyle = '#8a6d00'; g.lineWidth = 2; g.beginPath(); g.arc(a.x*W, a.y*H, r, 0, 7); g.fill(); g.stroke(); g.fillStyle = '#000'; g.font = `bold ${fs}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(++n), a.x*W, a.y*H); }
+    else if (a.t === 'cm') { if (a.k === 'tx') { g.globalAlpha = .3; g.fillStyle = a.c; a.q.forEach(r => g.fillRect(r[0]*W, r[1]*H, r[2]*W, r[3]*H)); g.globalAlpha = 1; } const r = fs * .8; g.fillStyle = '#ffd933'; g.strokeStyle = '#8a6d00'; g.lineWidth = 2; g.beginPath(); g.arc(a.x*W, a.y*H, r, 0, 7); g.fill(); g.stroke(); g.fillStyle = '#000'; g.font = `bold ${fs}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(++n), a.x*W, a.y*H); }
   });
   if (lines.length) { g.fillStyle = '#fff'; g.fillRect(0, H, W, legendH); g.fillStyle = '#000'; g.font = `${fs}px sans-serif`; g.textAlign = 'left'; g.textBaseline = 'top'; lines.forEach((l, i) => g.fillText(l, pad / 2, H + pad / 2 + i * pad)); }
   return new Promise((res, rej) => cv.toBlob(b => b ? res(b) : rej(new Error('Image export failed')), 'image/png'));
@@ -1633,10 +1718,11 @@ function exportAnnotatedImage() {
 function annotationsReport() {
   const out = [`# Annotations — ${cachedFilename}`, ''];
   for (const pg of Object.keys(annots).map(Number).sort((a, b) => a - b)) {
-    const list = annots[pg] || []; if (!list.length) continue; out.push(`## Page ${pg}`);
-    for (const a of list) out.push(a.t === 'note' ? `- Comment (${a.name || 'peer'}): ${a.text}` : a.t === 'hl' ? '- Highlight' : '- Drawing');
+    const list = (annots[pg] || []).filter(a => a.t !== 'cm'); if (!list.length) continue; out.push(`## Page ${pg}`);
+    for (const a of list) out.push(a.t === 'hl' ? '- Highlight' : '- Drawing');
     out.push('');
   }
+  if (CoopComments.stats(annots).threads) out.push(CoopComments.markdown(annots, cachedFilename).split('\n').slice(2).join('\n'));
   return out.join('\n');
 }
 function chooseDownload(opts) {
@@ -1665,7 +1751,7 @@ async function downloadFile() {
       if (state.fileType === 'pdf') { blob = new Blob([await exportAnnotatedPdf()], { type: 'application/pdf' }); name = name.replace(/(\.pdf)?$/i, '-annotated.pdf'); }
       else { blob = await exportAnnotatedImage(); name = name.replace(/\.[^.]+$/, '') + '-annotated.png'; }
     } else if (mode === 'report') { blob = new Blob([annotationsReport()], { type: 'text/markdown' }); name = name.replace(/\.[^.]+$/, '') + '-annotations.md'; }
-    else if (mode === 'json') { blob = new Blob([JSON.stringify({ app: 'coop-reader', file: cachedFilename, size: cachedFileBytes.byteLength, annots })], { type: 'application/json' }); name = name.replace(/\.[^.]+$/, '') + '-annotations.json'; }
+    else if (mode === 'json') { blob = new Blob([JSON.stringify({ app: 'coop-reader', file: cachedFilename, size: cachedFileBytes.size, annots })], { type: 'application/json' }); name = name.replace(/\.[^.]+$/, '') + '-annotations.json'; }
     else blob = new Blob([cachedFileBytes], { type: 'application/octet-stream' });
     saveBlob(blob, name); notify(`Downloading ${name}…`, 'success');
   } catch (e) { notify(`Download failed: ${e.message || e}`, 'error'); }
@@ -1971,17 +2057,48 @@ function askPassword() {
     i.addEventListener('keydown', e => { if (e.key === 'Enter') done(i.value.trim()); });
   });
 }
-async function handleNetworkMessage(conn, data) {
+function handleNetworkMessage(conn, data) {
+  if (isHost || !data || typeof data !== 'object' || conn._probe) return handleNetworkMessageInner(conn, data);
+  // Guests verify in arrival order (signatures are checked asynchronously; order must not change), then hand over.
+  conn._gq = (conn._gq || Promise.resolve()).then(async () => {
+    if (data.type === 'Z') { try { data = await CoopCodec.unpackControl(data); } catch (_) { return; } if (!data || typeof data !== 'object') return; }
+    const r = await trust.gate(data, { to: myPeerId, bridged: conn === bridgeV });
+    if (!r.ok) { netLog('dropped (' + r.reason + ')'); if (/does not match|changed/.test(r.reason)) onTrustFailure(r.reason); return; }
+    if (r.hostKey) { const k = await trust.onHostKey(data.pk); if (!k.ok) onTrustFailure(k.reason); else updateTrustUI(); return; }
+    if (conn === bridgeV && bridgeV._via) bridgeV._via._proven = true;
+    handleNetworkMessageInner(conn, r.msg);
+  }).catch(e => console.warn('gate failed', e));
+}
+function onTrustFailure(reason) {
+  notify('⚠ Security check failed: ' + reason + '. Disconnected. Ask the host for a fresh invite link.', 'error', 20000);
+  setStatus('Host identity check failed', 'error');
+  lastJoinCode = null; pendingRejoin = null; try { sessionStorage.removeItem('coop-session'); } catch (_) {}
+  for (const c of connections.slice()) { c._replaced = true; try { c.close(); } catch (_) {} }
+  connections = [];
+  if (relayV) { try { relayV._sock._intentional = true; relayV._sock.close(); } catch (_) {} relayV = null; }
+  updatePeerListUI(); updateChatAvailability();
+}
+function trustSummary() {
+  if (isHost) return hostSigner ? { state: 'host', fp: hostSigner.id.fp } : null;
+  if (trust.key) return { state: trust.verified ? 'verified' : 'pinned', fp: trust.fp };
+  return trust.legacy ? { state: 'legacy', fp: '' } : null;
+}
+function updateTrustUI() { const el = document.getElementById('trust-line'); if (!el) return; const t = trustSummary(); el.hidden = !t; if (!t) return;
+  const sn = t.fp ? CoopTrust.safetyNumber(t.fp) : '';
+  el.textContent = t.state === 'host' ? '🔐 Your session fingerprint: ' + sn
+    : t.state === 'verified' ? '🔐 Host verified by the invite link · ' + sn
+    : t.state === 'pinned' ? '⚠ Host key not verified by the link — compare this number with the host: ' + sn
+    : '⚠ This host is an older version: its commands are not signed';
+}
+async function handleNetworkMessageInner(conn, data) {
   if (!data || typeof data !== 'object') return;
+  if (data.type === 'Z') { try { data = await CoopCodec.unpackControl(data); } catch (_) { return; } if (!data || typeof data !== 'object') return; }   // deflated control message (host side; guests unpacked it in the gate)
   conn._lastPong = Date.now();   // any traffic proves liveness
+  if (window.CoopLive && CoopLive.handle(conn, data)) return;   // rotation, rejoin, focus reports, route upgrades (coop-live.js)
 
-  if (data.type === 'DOC_OPEN' && data.filename) {
-    const roomId = isHost ? myPeerId : lastJoinCode;
-    loadDocFromRelay(roomId, data.filename);
-    return;
-  }
 
   if (data.type === 'AUTH_REQUIRED') {
+    if (pendingRejoin && !pendingRejoin.sent) { pendingRejoin.sent = true; try { conn.send({ type:'REJOIN', token: pendingRejoin.token, epoch: pendingRejoin.epoch, prev: pendingRejoin.prev }); } catch (_) {} return; }   // moved here by the host: a one-time token replaces the password
     let hash = pendingAuthHash;
     if (!hash) {
       let pw = document.getElementById('join-password').value.trim();
@@ -1998,12 +2115,14 @@ async function handleNetworkMessage(conn, data) {
   }
   if (data.type === 'AUTH') {
     if (!isHost || conn._authenticated) return;
+    if ((conn._authFails || 0) >= 3 || (authBlock.get(conn.peer) || 0) > Date.now()) { try { conn.close(); } catch (_) {} return; }   // no unlimited password guessing
     if (data.hash === sessionAuth.hash) {
       conn._authenticated = true;
       sendInitialDataToConn(conn);
       notify(`Peer ${String(conn.peer).substring(0,6)}… authenticated`,'success',3000);
       updateChatAvailability();
     } else {
+      conn._authFails = (conn._authFails || 0) + 1; if (conn._authFails >= 3) authBlock.set(conn.peer, Date.now() + 60000);
       try{conn.send({type:'AUTH_FAIL'})}catch(_){}
       notify('Rejected peer with wrong password.','warning',5000);
       setTimeout(() => { try{conn.close()}catch(_){} }, 500);
@@ -2018,24 +2137,37 @@ async function handleNetworkMessage(conn, data) {
   }
   if (isHost && sessionAuth.required && !conn._authenticated) return;
 
-  if (data.type==='PING') { try{conn.send({type:'PONG'})}catch(_){} return; }
-  if (data.type==='PONG') { conn._lastPong = Date.now(); return; }
+  if (data.type==='PING') { try{conn.send({type:'PONG', t:data.t})}catch(_){} return; }
+  if (data.type==='PONG') { conn._lastPong = Date.now(); if (typeof data.t === 'number') { const rtt = Date.now() - data.t; if (rtt >= 0 && rtt < 60000) { (conn._q = conn._q || new CoopNet.QualityTracker()).pong(rtt); conn._appRtt = rtt; } } return; }
 
   if (data.type==='ANNOT') {
     if (isHost) {
       if (!hostSettings.peerAnnotate || data.op==='clear') return;
-      if (data.op==='add') { const it = cleanItem(data.item); if (!it) return; it.by = conn.peer.replace(/[^\w-]/g,''); it.name = (profiles[conn.peer]||{}).name || it.name; data.item = it; }
-      if (data.op==='del') { const own = (annots[+data.page]||[]).find(a => a.id === data.id); if (!own || own.by !== conn.peer.replace(/[^\w-]/g,'')) return; }
+      const who = conn.peer.replace(/[^\w-]/g,''), nm = (profiles[conn.peer]||{}).name || '', pgN = +data.page, list = annots[pgN] || [];
+      if (data.op==='add') {
+        const raw = cleanItem(data.item); if (!raw) return;
+        const it = raw.t === 'cm' ? CoopComments.stamp(raw, who, nm, Date.now()) : (raw.by = who, raw.name = nm || raw.name, raw);   // the host decides who wrote it
+        if (!it) return; data.item = it;
+      }
+      else if (data.op==='del') { const own = list.find(a => a.id === data.id); if (!own || own.by !== who) return; }
+      else if (data.op==='reply') { const m = CoopComments.stampMsg(data.item, who, nm, Date.now()); if (!m || !CoopComments.find(list, data.id)) return; data.item = m; }
+      else if (data.op==='rdel') { const root = CoopComments.find(list, data.id); const m = root && root.th.find(x => x.id === data.item); if (!m || (m.by !== who && !(m === root.th[0] && root.by === who))) return; data.item = String(data.item); }
+      else if (data.op==='resolve') { const root = CoopComments.find(list, data.id); if (!root || root.by !== who) return; data.item = data.item ? 1 : 0; }
+      else return;
       applyAnnot(data.op, data.page, data.item, data.id);
-      for (const o of connections) if (o!==conn && o.open && o._authenticated) try { o.send({ type:'ANNOT', op:data.op, page:data.page, item:data.item, id:data.id }); } catch (_) {}
-    } else if (conn.peer === lastJoinCode) applyAnnot(data.op, data.page, data.item, data.id);
+      if (window.CoopCommentsUI) CoopCommentsUI.onChanged();
+      for (const o of connections) if (o!==conn && o.open && o._authenticated) try { o.send({ type:'ANNOT', op:data.op, page:data.page, item: data.op==='add' ? wireItem(data.item) : data.item, id:data.id }); } catch (_) {}
+    } else if (conn.peer === lastJoinCode) { applyAnnot(data.op, data.page, data.item, data.id); if (window.CoopCommentsUI) CoopCommentsUI.onChanged(); }
     return;
   }
-  if (data.type==='ANNOT_REQ') { if (isHost) try { conn.send({ type:'ANNOT_ALL', all: annots }); } catch (_) {} return; }
+  if (data.type==='ANNOT_REQ') { if (isHost) sendAnnotAll(conn); return; }
   if (data.type==='ANNOT_ALL') {
     if (isHost || conn.peer !== lastJoinCode) return;
     const out = {}; for (const [pg, list] of Object.entries(data.all || {})) out[pg] = (Array.isArray(list) ? list : []).map(cleanItem).filter(Boolean);
-    annots = out; annotSig = ''; return;
+    annots = out; annotSig = '';
+    for (const [id, a] of Object.entries(data.authors || {})) if (/^[\w-]{1,60}$/.test(id) && a && typeof a.name === 'string') annotAuthors[id] = { name: a.name.slice(0, 24), avatar: AVATAR_RE.test(a.avatar || '') && a.avatar.length < 60000 ? a.avatar : '' };
+    if (window.CoopCommentsUI) CoopCommentsUI.onChanged();
+    return;
   }
   if (data.type==='CHAIN_CONNECT' || data.type==='BRIDGE_DOWN' || data.type==='BRIDGE_CLOSE') {   // helper peer, host-origin only
     if (isHost || conn.peer !== lastJoinCode) return;
@@ -2050,6 +2182,7 @@ async function handleNetworkMessage(conn, data) {
       connections = connections.filter(c => c !== p.direct); try { p.direct.close(); } catch (_) {}
       const t = data.target, v = { peer: t, open: true, _virtual: true, _via: conn, _authenticated: !sessionAuth.required, get dataChannel() { return conn.dataChannel; },
         send(m) { conn.send({ type:'BRIDGE_DOWN', to: t, payload: m }); }, close() { try { conn.send({ type:'BRIDGE_CLOSE', to: t }); } catch (_) {} }, on() {} };
+      trustAttach(v);
       connections.push(v); updatePeerListUI(); updateChatAvailability();
       notify(`Peer ${String(t).substring(0,6)}… connected through a relay peer`, 'info', 4000);
       if (sessionAuth.required) v.send({ type:'AUTH_REQUIRED', salt: sessionAuth.salt }); else sendInitialDataToConn(v);
@@ -2102,12 +2235,21 @@ async function handleNetworkMessage(conn, data) {
     return;
   }
   if (data.type==='CHAT') {
-    if (data.msg && typeof data.msg.text==='string') addChatMessage(data.msg, false);
+    if (!data.msg || typeof data.msg.text !== 'string') return;
+    if (!isHost && conn.peer !== lastJoinCode) return;
+    if (isHost) data = { type:'CHAT', msg: { peerId: conn.peer, name: (profiles[conn.peer] || {}).name || 'Guest', text: data.msg.text.substring(0, 500), ts: Date.now() } };   // the host decides who said it
+    addChatMessage(data.msg, false);
     if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
     return;
   }
+  if (data.type==='DOC_OPEN') { onDocOffer(conn, data); return; }
+  if (data.type==='DOC_REQUEST') { if (isHost && cachedFileBytes && data.fp === cachedFp) serveDocTo(conn); return; }
+  if (data.type==='DOC_READY') { onDocReady(conn, data); return; }
+  if (data.type==='DOC_ERROR') { if (!isHost && conn.peer === lastJoinCode) { pendingDoc = null; notify('The host could not send the document: ' + String(data.error || 'unknown error').slice(0, 120), 'error', 7000); } return; }
   if (data.type==='PAGE_CHANGE') {
-    const pg = parseInt(data.page, 10);
+    if (isHost && (!hostSettings.peerNav || (hostSettings.idleLogout && conn._hidden))) return;   // peers may only turn pages when the host allows it
+    if (!isHost && conn.peer !== lastJoinCode) return;                                             // guests only follow the host
+    const pg = mapRemotePage(data);
     if (!pg || pg < 1) return;
     syncedPage = pg;
     if (detached) updateDetachUI(); else { state.currentPage = pg; renderCurrentPage(); }
@@ -2115,31 +2257,37 @@ async function handleNetworkMessage(conn, data) {
     return;
   }
   if (data.type==='RELAY_VOICE_CHUNK') {
+    if (isHost) data.peerId = conn.peer; else if (conn.peer !== lastJoinCode && !conn._virtual) return;   // the host stamps the real sender; nobody can speak for another peer
     handleRelayVoiceChunk(data.peerId, data.data, data.mime);
     if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
     return;
   }
   if (data.type==='FORM_FIELD_CHANGE') {
+    if (isHost) data.peerId = conn.peer; else if (conn.peer !== lastJoinCode && !conn._virtual) return;   // the host stamps the real sender; nobody can speak for another peer
     handleRemoteFormField(data);
     if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
     return;
   }
   if (data.type==='XLSX_CELL_CHANGE') {
+    if (isHost) data.peerId = conn.peer; else if (conn.peer !== lastJoinCode && !conn._virtual) return;   // the host stamps the real sender; nobody can speak for another peer
     handleRemoteXlsxCell(data);
     if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
     return;
   }
   if (data.type==='DOCX_CONTENT_CHANGE') {
+    if (isHost) data.peerId = conn.peer; else if (conn.peer !== lastJoinCode && !conn._virtual) return;   // the host stamps the real sender; nobody can speak for another peer
     handleRemoteDocxContent(data);
     if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
     return;
   }
   if (data.type==='CURSOR_MOVE') {
-    updateRemoteCursor(data.peerId, data.x, data.y, data.name, data.page);
+    if (isHost) data.peerId = conn.peer; else if (conn.peer !== lastJoinCode && !conn._virtual) return;   // the host stamps the real sender; nobody can speak for another peer
+    updateRemoteCursor(data.peerId, data.x, data.y, (profiles[data.peerId] || {}).name || data.name, data.page);
     if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
     return;
   }
   if (data.type==='CURSOR_HIDE') {
+    if (isHost) data.peerId = conn.peer; else if (conn.peer !== lastJoinCode && !conn._virtual) return;   // the host stamps the real sender; nobody can speak for another peer
     hideRemoteCursor(data.peerId);
     if (isHost) for (const o of connections) if (o!==conn && o.open) try{o.send(data)}catch(_){}
     return;
@@ -2158,6 +2306,7 @@ async function handleNetworkMessage(conn, data) {
     return;
   }
   if (data.type==='VOICE_STATE') {
+    if (isHost) data = { type:'VOICE_STATE', on: !!data.on, peerId: conn.peer };   // nobody can switch another person's voice on or off
     conn._peerInVoice = !!data.on;
     if (!data.on) {
       const call = audioCalls.get(data.peerId);
@@ -2172,62 +2321,70 @@ async function handleNetworkMessage(conn, data) {
     for (const id of (data.peers||[])) if (id!==myPeerId && getMediaStreamForCall()) startOutgoingCall(id);
     return;
   }
-  if (data.type==='FILE_START') {
-    if (isHost && !hostSettings.peerUploads) { notify('Blocked a file upload from a peer.','warning',3000); return; }
-    if (!data.totalChunks || data.totalChunks > CONFIG.maxChunks || !(data.totalSize > (data.totalChunks-1)*CONFIG.chunkSize) || data.totalSize > data.totalChunks*CONFIG.chunkSize) { notify('Oversized transfer refused.','error',6000); return; }
-    if (incomingTransfers.has(conn.peer)) incomingTransfers.delete(conn.peer);
-    incomingTransfers.set(conn.peer, {
-      filename: data.filename, totalSize: data.totalSize, totalChunks: data.totalChunks,
-      chunks: new Array(data.totalChunks), received: 0, startedAt: Date.now(), lastAt: Date.now(),
-      priv: !isHost && data.private === true && conn.peer === lastJoinCode,
-    });
-    notify(`Receiving ${data.filename}…`,'info',2500);
-    updateTransferProgress(data.filename, 0, data.totalChunks);
-    updateDiagnosticsUI();
-    const watchdog = setInterval(() => {
-      const t = incomingTransfers.get(conn.peer);
-      if (!t || t.received >= t.totalChunks) { clearInterval(watchdog); return; }
-      if (Date.now() - t.lastAt > CONFIG.transferTimeout) { clearInterval(watchdog); incomingTransfers.delete(conn.peer); notify('Transfer stalled and was cancelled.','error',6000); }
-    }, 5000);
-    return;
+  if (data.type==='FILE_START') { await onFileStart(conn, data); return; }
+  if (data.type==='FILE_CHUNK') { await onFileChunk(conn, data); return; }
+  if (data.type==='FILE_ACK') { conn._ackedChunks = data.received; return; }
+  if (data.type==='FILE_GO' || data.type==='FILE_SKIP') { conn._xferReply = { type: data.type, z: !!data.z, error: data.error ? String(data.error).slice(0, 120) : '' }; return; }
+  if (data.type==='FILE_END') { await onFileEnd(conn, data); return; }
+}
+
+// ---- receiving files: spooled to disk (OPFS) when large, so size is limited by free storage, not by memory
+async function onFileStart(conn, data) {
+  if (isHost && !hostSettings.peerUploads) { notify('Blocked a file upload from a peer.','warning',3000); return; }
+  const cs = Number.isInteger(data.chunkSize) ? data.chunkSize : CONFIG.chunkSize, total = data.totalChunks, size = data.totalSize;
+  if (!(cs >= 4096 && cs <= 1048576) || !Number.isInteger(total) || total < 1 || !Number.isFinite(size) || size < 1 || size > CONFIG.maxFileBytes || !(size > (total - 1) * cs) || size > total * cs) { notify('Refused a malformed file transfer.','error',6000); return; }
+  const priv = !isHost && data.private === true && conn.peer === lastJoinCode;
+  const fp = typeof data.fp === 'string' ? data.fp.slice(0, 80) : '';
+  if (!priv && fp && fp === cachedFp) {   // already have this exact document (reconnect, rejoin, rotation): do not download it again
+    try { conn.send({ type:'FILE_SKIP', fp }); } catch (_) {}
+    netLog('skipped re-download of ' + String(data.filename).slice(0, 60)); return;
   }
-  if (data.type==='FILE_CHUNK') {
-    const t = incomingTransfers.get(conn.peer);
-    if (!t) return;
-    if (!Number.isInteger(data.index) || data.index < 0 || data.index >= t.totalChunks || t.chunks[data.index]) return;
-    t.chunks[data.index] = toUint8(data.data);
-    t.received++; t.lastAt = Date.now();
-    if (t.received % 32 === 0 || t.received === t.totalChunks) {
-      try { conn.send({ type:'FILE_ACK', received: t.received }); } catch (_) {}
-    }
-    updateTransferProgress(t.filename, t.received, t.totalChunks);
-    return;
-  }
-  if (data.type==='FILE_ACK') {
-    conn._ackedChunks = data.received;
-    return;
-  }
-  if (data.type==='FILE_END') {
-    const t = incomingTransfers.get(conn.peer);
-    if (!t) return;
-    incomingTransfers.delete(conn.peer);
-    if (t.received < t.totalChunks) { notify(`Transfer incomplete: ${t.received}/${t.totalChunks}`,'error',6000); return; }
-    const merged = new Uint8Array(t.totalSize);
-    let offset = 0;
-    for (const c of t.chunks) {
-      if (!c) { notify('Transfer corrupted: missing chunks.','error',6000); updateDiagnosticsUI(); return; }
-      merged.set(c, offset); offset += c.length;
-    }
-    if (offset !== t.totalSize) { notify(`Size mismatch (${offset} vs ${t.totalSize}).`,'error',6000); return; }
-    updateTransferProgress(t.filename, t.totalChunks, t.totalChunks, true);
-    hideError();
-    notify(`Received ${t.filename}`,'success',3000);
-    if (t.priv) { offerPrivateFile(t.filename, merged.buffer); updateDiagnosticsUI(); return; }   // personal file: ask, never auto-open
-    if (isHost) for (const o of connections) if (o!==conn && o.open && o._authenticated) sendFileToConn(o, t.filename, merged.buffer);
-    processAndRenderFileLocally(merged.buffer, t.filename, false).catch(err => { console.error(err); notify('Render failed.','error'); });
-    updateDiagnosticsUI();
-    return;
-  }
+  const old = incomingTransfers.get(conn.peer); if (old && old.asm) old.asm.abort().catch(() => {});
+  const sha = typeof data.sha === 'string' && /^[0-9a-f]{64}$/.test(data.sha) ? data.sha : '';
+  const t = { filename: String(data.filename || 'document').slice(0, 200), totalSize: size, totalChunks: total, chunkSize: cs, fp, sha, received: 0, startedAt: Date.now(), lastAt: Date.now(), priv, asm: null };
+  incomingTransfers.set(conn.peer, t);
+  t.ready = (async () => { const spool = await CoopStore.createSpool(size); t.asm = new CoopStore.ChunkAssembler(spool, { totalChunks: total, chunkSize: cs, totalSize: size }); t.kind = spool.kind; })();
+  try { await t.ready; }
+  catch (e) { incomingTransfers.delete(conn.peer); notify('Cannot receive this file: ' + (e.message || e), 'error', 8000); try { conn.send({ type:'FILE_SKIP', fp:'', error: String(e.message || e) }); } catch (_) {} return; }
+  try { conn.send({ type:'FILE_GO', z: CoopCodec.hasCompression() ? 1 : 0 }); } catch (_) {}
+  notify(`Receiving ${t.filename}…`,'info',2500);
+  updateTransferProgress(t.filename, 0, total);
+  updateDiagnosticsUI();
+  const watchdog = setInterval(() => {
+    const cur = incomingTransfers.get(conn.peer);
+    if (cur !== t || t.received >= t.totalChunks) { clearInterval(watchdog); return; }
+    if (Date.now() - t.lastAt > CONFIG.transferTimeout) { clearInterval(watchdog); incomingTransfers.delete(conn.peer); t.asm.abort().catch(() => {}); notify('Transfer stalled and was cancelled.','error',6000); }
+  }, 5000);
+}
+async function onFileChunk(conn, data) {
+  const t = incomingTransfers.get(conn.peer); if (!t) return;
+  try { await t.ready; } catch (_) { return; }
+  if (!t.asm || incomingTransfers.get(conn.peer) !== t) return;
+  let u8 = toUint8(data.data);
+  if (data.z) { try { u8 = await CoopCodec.inflate(u8); } catch (_) { return; } }   // a damaged chunk is dropped; the end check reports it
+  if (t.asm.put(data.index, u8) !== 'ok') return;
+  t.received++; t.lastAt = Date.now();
+  if (t.received % 32 === 0 || t.received === t.totalChunks) { try { conn.send({ type:'FILE_ACK', received: t.received }); } catch (_) {} }
+  updateTransferProgress(t.filename, t.received, t.totalChunks);
+}
+async function onFileEnd(conn, data) {
+  const t = incomingTransfers.get(conn.peer); if (!t) return;
+  try { await t.ready; } catch (_) { return; }
+  for (let i = 0; i < 120 && !t.asm.complete(); i++) await sleep(50);   // the last chunks may still be decompressing
+  if (incomingTransfers.get(conn.peer) !== t) return;
+  incomingTransfers.delete(conn.peer);
+  if (!t.asm.complete()) { await t.asm.abort(); notify(`Transfer incomplete: ${t.asm.count}/${t.totalChunks}`,'error',6000); updateDiagnosticsUI(); return; }
+  let blob;
+  try { blob = await t.asm.finish(); } catch (e) { notify('Could not store the file: ' + (e.message || e), 'error', 7000); return; }
+  if (t.fp && await CoopStore.fingerprintBlob(blob) !== t.fp) { notify('The file arrived damaged (integrity check failed). Ask the host to send it again.','error',8000); return; }
+  if (t.sha && blob.size <= SHA_LIMIT && await sha256Of(blob) !== t.sha) { notify('The file was altered in transit (SHA-256 mismatch) and was discarded. Ask the host to send it again.','error',10000); return; }
+  updateTransferProgress(t.filename, t.totalChunks, t.totalChunks, true);
+  hideError();
+  notify(`Received ${t.filename}`,'success',3000);
+  if (t.priv) { offerPrivateFile(t.filename, blob); updateDiagnosticsUI(); return; }   // personal file: ask, never auto-open
+  if (isHost) for (const o of connections) if (o!==conn && o.open && o._authenticated) sendFileToConn(o, t.filename, blob);
+  processAndRenderFileLocally(blob, t.filename, false).catch(err => { console.error(err); notify('Render failed.','error'); });
+  updateDiagnosticsUI();
 }
 function toUint8(data) {
   if (data instanceof Uint8Array) return data;
@@ -2242,34 +2399,45 @@ function broadcast(data) {
 }
 
 // ==================== FILE SEND ====================
-async function sendFileToConn(conn, filename, arrayBuffer, opts) {
+async function sendFileToConn(conn, filename, data, opts) {
+  if (conn && conn._kindle) return;   // Kindles use DOC_OPEN / DOC_REQUEST / DOC_READY (see 'cross-device documents')
   if (!conn.open) return;
-  const totalSize = arrayBuffer.byteLength;
-  const totalChunks = Math.ceil(totalSize / CONFIG.chunkSize);
-  if (totalChunks > CONFIG.maxChunks) { notify(`File too large (${(totalSize/1e6).toFixed(1)} MB).`,'error',8000); return; }
-  
-  conn._ackedChunks = 0;
+  const blob = data instanceof Blob ? data : new Blob([data]);   // slices are read on demand: no extra copies in memory, no size limit
+  const totalSize = blob.size, cs = CONFIG.chunkSize, totalChunks = Math.ceil(totalSize / cs);
+  if (!totalSize) return;
+  const fp = blob === cachedFileBytes ? cachedFp : await CoopStore.fingerprintBlob(blob);
+  conn._ackedChunks = 0; conn._xferReply = null;
   outgoingTransfers.set(conn.peer, { sent:0, total: totalChunks, filename });
-  
+  const policy = CoopCodec.createChunkPolicy();
   try {
-    conn.send({ type:'FILE_START', filename, totalSize, totalChunks, private: !!(opts && opts.private) });
+    const sha = await sha256Of(blob);
+    conn.send({ type:'FILE_START', filename, totalSize, totalChunks, chunkSize: cs, fp, sha, private: !!(opts && opts.private) });
+    // the receiver answers FILE_GO (send it) or FILE_SKIP (already has it). Older clients stay silent: carry on after 3 s.
+    for (let w = 0; w < 120 && !conn._xferReply; w++) { await sleep(25); if (!conn.open) { outgoingTransfers.delete(conn.peer); return; } }
+    if (conn._xferReply && conn._xferReply.type === 'FILE_SKIP') {
+      if (conn._xferReply.error) notify(`${peerLabel(conn)} could not take the file: ${conn._xferReply.error}`, 'warning', 6000);
+      else notify(`${peerLabel(conn)} already has “${filename}” — nothing to send`, 'info', 2500);
+      return;
+    }
+    const canZ = !!(conn._xferReply && conn._xferReply.z);
     const dc = conn.dataChannel;
-    for (let i=0; i<totalChunks; i++) {
+    for (let i = 0; i < totalChunks; i++) {
       while ((i - conn._ackedChunks) > CONFIG.maxInFlightChunks) {
-        await new Promise(r => setTimeout(r, 50));
+        await sleep(50);
         if (!conn.open) { outgoingTransfers.delete(conn.peer); return; }
       }
       if (dc) {
         while (dc.bufferedAmount > CONFIG.maxBufferedAmount) {
-          await new Promise(r => setTimeout(r, 20));
+          await sleep(20);
           if (!conn.open) { outgoingTransfers.delete(conn.peer); return; }
         }
       }
-      const start = i*CONFIG.chunkSize;
-      const end = Math.min(start+CONFIG.chunkSize, totalSize);
-      conn.send({ type:'FILE_CHUNK', index: i, data: arrayBuffer.slice(start, end) });
-      outgoingTransfers.get(conn.peer).sent = i+1;
-      if (i%32===0) { updateDiagnosticsUI(); refreshPeers(); }
+      const raw = await CoopStore.readSlice(blob, i * cs, cs);
+      let msg = { type:'FILE_CHUNK', index: i, data: raw };
+      if (canZ) { const r = await policy.encode(raw); if (r.z) msg = { type:'FILE_CHUNK', index: i, data: r.d, z: 1 }; }
+      conn.send(msg);
+      const og = outgoingTransfers.get(conn.peer); if (og) og.sent = i + 1;
+      if (i % 32 === 0) { updateDiagnosticsUI(); refreshPeers(); }
     }
     conn.send({ type:'FILE_END', filename });
     notify(`Sent ${filename} to ${String(conn.peer).substring(0,6)}…`,'success',3000);
@@ -2281,23 +2449,6 @@ async function sendFileToConn(conn, filename, arrayBuffer, opts) {
     updateDiagnosticsUI(); refreshPeers();
   }
 }
-function uploadDocToRelay(filename, arrayBuffer) {
-  const roomId = isHost ? myPeerId : lastJoinCode;
-  if (!roomId || !arrayBuffer) return;
-  const relayHttp = (getNet().relay || DEFAULT_RELAY).replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
-  fetch(`${relayHttp}/room/${encodeURIComponent(roomId)}/doc?filename=${encodeURIComponent(filename)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream' },
-    body: arrayBuffer.slice(0)
-  }).then(r => r.json()).then(data => {
-    if (data && data.ok) {
-      netLog(`Uploaded document ${filename} to relay room ${roomId}`);
-    }
-  }).catch(err => {
-    console.warn('Relay doc upload error:', err);
-  });
-}
-
 let isDownloadingDoc = false;
 async function loadDocFromRelay(roomId, filename) {
   if (!roomId || !filename || filename === cachedFilename || isDownloadingDoc) return;
@@ -2320,9 +2471,18 @@ async function loadDocFromRelay(roomId, filename) {
   }
 }
 
-function broadcastFile(filename, arrayBuffer) {
-  for (const conn of connections) if (conn.open && conn._authenticated !== false) sendFileToConn(conn, filename, arrayBuffer.slice(0));
-  uploadDocToRelay(filename, arrayBuffer);
+// Cryptographic integrity: FILE_START is signed by the host and carries SHA-256 of the whole file (up to 256 MB: one-shot WebCrypto digest).
+// The short fingerprint only covers size + the first and last 64 KiB, so on its own it cannot detect tampering in the middle.
+const SHA_LIMIT = 256 * 1024 * 1024, shaCache = new WeakMap();
+const hexOf = u8 => Array.from(u8, b => b.toString(16).padStart(2, '0')).join('');
+async function sha256Of(blob) {
+  if (blob.size > SHA_LIMIT) return '';
+  if (shaCache.has(blob)) return shaCache.get(blob);
+  const p = crypto.subtle.digest('SHA-256', await blob.arrayBuffer()).then(d => hexOf(new Uint8Array(d))).catch(() => '');
+  shaCache.set(blob, p); return p;
+}
+function broadcastFile(filename, data) {
+  for (const conn of connections) if (conn.open && conn._authenticated !== false) sendFileToConn(conn, filename, data);   // all senders read slices of the same Blob
 }
 
 // ==================== FILE PROCESSING ====================
@@ -2330,17 +2490,18 @@ fileInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
   if (!isHost && lastJoinCode && !hostSettings.peerUploads) { notify('Only the host can share files in this session.','warning'); fileInput.value = ''; return; }
-  const buf = await file.arrayBuffer();
-  await processAndRenderFileLocally(buf, file.name, true);
-  broadcastFile(file.name, buf);
-  saveToOPFS(buf, file.name);
+  await processAndRenderFileLocally(file, file.name, true);   // a File is a Blob: big documents are never loaded into memory as a whole
+  broadcastFile(file.name, cachedFileBytes);
+  saveToOPFS(cachedFileBytes, file.name);
   fileInput.value = '';
 });
 document.getElementById('btn-open-file').addEventListener('click', () => fileInput.click());
 
-async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
-  if (!arrayBuffer) return;
-  cachedFilename = filename; cachedFileBytes = arrayBuffer.slice(0);
+async function processAndRenderFileLocally(data, filename, resetPage) {   // data: Blob/File (preferred) or ArrayBuffer
+  if (!data) return;
+  const blob = data instanceof Blob ? data : new Blob([data]);
+  const bytes = () => blob.arrayBuffer();   // only the formats that need the whole file in memory ask for it
+  cachedFilename = filename; cachedFileBytes = blob; cachedFp = await CoopStore.fingerprintBlob(blob);
   setCurrentFileLabel(filename);
   const fname = filename.toLowerCase();
   const docxView = document.getElementById('docx-view');
@@ -2357,12 +2518,13 @@ async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
 
   if (state.fileType==='pdf') {
     try {
-      pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+      try { pdfDoc = await pdfjsLib.getDocument(await CoopStore.pdfSource(pdfjsLib, blob)).promise; }   // big PDFs: pdf.js reads only the byte ranges it needs
+      catch (e1) { console.warn('range loading failed, reading the whole file', e1); pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(await bytes()) }).promise; }
       state.totalPages = pdfDoc.numPages; currentZoom = 1; hasFitted = false;
     } catch(err) { console.error(err); showError('Could not open PDF: '+(err.message||err)); return; }
   } else if (state.fileType==='image') {
     state.totalPages = 1;
-    const url = URL.createObjectURL(new Blob([arrayBuffer.slice(0)]));
+    const url = URL.createObjectURL(blob);
     const img = document.getElementById('image-view');
     img.onload = () => {
       currentZoom = 1;
@@ -2376,7 +2538,7 @@ async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
     docxView.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Rendering Word document with original layout…</div>';
     try {
       docxView.innerHTML = '';
-      await window.docx.renderAsync(arrayBuffer.slice(0), docxView, null, {
+      await window.docx.renderAsync(await bytes(), docxView, null, {
         inWrapper: true,
         ignoreWidth: false,
         ignoreHeight: false,
@@ -2395,7 +2557,7 @@ async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
   if (state.fileType==='other') {
     setStatus('Parsing document in worker…','info');
     try {
-      const copy = arrayBuffer.slice(0);
+      const copy = await bytes();
       const result = await workerCall('parse', { bytes: copy, filename }, [copy]);
       state.totalPages = result.totalPages;
       setStatus('Document ready.','success');
@@ -2414,7 +2576,7 @@ async function processAndRenderFileLocally(arrayBuffer, filename, resetPage) {
   loadToc();
   annots = {}; annotSig = ''; loadSavedAnnots();
   if (!isHost) { const hc = connections.find(c => c.open); if (hc) try { hc.send({ type:'ANNOT_REQ' }); } catch (_) {} }
-  if (isHost) broadcast({ type:'SYNC', state });
+  if (isHost) { broadcast({ type:'SYNC', state }); announceDoc(); }
 }
 
 function applyImageZoom() {
@@ -2497,12 +2659,16 @@ async function renderPdfPageInner() {
   }
   const renderViewport = page.getViewport({ scale: pixW/base.width });
   const canvas = document.getElementById('pdf-canvas');
-  const ctx = canvas.getContext('2d');
-  canvas.width = Math.floor(pixW); canvas.height = Math.floor(pixH);
-  canvas.style.width = Math.floor(cssW)+'px'; canvas.style.height = Math.floor(cssH)+'px';
-  pdfRenderTask = page.render({ canvasContext: ctx, viewport: renderViewport });
+  const off = document.createElement('canvas');   // render off screen, then swap in one step: no blank flash while zooming
+  off.width = Math.floor(pixW); off.height = Math.floor(pixH);
+  pdfRenderTask = page.render({ canvasContext: off.getContext('2d'), viewport: renderViewport });
   await pdfRenderTask.promise;
+  canvas.width = off.width; canvas.height = off.height;
+  canvas.style.width = Math.floor(cssW)+'px'; canvas.style.height = Math.floor(cssH)+'px';
+  canvas.getContext('2d').drawImage(off, 0, 0); off.width = off.height = 0;
+  CoopInput.afterRender();   // drops the live pinch preview and keeps the content under the fingers
   await renderPdfForms(page, renderViewport, cssW, cssH);
+  if (window.CoopCommentsUI) CoopCommentsUI.renderPdfText(page, cssW, cssH);   // selectable text for text comments (not awaited)
 }
 
 // ==================== NAVIGATION ====================
@@ -2537,7 +2703,7 @@ function promptGoto() {
 }
 function zoomIn() {
   if (state.fileType==='image') { currentZoom = Math.min(currentZoom+0.25,5); applyImageZoom(); }
-  else { userZoomed = true; currentZoom += 0.25; renderCurrentPage(); }
+  else { userZoomed = true; currentZoom = Math.min(CoopInput.ZOOM.maxPdf, currentZoom + 0.25); renderCurrentPage(); }
 }
 function zoomOut() {
   if (state.fileType==='image') { currentZoom = Math.max(currentZoom-0.25,0.25); applyImageZoom(); }
@@ -2551,7 +2717,7 @@ async function fitToWidth(silent=false) {
     const styles = getComputedStyle(viewerContainer);
     const pad = parseFloat(styles.paddingLeft)+parseFloat(styles.paddingRight);
     const avail = viewerContainer.clientWidth - pad;
-    currentZoom = Math.max(avail/vp.width, 0.1); userZoomed = false;
+    currentZoom = Math.max(avail/vp.width, 0.1); userZoomed = false; window.__fitZoomValue = currentZoom;
     await renderPdfPage();
   } else if (state.fileType==='image') {
     const img = document.getElementById('image-view');
@@ -2585,28 +2751,18 @@ function toggleFullscreen() {
 }
 
 // ==================== OPFS ====================
-async function saveToOPFS(arrayBuffer, filename) {
-  if (!navigator.storage?.getDirectory) return;
+async function saveToOPFS(blob, filename) {
   try {
-    if (navigator.storage.persist) await navigator.storage.persist();
-    const root = await navigator.storage.getDirectory();
-    const meta = await root.getFileHandle('coop-meta.json', { create:true });
-    const mw = await meta.createWritable();
-    await mw.write(JSON.stringify({ filename, savedAt: Date.now() })); await mw.close();
-    const data = await root.getFileHandle('coop-data.bin', { create:true });
-    const dw = await data.createWritable();
-    await dw.write(arrayBuffer); await dw.close();
-  } catch(e) { console.warn('OPFS save failed', e); }
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+    if (await CoopStore.persistBlob('coop-data.bin', blob)) localStorage.setItem('coop-last', JSON.stringify({ filename, size: blob.size, savedAt: Date.now() }));
+  } catch (e) { console.warn('saving the last document failed', e); }
 }
 async function loadFromOPFS() {
-  if (!navigator.storage?.getDirectory) return null;
   try {
-    const root = await navigator.storage.getDirectory();
-    const metaFile = await (await root.getFileHandle('coop-meta.json')).getFile();
-    const meta = JSON.parse(await metaFile.text());
-    const dataFile = await (await root.getFileHandle('coop-data.bin')).getFile();
-    return { filename: meta.filename, buffer: await dataFile.arrayBuffer() };
-  } catch(_) { return null; }
+    const m = JSON.parse(localStorage.getItem('coop-last') || 'null'); if (!m || !m.filename) return null;
+    const f = await CoopStore.fileOf('coop-data.bin'); if (f.size !== m.size) return null;
+    return { filename: m.filename, blob: f };
+  } catch (_) { return null; }
 }
 async function tryRestoreFromOPFS() {
   const data = await loadFromOPFS();
@@ -2615,8 +2771,8 @@ async function tryRestoreFromOPFS() {
 async function restoreLastFile() {
   const data = await loadFromOPFS();
   if (!data) return;
-  await processAndRenderFileLocally(data.buffer, data.filename, true);
-  broadcastFile(data.filename, data.buffer);
+  await processAndRenderFileLocally(data.blob, data.filename, true);
+  broadcastFile(data.filename, cachedFileBytes);
   document.getElementById('restore-btn').classList.add('hidden');
 }
 
@@ -2679,7 +2835,7 @@ window.addEventListener('orientationchange', onViewportChange);
 
 function emitPage() {
   sendActivity('interact');
-  if (!detached) { syncedPage = state.currentPage; broadcast({ type:'PAGE_CHANGE', page: state.currentPage }); syncHttpRelayPage(state.currentPage); }
+  if (!detached) { syncedPage = state.currentPage; broadcast({ type:'PAGE_CHANGE', ...pagePayload(state.currentPage) }); syncHttpRelayPage(state.currentPage); }
   updateDetachUI();
 }
 function updateDetachUI() {
@@ -2691,7 +2847,7 @@ function updateDetachUI() {
 function setDetached(v) {
   detached = !!v;
   if (!detached && state.totalPages > 0) {
-    if (isHost) { broadcast({ type:'PAGE_CHANGE', page: state.currentPage }); syncHttpRelayPage(state.currentPage); }
+    if (isHost) { broadcast({ type:'PAGE_CHANGE', ...pagePayload(state.currentPage) }); syncHttpRelayPage(state.currentPage); }
     else { const hc = connections.find(c => c.open); if (hc) try { hc.send({ type:'REQ_SYNC' }); } catch (_) {} }   // ask the HOST for its page
   }
   updateDetachUI(); reportPage();
@@ -2746,8 +2902,14 @@ document.addEventListener('pointerdown', () => document.querySelectorAll('#audio
 
 const AVATAR_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/;
 const profiles = {};
-let hostSettings = { speaking: true, typing: true, interact: true, peerUploads: false, peerAnnotate: false };
+let hostSettings = { speaking: true, typing: true, interact: true, peerUploads: false, peerAnnotate: false, peerNav: true, idleLogout: false, idleSec: 60 };
 function myProfile() { return { name: myDisplayName, avatar: localStorage.getItem('coop-avatar') || '' }; }
+// called by the start-up profile dialog (coop-profile.js) after the person confirmed name and picture
+function applyStartupProfile() {
+  const n = localStorage.getItem('coop-name'); if (n) myDisplayName = n;
+  nameInput.value = myDisplayName; refreshMyAvatar();
+  if (myPeerId) broadcastProfile();
+}
 function sendProfile() { for (const c of connections) if (c.open) try { c.send({ type:'PROFILE', peerId: myPeerId, ...myProfile() }); } catch (_) {} }
 function broadcastProfile() { if (myPeerId) profiles[myPeerId] = myProfile(); sendProfile(); refreshMyAvatar(); }
 function refreshMyAvatar() { const a = localStorage.getItem('coop-avatar'), el = document.getElementById('my-avatar'); if (a) el.src = a; el.classList.toggle('hidden', !a); }
@@ -2790,7 +2952,7 @@ function renderActivity() {
 }
 function actBadge(pid) { const a = activity.get(pid); return a && a.until > Date.now() ? ' ' + ({speaking:'🎤 speaking',typing:'⌨️ typing',interact:'👆 active'})[a.kind] : ''; }
 function sendActivity(kind) {
-  if (!myPeerId || hostSettings[kind] === false) return;
+  if (!myPeerId || hostSettings[kind] === false || (lowBw() && kind !== 'speaking')) return;
   const now = Date.now(); if (now - (lastSent[kind] || 0) < 1500) return; lastSent[kind] = now;
   broadcast({ type:'ACTIVITY', kind, peerId: myPeerId });
 }
@@ -2802,8 +2964,10 @@ function reportPage() {
 
 // host controls
 function openPeers() {
+  updateTrustUI();
   document.getElementById('hs-speaking').checked = hostSettings.speaking; document.getElementById('hs-typing').checked = hostSettings.typing;
   document.getElementById('hs-interact').checked = hostSettings.interact; document.getElementById('hs-uploads').checked = hostSettings.peerUploads; document.getElementById('hs-annot').checked = hostSettings.peerAnnotate;
+  document.getElementById('hs-nav').checked = hostSettings.peerNav !== false; document.getElementById('hs-idle').checked = !!hostSettings.idleLogout; document.getElementById('hs-idle-sec').value = String(hostSettings.idleSec || 60);
   document.getElementById('peers-modal').classList.add('open'); refreshPeers();
 }
 function refreshPeers() {
@@ -2820,8 +2984,9 @@ function refreshPeers() {
 function hostCmd(pid, type) {
   if (!isHost) return;
   const c = connections.find(x => x.peer === pid); if (!c || !c.open) return;
+  if (type === 'HOST_KICK') { CoopLive.kick(pid); return; }   // removes the peer AND moves everybody else to a new session id, so the old link + password are dead
   try { c.send({ type }); } catch (_) {}
-  if (type === 'HOST_KICK') setTimeout(() => { try { c.close(); } catch (_) {} connections = connections.filter(x => x !== c); updatePeerListUI(); updateChatAvailability(); }, 300);
+  if (false) {}
   else notify(type === 'HOST_PING' ? 'Ping sent.' : 'Mute sent.', 'info', 1500);
 }
 function setPeerUploads(v) {
@@ -2832,7 +2997,8 @@ function setPeerUploads(v) {
   notify(v ? 'Peers can now upload files.' : 'Peer uploads disabled.', 'info', 2000);
 }
 function updateHostSettings() {
-  hostSettings = { speaking: document.getElementById('hs-speaking').checked, typing: document.getElementById('hs-typing').checked, interact: document.getElementById('hs-interact').checked, peerUploads: document.getElementById('hs-uploads').checked, peerAnnotate: document.getElementById('hs-annot').checked }; updateAnnotUI();
+  hostSettings = { speaking: document.getElementById('hs-speaking').checked, typing: document.getElementById('hs-typing').checked, interact: document.getElementById('hs-interact').checked, peerUploads: document.getElementById('hs-uploads').checked, peerAnnotate: document.getElementById('hs-annot').checked, peerNav: document.getElementById('hs-nav').checked, idleLogout: document.getElementById('hs-idle').checked, idleSec: +document.getElementById('hs-idle-sec').value || 60 }; updateAnnotUI();
+  if (window.CoopIdle) CoopIdle.onSettings();
   document.getElementById('peer-upload-toggle').checked = hostSettings.peerUploads;
   broadcast({ type:'SETTINGS', s: hostSettings });
 }
@@ -2852,26 +3018,42 @@ function setTool(t) {
   asvg.style.pointerEvents = draw ? 'auto' : 'none'; asvg.style.touchAction = draw ? 'none' : ''; asvg.classList.toggle('erase', tool === 'erase');
 }
 function cleanItem(it) {
-  if (!it || typeof it !== 'object' || !['pen','hl','note'].includes(it.t)) return null;
+  if (it && typeof it === 'object' && (it.t === 'cm' || it.t === 'note')) return CoopComments.normalizeItem(it);   // comments v2 (legacy notes are upgraded)
+  if (!it || typeof it !== 'object' || !['pen','hl'].includes(it.t)) return null;
   const n = v => Math.max(-0.05, Math.min(1.05, +v || 0)), id = String(it.id || '').replace(/[^\w-]/g, '').slice(0, 40);
   if (!id) return null;
   const o = { id, t: it.t, c: /^#[0-9a-f]{6}$/i.test(it.c) ? it.c : '#e11d48', by: String(it.by || '').replace(/[^\w-]/g, '').slice(0, 60), name: String(it.name || '').slice(0, 24) };
-  if (it.t === 'pen') o.pts = (Array.isArray(it.pts) ? it.pts : []).slice(0, 3000).map(p => [n(p && p[0]), n(p && p[1])]);
+  if (it.t === 'pen') o.pts = (Array.isArray(it.z) ? CoopCodec.decodePts(it.z) : (Array.isArray(it.pts) ? it.pts : [])).slice(0, 3000).map(p => [n(p && p[0]), n(p && p[1])]);
   if (it.t === 'hl') { const r = it.r || []; o.r = [n(r[0]), n(r[1]), Math.abs(n(r[2])), Math.abs(n(r[3]))]; }
-  if (it.t === 'note') { o.x = n(it.x); o.y = n(it.y); o.text = String(it.text || '').slice(0, 500); }
   return o;
 }
 function applyAnnot(op, page, item, id) {
   page = +page; if (!(page >= 1)) return;
   if (op === 'add') { const it = cleanItem(item); if (it) (annots[page] = annots[page] || []).push(it); }
   else if (op === 'del') annots[page] = (annots[page] || []).filter(a => a.id !== id);
+  else if (op === 'reply') CoopComments.reply(annots[page] = annots[page] || [], id, item);            // item = the reply message
+  else if (op === 'rdel') { const r = CoopComments.removeMsg(annots[page] = annots[page] || [], id, item); if (r) window.CoopCommentsUI && CoopCommentsUI.onChanged(); }
+  else if (op === 'resolve') CoopComments.resolve(annots[page] = annots[page] || [], id, item);
   else if (op === 'clear') annots[page] = [];
   annotSig = ''; scheduleAnnotSave();
 }
+function wireItem(a) {   // pen strokes travel as delta-encoded integers (about 3x smaller)
+  if (a && a.t === 'pen' && Array.isArray(a.pts)) { const { pts, ...rest } = a; return { ...rest, z: CoopCodec.encodePts(pts) }; }
+  return a;
+}
+async function sendAnnotAll(conn) {
+  const wire = {}; for (const [pg, list] of Object.entries(annots)) wire[pg] = (list || []).map(wireItem);
+  const msg = { type:'ANNOT_ALL', all: wire, authors: CoopComments.collectAuthors(annots, profiles, { id: (myPeerId || '').replace(/[^\w-]/g, ''), ...myProfile() }) };
+  const toSend = hostSigner && !conn._kindle && hostSigner.needs(msg, conn) ? await hostSigner.sign(msg, conn.peer) : msg;   // sign first, then compress
+  const packed = await CoopCodec.packControl(toSend);
+  try { conn.send(packed.msg); } catch (_) {}
+}
+function broadcastAnnotAll() { for (const c of connections) if (c.open && c._authenticated !== false) sendAnnotAll(c); }
+const annotAuthors = {};   // peer id -> {name, avatar} for people who left (their comments keep their face)
 function commitItem(item) {
   item.id = (myPeerId || 'me').replace(/[^\w-]/g, '') + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
   item.by = (myPeerId || '').replace(/[^\w-]/g, ''); item.name = myDisplayName;
-  applyAnnot('add', state.currentPage, item); broadcast({ type:'ANNOT', op:'add', page: state.currentPage, item }); sendActivity('interact');
+  applyAnnot('add', state.currentPage, item); broadcast({ type:'ANNOT', op:'add', page: state.currentPage, item: wireItem(item) }); sendActivity('interact');
 }
 function delAnnot(id) {
   const it = (annots[state.currentPage] || []).find(a => a.id === id); if (!it) return;
@@ -2885,61 +3067,41 @@ function thinPts(p) {   // drop near-duplicate points, round to 4 decimals: far 
   out.push(p[p.length - 1]); return out.map(q => [Math.round(q[0] * 1e4) / 1e4, Math.round(q[1] * 1e4) / 1e4]);
 }
 function contentRel(e) { const r = contentEl().getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; }
-asvg.addEventListener('pointerdown', async e => {
+asvg.addEventListener('pointerdown', e => {
+  if (CoopInput.onPointerDown(e)) return;                       // finger while a pen is known / second finger: pan or pinch, never draw
   if (!tool || !canAnnotate() || tool === 'erase') return;
-  if (e.target.closest && e.target.closest('.note')) return;   // a tap on an existing comment opens it
   const p = contentRel(e);
-  if (tool === 'note') { e.preventDefault(); const text = await askComment(); if (text) commitItem({ t:'note', c: annotColor(), x: p[0], y: p[1], text }); return; }
+  if (tool === 'note') { e.preventDefault(); CoopCommentsUI.beginPoint(p, e.clientX, e.clientY); return; }
   drawing = { t: tool, c: annotColor(), pts: [p], r: [p[0], p[1], 0, 0], p0: p };
   try { asvg.setPointerCapture(e.pointerId); } catch (_) {} e.preventDefault();
 });
 asvg.addEventListener('pointermove', e => {
-  if (!drawing) return; const p = contentRel(e);
-  if (drawing.t === 'pen') { const l = drawing.pts[drawing.pts.length-1]; if (Math.hypot(p[0]-l[0], p[1]-l[1]) > 0.002 && drawing.pts.length < 3000) drawing.pts.push(p); }
-  else drawing.r = [Math.min(p[0], drawing.p0[0]), Math.min(p[1], drawing.p0[1]), Math.abs(p[0]-drawing.p0[0]), Math.abs(p[1]-drawing.p0[1])];
+  if (CoopInput.onPointerMove(e)) return;
+  if (!drawing) return;
+  e.preventDefault();
+  for (const ev of CoopInput.coalesced(e)) {                    // every sample the hardware produced, not just one per frame: fast strokes stay smooth
+    const p = contentRel(ev);
+    if (drawing.t === 'pen') { const l = drawing.pts[drawing.pts.length-1]; if (Math.hypot(p[0]-l[0], p[1]-l[1]) > 0.0012 && drawing.pts.length < 3000) drawing.pts.push(p); }
+    else drawing.r = [Math.min(p[0], drawing.p0[0]), Math.min(p[1], drawing.p0[1]), Math.abs(p[0]-drawing.p0[0]), Math.abs(p[1]-drawing.p0[1])];
+  }
   annotSig = '';
 });
-asvg.addEventListener('pointerup', () => {
+function finishStroke() {
   if (!drawing) return; const d = drawing; drawing = null;
   if (d.t === 'pen' && d.pts.length > 1) commitItem({ t:'pen', c: d.c, pts: thinPts(d.pts) });
   else if (d.t === 'hl' && d.r[2] > 0.005 && d.r[3] > 0.005) commitItem({ t:'hl', c: d.c, r: d.r });
   annotSig = '';
-});
-asvg.addEventListener('pointercancel', () => { drawing = null; annotSig = ''; });
+}
+asvg.addEventListener('pointerup', e => { if (CoopInput.onPointerUp(e)) return; finishStroke(); });
+asvg.addEventListener('pointercancel', e => { CoopInput.onPointerUp(e); if (e.pointerType === 'pen') finishStroke(); else { drawing = null; annotSig = ''; } });   // keep what was drawn if the system interrupts a pen stroke
 asvg.addEventListener('click', e => {
   const g = e.target.closest && e.target.closest('[data-id]'); if (!g || !g.dataset.id) return;
-  if (tool === 'erase') { delAnnot(g.dataset.id); hideNotePop(); } else if (g.classList.contains('note')) showNotePop(g, e.clientX, e.clientY);
+  if (tool === 'erase') { delAnnot(g.dataset.id); hideNotePop(); }
 });
 document.addEventListener('pointerdown', e => { if (!(e.target.closest && e.target.closest('#note-pop,.note'))) hideNotePop(); });
 function hideNotePop() { const p = document.getElementById('note-pop'); if (p) p.remove(); }
-function showNotePop(g, x, y) {
-  hideNotePop(); const p = document.createElement('div'); p.id = 'note-pop';
-  p.style.cssText = `position:fixed;z-index:500;max-width:min(280px,90vw);left:${Math.max(8, Math.min(x, innerWidth - 290))}px;top:${Math.min(y + 14, innerHeight - 120)}px;background:#fff8d6;color:#222;border:1px solid #c9a800;border-radius:10px;padding:10px 12px;box-shadow:0 6px 20px rgba(0,0,0,.35);font-size:.9rem;white-space:pre-wrap;word-break:break-word`;
-  const it = (annots[state.currentPage] || []).find(a => a.id === g.dataset.id);
-  const mine = !!it && canAnnotate() && (isHost || !lastJoinCode || it.by === (myPeerId || '').replace(/[^\w-]/g, ''));
-  p.innerHTML = `<b style="display:block;margin-bottom:4px">${escapeHtml(g.dataset.by || 'Someone')}</b>${escapeHtml(g.dataset.text || '')}${mine ? '<div style="text-align:right;margin-top:8px"><button id="np-del" class="secondary" style="min-height:32px">Delete</button></div>' : ''}`;
-  document.body.appendChild(p);
-  const d = p.querySelector('#np-del'); if (d) d.onclick = () => { delAnnot(g.dataset.id); hideNotePop(); };
-}
-function askComment() {
-  return new Promise(res => {
-    const o = document.createElement('div'); o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:12px';
-    o.innerHTML = '<div style="background:var(--surface);color:inherit;padding:16px;border-radius:14px;max-width:380px;width:100%"><h3 style="margin:0 0 10px">New comment</h3><textarea id="cm-ta" rows="4" maxlength="500" style="width:100%" placeholder="Write a comment…"></textarea><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="secondary" id="cm-cancel">Cancel</button><button id="cm-save">Add</button></div></div>';
-    document.body.appendChild(o); const ta = o.querySelector('#cm-ta'); ta.focus();
-    const done = v => { o.remove(); res(v); };
-    o.querySelector('#cm-save').onclick = () => done(ta.value.trim()); o.querySelector('#cm-cancel').onclick = () => done('');
-    ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) done(ta.value.trim()); });
-  });
-}
-function showComments() {
-  const items = []; for (const [pg, list] of Object.entries(annots)) (list || []).filter(a => a.t === 'note').forEach(a => items.push({ pg: +pg, a }));
-  items.sort((x, y) => x.pg - y.pg);
-  const o = document.createElement('div'); o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:12px';
-  o.innerHTML = `<div style="background:var(--surface);color:inherit;padding:16px;border-radius:14px;max-width:460px;width:100%;max-height:85vh;overflow:auto"><h3 style="margin:0 0 10px">Comments (${items.length})</h3>${items.length ? items.map(it => `<button class="secondary" data-pg="${it.pg}" style="display:block;width:100%;text-align:left;margin-bottom:6px;white-space:normal"><small>#${items.indexOf(it) + 1} · Page ${it.pg} · ${escapeHtml(it.a.name || 'someone')}</small><br>${escapeHtml(it.a.text)}</button>`).join('') : '<p style="opacity:.7">No comments yet.</p>'}<div style="text-align:right;margin-top:8px"><button class="secondary" id="cm-x">Close</button></div></div>`;
-  document.body.appendChild(o);
-  o.onclick = e => { const b = e.target.closest('[data-pg]'); if (b) { goToPage(+b.dataset.pg); o.remove(); } else if (e.target === o || e.target.id === 'cm-x') o.remove(); };
-}
-function notesBefore() { let c = 0; for (const pg of Object.keys(annots)) if (+pg < state.currentPage) c += (annots[pg] || []).filter(a => a.t === 'note').length; return c; }
+function showComments() { CoopCommentsUI.openList(); }
+function notesBefore() { return 0; }   // comment pins are drawn by coop-comments-ui.js
 function redrawAnnots() {
   if (document.hidden || !cachedFileBytes) return;
   if (!asvg.firstChild && !drawing && !hasAnnots()) return;   // nothing to draw or clear
@@ -2962,6 +3124,24 @@ function redrawAnnots() {
 setInterval(redrawAnnots, 100);
 
 let shareIceRaw = '';
+// TURN credentials minted by the relay worker (Cloudflare Realtime TURN), fetched lazily when a session starts. A TURN address saved by the user always wins.
+let iceFetchedAt = 0, icePromise = null;
+function ensureIce() {
+  if ((localStorage.getItem('coop-ice-servers') || '').trim() || Date.now() - iceFetchedAt < 6 * 3600e3) return Promise.resolve();
+  if (icePromise) return icePromise;
+  icePromise = (async () => {
+    try {
+      await ensureRelayProbe();
+      const base = (getNet().relay || '').replace(/^ws/i, 'http').replace(/\/$/, ''); if (!base) return;
+      const ctl = new AbortController(); setTimeout(() => ctl.abort(), 3500);
+      const r = await fetch(base + '/ice', { signal: ctl.signal }); const j = await r.json();
+      iceFetchedAt = Date.now();
+      if (j && j.turn && Array.isArray(j.iceServers) && j.iceServers.length) { window.__iceResolved = [...j.iceServers, ...CONFIG.iceServers.filter(x => String(x.urls).startsWith('stun'))]; netLog('TURN credentials from the relay: ' + j.iceServers.length + ' server group(s)'); }
+    } catch (_) { /* no relay / no TURN configured: static servers stay */ }
+    finally { icePromise = null; }
+  })();
+  return icePromise;
+}
 async function resolveIce() {
   window.__iceResolved = null;
   const raw = (localStorage.getItem('coop-ice-servers') || '').trim(); if (!raw) return;
@@ -3018,7 +3198,9 @@ function openBridgeLink(target) {   // helper side: dial the stuck newcomer and 
 }
 function acceptBridge(c, direct) {   // newcomer side
   if (isHost || !c.metadata || !c.metadata.coopBridge || bridgeIn || direct.open) { try { c.close(); } catch (_) {} return; }
+  if (!trust.linkFp && !trust.key) { try { c.close(); } catch (_) {} netLog('refused a peer relay: this join has no verified host key (use the full invite link)'); return; }   // nothing sent through a stranger could be verified
   bridgeIn = c;
+  const proofTimer = setTimeout(() => { if (bridgeIn === c && !c._proven) { netLog('peer relay sent nothing signed in 15 s — dropped'); try { c.close(); } catch (_) {} } }, 15000);
   c.on('open', () => {
     const v = { peer: lastJoinCode, open: true, _virtual: true, _authenticated: false, _via: c, get dataChannel() { return c.dataChannel; },
       send(m) { c.send({ type:'BRIDGE_UP', payload: m }); }, close() { try { c.close(); } catch (_) {} }, on() {} };
@@ -3029,20 +3211,21 @@ function acceptBridge(c, direct) {   // newcomer side
   });
   c.on('data', d => { if (d && d.type === 'BRIDGE_DOWN' && bridgeV) handleNetworkMessage(bridgeV, d.payload); });
   c.on('close', () => {
+    clearTimeout(proofTimer);
     bridgeIn = null;
     if (bridgeV) { connections = connections.filter(x => x !== bridgeV); bridgeV = null; updatePeerListUI(); notify('Relay peer lost — reconnecting…', 'warning'); scheduleRejoin(); }
   });
 }
 setInterval(() => {   // host: drop relayed peers whose relay peer vanished
   if (!isHost) return; const n = connections.length;
-  connections = connections.filter(c => !(c._virtual && !c._via.open));
+  connections = connections.filter(c => !(c._virtual && c._via && !c._via.open));   // (relay-server peers have no _via: this line used to throw every 3 s)
   if (connections.length !== n) { updatePeerListUI(); updateChatAvailability(); }
 }, 3000);
 
 // ---- WebSocket relay fallback + network settings
 const wsToken = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now()).replace(/-/g, '');
-let relayV = null, hostWs = null, hostWsFor = null;
-const DEFAULT_RELAY = 'wss://coop-relay.coop-reader.workers.dev';
+let relayV = null, hostWs = null, hostWsFor = null, holdHostWsUntil = 0;   // holdHostWsUntil: keeps the old relay room open briefly after a session rotation
+const DEFAULT_RELAY = (window.COOP_CONFIG && window.COOP_CONFIG.relay) || 'wss://coop-relay.coop-reader.workers.dev';
 var defaultRelayOk = false, relayProbe = null;   // var: safe to read before this line runs
 function getStoredNet() { try { return { mode: 'auto', priv: false, relay: '', ...JSON.parse(localStorage.getItem('coop-net') || '{}') }; } catch (_) { return { mode: 'auto', priv: false, relay: '' }; } }
 function getNet() { const n = getStoredNet(); if (!n.relay && defaultRelayOk) n.relay = DEFAULT_RELAY; return n; }   // default is used only once it has answered
@@ -3059,11 +3242,18 @@ function ensureRelayProbe() {
   if (!relayProbe) relayProbe = probeRelay(DEFAULT_RELAY).then(ok => { defaultRelayOk = ok; if (!ok) setTimeout(() => { relayProbe = null; }, 60000); });
   return relayProbe;
 }
-function routeLabel(c) { return c._kindle ? '📱 Kindle HTTP' : c._ws ? '🌐 relay server' : c._virtual ? '🔗 via peer' : c._isRelay ? '🔒 TURN' : '⚡ direct'; }
+function routeLabel(c) { return c._kindle ? '📱 Kindle HTTP' : c._ws ? '🌐 relay server' : c._virtual ? '🔗 via peer' : c._route === 'turn' ? '🔒 TURN relay' : c._route === 'stun' ? '⚡ direct (STUN)' : c._route === 'p2p' ? '⚡ direct (same network)' : '⚡ connecting…'; }
 const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
 const wsReplacer = (k, v) => v instanceof ArrayBuffer ? { __b: b64(new Uint8Array(v)) } : ArrayBuffer.isView(v) ? { __b: b64(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) } : v;
 const wsRevive = (k, v) => v && typeof v === 'object' && typeof v.__b === 'string' ? Uint8Array.from(atob(v.__b), ch => ch.charCodeAt(0)) : v;
 var peerRelayKey = '', relayKeyB64 = '';
+const relayCaps = { binary: false, at: 0 };   // what the relay server supports (GET / -> features), read once per page
+function readRelayCaps() {
+  if (Date.now() - relayCaps.at < 600e3) return;
+  relayCaps.at = Date.now();
+  const base = (getNet().relay || DEFAULT_RELAY).replace(/^ws/i, 'http').replace(/\/$/, '');
+  fetch(base + '/', { cache: 'no-store' }).then(r => r.json()).then(j => { relayCaps.binary = !!(j && Array.isArray(j.features) && j.features.includes('ws-binary')); }).catch(() => {});
+}
 const b64u = u8 => b64(u8).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const unb64 = t => Uint8Array.from(atob(t), ch => ch.charCodeAt(0));
 const unb64u = t => unb64(t.replace(/-/g, '+').replace(/_/g, '/'));
@@ -3082,8 +3272,9 @@ async function sealMsg(p, k, room) {
     return { raw: JSON.stringify(p, wsReplacer) };
   }
 }
-async function openMsg(env, k, room) {
+async function openMsg(env, k, room, strict) {   // strict: the session is end-to-end encrypted, so anything that is not encrypted is forged
   if (!env) return null;
+  if (strict && k && env.e !== 1) return null;
   if (env.type) return env;
   if (env.raw) {
     try { return JSON.parse(env.raw, wsRevive); } catch (_) { return null; }
@@ -3099,10 +3290,28 @@ async function openMsg(env, k, room) {
   return null;
 }
 const wsBuf = ws => ws ? ws.bufferedAmount + (ws._pending || 0) * 70000 : 0;   // queued-but-unsent frames count toward backpressure
+// Bulk data (file chunks) goes over the relay as raw binary frames: no base64, no JSON escaping, ~45% fewer bytes than JSON+base64+base64.
+// frame body = flag(0 plain | 1 AES-GCM) | [iv(12)] | packed message
+async function sealBin(p, key, room) {
+  const plain = CoopCodec.packMessage(p);
+  if (!key || !crypto?.subtle) { const o = new Uint8Array(1 + plain.length); o.set(plain, 1); return o; }
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(room) }, await aesKey(key), plain));
+  const o = new Uint8Array(13 + ct.length); o[0] = 1; o.set(iv, 1); o.set(ct, 13); return o;
+}
+async function openBin(body, key, room) {
+  if (body[0] === 0) return key ? null : CoopCodec.unpackMessage(body.subarray(1));   // encrypted session: plaintext frames are forged
+  if (body[0] !== 1 || !key || !crypto?.subtle) return null;
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: body.subarray(1, 13), additionalData: new TextEncoder().encode(room) }, await aesKey(key), body.subarray(13));
+  return CoopCodec.unpackMessage(new Uint8Array(pt));
+}
 function wsSend(ws, to, p, key, room) {
   ws._pending = (ws._pending || 0) + 1;
   ws._q = (ws._q || Promise.resolve()).then(async () => {   // queue keeps message order despite async encryption
-    try { const env = await sealMsg(p, key, room); if (ws.readyState === 1) ws.send(JSON.stringify({ to, p: env })); } catch (_) {}
+    try {
+      if (relayCaps.binary && p && p.type === 'FILE_CHUNK' && ws.readyState === 1) ws.send(CoopCodec.frameToRelay(to, await sealBin(p, key, room)));
+      else { const env = await sealMsg(p, key, room); if (ws.readyState === 1) ws.send(JSON.stringify({ to, p: env })); }
+    } catch (_) {}
     ws._pending--;
   });
 }
@@ -3110,9 +3319,11 @@ const relayUrl = (room, id) => `${(getNet().relay || DEFAULT_RELAY).replace(/\/$
 const wsStub = ws => ({ get bufferedAmount() { return wsBuf(ws); }, addEventListener() {}, removeEventListener() {} });
 
 // peer side: use the relay when the direct route isn't up in time (or immediately in "relay server only" mode)
-function scheduleRelayJoin(direct) {
+function scheduleRelayJoin(direct, stage, second) {
   const isKindle = targetIsKindleRoom || (lastJoinCode && (lastJoinCode.startsWith('kroom') || lastJoinCode.startsWith('kindle')));
-  const delay = (getNet().mode === 'ws' || isKindle) ? 50 : 8000;
+  // order: p2p/STUN -> TURN -> peer helper -> relay server. The relay is the last resort, so it waits for everything before it.
+  const plan = CoopNet.plan({ hasTurn: hasTurn(), priv: getNet().priv, hasRelay: true, stunMs: STAGES.stunMs, turnMs: STAGES.turnMs, peerMs: STAGES.peerMs });
+  const delay = (getNet().mode === 'ws' || isKindle) ? 50 : second ? STAGES.turnMs + STAGES.peerMs : CoopNet.relayDelay(plan);
   setTimeout(async () => {
     if (isHost || direct.open || bridgeV || relayV || !connections.includes(direct)) return;
     if (!isKindle) await ensureRelayProbe();
@@ -3175,7 +3386,15 @@ function startRelayJoin(direct) {
 
     startHttpSyncPolling(hostId);
   };
+  ws.binaryType = 'arraybuffer'; readRelayCaps();
+  ws._ka = setInterval(() => { if (ws.readyState === 1) { try { ws.send('ping'); } catch (_) {} } }, 20000);   // socket keepalive, answered by the relay without waking it
   ws.onmessage = e => {
+    if (typeof e.data !== 'string') {   // binary frame from the relay
+      const f = CoopCodec.frameFromRelay(new Uint8Array(e.data)); if (!f || f.from !== hostId) return;
+      ws._rq = (ws._rq || Promise.resolve()).then(async () => { let p; try { p = await openBin(f.body, peerRelayKey, hostId); } catch (_) { return; } if (p && relayV && relayV._sock === ws) handleNetworkMessage(relayV, p); });
+      return;
+    }
+    if (e.data === 'pong') { if (relayV && relayV._sock === ws) relayV._lastPong = Date.now(); return; }
     let m; try { m = JSON.parse(e.data, wsRevive); } catch (_) { return; }
     if (m.err === 'gone') {
       if (hostId.startsWith('kroom') || hostId.startsWith('kindle') || targetIsKindleRoom) return;
@@ -3184,28 +3403,18 @@ function startRelayJoin(direct) {
     }
     if (m.left && m.from === hostId) { try { ws.close(); } catch (_) {} return; }
     if (!m.p) return;
-    if (m.p.type === 'DOC_OPEN' && m.p.filename) {
-      loadDocFromRelay(hostId, m.p.filename);
-    }
+    if (m.from !== hostId) return;   // the relay stamps the real sender: only the host may speak to us as the host (was: any room member could)
+    if (m.p.e === 1 && !peerRelayKey && !ws._keyWarned) { ws._keyWarned = true; notify('The host encrypts relay traffic: use the full invite link (it contains the key), not just the code.', 'warning', 12000); }
     ws._rq = (ws._rq || Promise.resolve()).then(async () => {
-      let p; try { p = await openMsg(m.p, peerRelayKey, hostId); } catch (_) { return; }
+      let p; try { p = await openMsg(m.p, peerRelayKey, hostId, true); } catch (_) { return; }
       if (!p) return;
       if (p.type === 'RELAY_CLOSE') { try { ws.close(); } catch (_) {} return; }
-      if (p.type === 'DOC_OPEN' && p.filename) {
-        loadDocFromRelay(hostId, p.filename);
-      }
-      if (p.type === 'PAGE_CHANGE') {
-        const pg = parseInt(p.page, 10);
-        if (pg && pg >= 1) {
-          syncedPage = pg;
-          if (!detached) { state.currentPage = pg; renderCurrentPage(); }
-          setStatus(`Kindle turned to page ${pg}`, 'info', 2000);
-        }
-      }
       if (relayV && relayV._sock === ws) handleNetworkMessage(relayV, p);
     });
   };
   ws.onclose = (ev) => {
+    clearInterval(ws._ka);
+    if (ws._intentional) return;   // we closed it on purpose (rotation, route upgrade, rejoin)
     netLog('relay socket closed (code ' + ev.code + ')');
     if (relayV && relayV._sock === ws) { clearInterval(relayV._hb); connections = connections.filter(x => x !== relayV); relayV = null; updatePeerListUI(); updateHostUI(); notify('Relay connection lost — reconnecting…', 'warning'); scheduleRejoin(); }
     else if (!relayV) { notify('Could not reach the relay server.', 'error', 5000); if (isKindle) scheduleRejoin(); }
@@ -3216,19 +3425,26 @@ function dropWsConns() { const n = connections.length; connections = connections
 function openHostRelay() {
   const id = myPeerId; let ws; try { ws = new WebSocket(relayUrl(id, id)); } catch (_) { return; }
   hostWs = ws; hostWsFor = id;
-  ws.onmessage = e => { let m; try { m = JSON.parse(e.data, wsRevive); } catch (_) { return; } hostRelayMsg(m); };
-  ws.onclose = (ev) => { netLog('host relay socket closed (code ' + ev.code + ')'); if (hostWs === ws) { hostWs = null; dropWsConns(); } };
+  ws.binaryType = 'arraybuffer'; readRelayCaps();
+  ws._ka = setInterval(() => { if (ws.readyState === 1) { try { ws.send('ping'); } catch (_) {} } }, 20000);
+  ws.onmessage = e => {
+    if (typeof e.data !== 'string') {
+      const f = CoopCodec.frameFromRelay(new Uint8Array(e.data)); if (!f || hostWs !== ws) return;
+      ws._rq = (ws._rq || Promise.resolve()).then(async () => { let p; try { p = await openBin(f.body, relayKeyB64, myPeerId); } catch (_) { return; } if (p) hostRelayPlain({ from: f.from, p, transport: 'websocket' }); });
+      return;
+    }
+    if (e.data === 'pong') return;
+    let m; try { m = JSON.parse(e.data, wsRevive); } catch (_) { return; } hostRelayMsg(m);
+  };
+  ws.onclose = (ev) => { clearInterval(ws._ka); netLog('host relay socket closed (code ' + ev.code + ')'); if (hostWs === ws) { hostWs = null; dropWsConns(); } };
 }
 function hostRelayMsg(m) {
   if (!isHost || !m.from) return;
   if (m.left || !m.p) return hostRelayPlain({ from: m.from, left: !!m.left, transport: m.transport || 'websocket' });
-  if (m.p && m.p.type === 'DOC_OPEN' && m.p.filename) {
-    loadDocFromRelay(myPeerId, m.p.filename);
-  }
   const q = hostWs; if (!q) return;
   q._rq = (q._rq || Promise.resolve()).then(async () => {
     let p;
-    try { p = await openMsg(m.p, relayKeyB64, myPeerId); } catch (_) { return; }
+    try { p = await openMsg(m.p, relayKeyB64, myPeerId, (m.transport || 'websocket') === 'websocket'); } catch (_) { return; }
     if (p) hostRelayPlain({ from: m.from, p, transport: m.transport || 'websocket' });
   });
 }
@@ -3270,6 +3486,7 @@ function hostRelayPlain(m) {
       on() {}
     };
     Object.defineProperty(v.dataChannel, 'bufferedAmount', { get: () => wsBuf(hostWs) });
+    trustAttach(v);   // signs host commands for this relay peer (not for Kindles)
     connections.push(v); updatePeerListUI(); updateChatAvailability();
     relayWatchdog(v, () => connections.includes(v), () => { netLog('relayed peer went quiet'); v.close(); });
     notify(`${isHttpPeer ? 'Kindle HTTP peer' : 'Peer'} ${X.substring(0, 8)} connected through the relay`, 'info', 4000);
@@ -3287,7 +3504,7 @@ setInterval(() => {
   if (isHost && myPeerId) ensureRelayProbe();
   const relay = getNet().relay || (defaultRelayOk ? DEFAULT_RELAY : '');
   const want = isHost && myPeerId && relay;
-  if (hostWs && (!want || hostWsFor !== myPeerId || hostWs.readyState > 1)) { const w = hostWs; hostWs = null; try { w.close(); } catch (_) {} dropWsConns(); }
+  if (hostWs && (!want || (hostWsFor !== myPeerId && Date.now() > holdHostWsUntil) || hostWs.readyState > 1)) { const w = hostWs; hostWs = null; try { w.close(); } catch (_) {} dropWsConns(); }
   if (want && !hostWs) openHostRelay();
 }, 3000);
 
@@ -3301,6 +3518,8 @@ function openNetwork() {
     <label class="net-opt"><input type="radio" name="net-mode" value="auto"><span><b>Automatic</b> · recommended<small>Direct first, then a helper peer, then your relay server (if set).</small></span></label>
     <label class="net-opt"><input type="radio" name="net-mode" value="ws"><span><b>Relay server only</b><small>Works on any network or firewall. Voice chat may not work.</small></span></label>
     <label class="net-opt"><input type="checkbox" id="net-priv"><span><b>Private mode</b><small>Hides your IP address from other participants by sending all direct traffic through a TURN relay. Needs a TURN server below; connections fail without one.</small></span></label>
+    <label class="net-opt"><input type="checkbox" id="net-lowbw" onchange="CoopExtras.setLowBw(this.checked)"><span><b>Low-bandwidth mode</b><small>No live cursors or activity badges, slower heartbeat. Pages, comments, chat and files still sync.</small></span></label>
+    <label class="net-opt"><input type="checkbox" id="net-nowidget" onchange="CoopExtras.setNoWidget(this.checked)"><span><b>Hide the donation widget</b><small>Stops the third-party Buy-me-a-coffee script from loading.</small></span></label>
     <h4>Relay server <span style="font-weight:400;opacity:.7;font-size:.8rem">· ${state}${!getStoredNet().relay && n.relay ? ' · default server' : ''}</span></h4>
     <div class="net-row"><input id="net-relay" placeholder="Default: coop-relay.coop-reader.workers.dev" autocapitalize="off" spellcheck="false"><button class="secondary" id="net-test">Test</button></div>
     <div id="net-test-res" style="font-size:.8rem;min-height:1.2em;margin-top:4px"></div>
@@ -3310,6 +3529,7 @@ function openNetwork() {
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="secondary" id="net-x">Cancel</button><button id="net-save">Save</button></div></div>`;
   document.body.appendChild(o);
   o.querySelector(`input[name=net-mode][value=${n.mode === 'ws' ? 'ws' : 'auto'}]`).checked = true;
+  o.querySelector('#net-lowbw').checked = lowBw(); o.querySelector('#net-nowidget').checked = localStorage.getItem('coop-no-widget') === '1';
   o.querySelector('#net-priv').checked = !!n.priv; o.querySelector('#net-relay').value = getStoredNet().relay; o.querySelector('#ice-ta').value = localStorage.getItem('coop-ice-servers') || '';
   const res = o.querySelector('#net-test-res'), val = () => o.querySelector('#net-relay').value.trim();
   o.querySelector('#net-x').onclick = () => o.remove();
@@ -3349,7 +3569,7 @@ document.getElementById('peer-file-input').addEventListener('change', async e =>
 });
 function offerPrivateFile(name, buf) {
   const o = document.createElement('div'); o.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:12px';
-  const mb = (buf.byteLength / 1e6).toFixed(buf.byteLength > 1e6 ? 1 : 2);
+  const bl = buf.byteLength ?? buf.size, mb = (bl / 1e6).toFixed(bl > 1e6 ? 1 : 2);
   o.innerHTML = `<div style="background:var(--surface);color:inherit;padding:16px;border-radius:14px;max-width:380px;width:100%"><h3 style="margin:0 0 6px">File from the host</h3><p style="margin:0 0 12px;word-break:break-word"><b>${escapeHtml(name)}</b><br><small>${mb} MB · sent only to you</small></p><div style="display:flex;gap:8px;justify-content:flex-end"><button class="secondary" id="pf-x">Dismiss</button><button id="pf-save">Save to device</button></div></div>`;
   document.body.appendChild(o);
   o.querySelector('#pf-save').onclick = () => { saveBlob(new Blob([buf], { type: 'application/octet-stream' }), name.replace(/[\\/:*?"<>|]/g, '_')); o.remove(); };
@@ -3363,11 +3583,12 @@ function voiceRelayWarn() {
   netLog('voice blocked: relay route');
   if (Date.now() - voiceWarnAt > 30000) { voiceWarnAt = Date.now(); notify('Voice chat needs a direct or TURN connection — you are connected through a relay.', 'warning', 6000); }
 }
-function relayWatchdog(v, alive, onDead) {   // ping every 15s; no traffic for 45s = dead. Also keeps NATs/carriers from culling an idle socket
+function relayWatchdog(v, alive, onDead) {   // liveness: the socket keepalive (guests) or a peer ping every 45 s (host side). Idle relay sockets cost nothing: the relay hibernates.
+  let lastApp = 0;
   v._hb = setInterval(() => {
     if (!alive()) { clearInterval(v._hb); return; }
-    if (Date.now() - v._lastPong > 45000) { clearInterval(v._hb); netLog('no traffic for 45s — dropping'); onDead(); return; }
-    try { v.send({ type: 'PING', t: Date.now() }); } catch (_) {}
+    if (Date.now() - v._lastPong > 120000) { clearInterval(v._hb); netLog('no traffic for 120s — dropping'); onDead(); return; }
+    if (Date.now() - lastApp > 45000) { lastApp = Date.now(); try { v.send({ type: 'PING', t: Date.now() }); } catch (_) {} }
   }, 15000);
 }
 function healthItems() {
@@ -3421,6 +3642,7 @@ let bmcSecondsRemaining = 0;
 let bmcHalftime = 0;
 
 function showBmcModal() {
+  document.querySelectorAll('#bmc-modal img[data-src]').forEach(i => { i.src = i.dataset.src; });   // third-party image only when the dialog is opened
   // Support prompts must never gate room creation or joining. The donation
   // dialog remains available from its explicit menu/button entry point.
   closeBmcModal();
@@ -3489,7 +3711,7 @@ function handleRelayVoiceChunk(peerId, b64data, mime) {
     audio.volume = 1.0;
     audio.play().catch(() => {});
     audio.onended = () => { URL.revokeObjectURL(audioUrl); };
-    highlightRemoteSpeaker(peerId);
+    setActivity(peerId, 'speaking');   // (was: highlightRemoteSpeaker, which never existed)
   } catch (_) {}
 }
 
@@ -3646,11 +3868,109 @@ document.getElementById('text-content')?.addEventListener('input', (e) => {
   }
 });
 
+// ---- cross-device documents (Kindle <-> WASM)
+// Offer (DOC_OPEN) -> request (DOC_REQUEST) -> chunked upload to the relay -> DOC_READY -> verified download.
+// Nothing is uploaded unless somebody actually asks for the file.
+const DOC_CHUNK = 98304;   // what Kindles use (the relay accepts 32 KiB .. 1 MiB). No file size cap: the relay answers with a clear error if its quota is exceeded.
+const crcTable = (() => { const t = new Uint32Array(256); for (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = c & 1 ? (c >>> 1) ^ 0xEDB88320 : c >>> 1; t[i] = c >>> 0; } return t; })();
+function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = crcTable[(c ^ u8[i]) & 255] ^ (c >>> 8); return ((c ^ 0xFFFFFFFF) >>> 0).toString(16).padStart(8, '0'); }
+// size-crc32(first 64 KiB)-crc32(last 64 KiB): identical on every platform (the Kindle plugin computes the same value).
+function docFingerprint(buf) { const u = new Uint8Array(buf), n = u.length; return `${n}-${crc32(u.subarray(0, 65536))}-${crc32(u.subarray(Math.max(0, n - 65536)))}`; }
+const relayHttpBase = () => (getNet().relay || DEFAULT_RELAY).replace(/\/+$/, '').replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+const blobUrl = (room, fid, part) => `${relayHttpBase()}/room/${encodeURIComponent(room)}/blob/${encodeURIComponent(fid)}/${part}?id=${encodeURIComponent(myPeerId)}&t=${wsToken}`;
+const pctOf = p => state.totalPages > 1 ? (p - 1) / (state.totalPages - 1) : 0;
+function pagePayload(p) { return { page: p, total: state.totalPages, pct: +pctOf(p).toFixed(5), fp: cachedFp }; }
+// Fixed-layout files (PDF/images) share page numbers; reflowable books are paginated differently on every device,
+// so those follow the reading position as a fraction of the book.
+function mapRemotePage(d) {
+  const p = parseInt(d.page, 10), pct = Number(d.pct), total = Number(d.total);
+  if ((state.fileType === 'pdf' || state.fileType === 'image') && p >= 1 && p <= state.totalPages) return p;
+  if (state.totalPages > 1 && total > 1 && isFinite(pct) && pct >= 0 && pct <= 1) return Math.min(state.totalPages, Math.max(1, Math.round(pct * (state.totalPages - 1)) + 1));
+  return p >= 1 && p <= state.totalPages ? p : (state.totalPages ? 0 : p);
+}
+function docOffer() {
+  return cachedFileBytes ? { type: 'DOC_OPEN', fid: cachedFp, fp: cachedFp, name: cachedFilename, size: cachedFileBytes.size,
+    ext: (cachedFilename.split('.').pop() || '').toLowerCase(), ...pagePayload(state.currentPage) } : null;
+}
+function announceDoc(onlyConn) {
+  if (!isHost) return; const o = docOffer(); if (!o) return;
+  for (const c of connections) if (c._kindle && c.open && (!onlyConn || c === onlyConn)) { try { c.send(o); } catch (_) {} }
+}
+const peerLabel = c => (profiles[c.peer] && profiles[c.peer].name) || String(c.peer).substring(0, 8);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function retry(fn, tries = 4) { for (let a = 0; ; a++) { try { return await fn(); } catch (e) { if (e && e.fatal) throw e; if (a >= tries - 1) throw e; await sleep(400 * (a + 1)); } } }
+async function uploadDocBlobs(fid, name, blob, onProgress) {
+  const size = blob.size, cs = DOC_CHUNK, chunks = Math.ceil(size / cs), room = myPeerId;
+  const meta = await retry(async () => { const r = await fetch(blobUrl(room, fid, 'meta'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, size, chunks, chunk: cs, fp: fid, ext: (name.split('.').pop() || '').toLowerCase() }) }); const j = await r.json(); if (!j.ok) { const e = new Error(j.error || 'HTTP ' + r.status); e.fatal = r.status === 413 || r.status === 400; throw e; } return j; }, 4);
+  const got = meta.got || '0'.repeat(chunks), todo = []; for (let i = 0; i < chunks; i++) if (got[i] !== '1') todo.push(i);
+  let next = 0, done = chunks - todo.length;
+  const worker = async () => { while (next < todo.length) { const i = todo[next++]; await retry(async () => { const part = await CoopStore.readSlice(blob, i * cs, cs); const r = await fetch(blobUrl(room, fid, i), { method: 'PUT', body: part }); const j = await r.json(); if (!j.ok) throw new Error(j.error || 'HTTP ' + r.status); }); done++; if (onProgress) onProgress(done, chunks); } };
+  await Promise.all([worker(), worker(), worker()]);
+  return { fid, name, size, chunks, chunk: cs, ext: (name.split('.').pop() || '').toLowerCase() };
+}
+const docUploads = new Map();
+async function serveDocTo(conn) {
+  const fid = cachedFp, name = cachedFilename, buf = cachedFileBytes;
+  try {
+    if (!docUploads.has(fid)) {
+      notify(`Sending “${name}” to ${peerLabel(conn)}…`, 'info', 3000);
+      const p = uploadDocBlobs(fid, name, buf, (d, n) => setStatus(`Uploading ${name}: ${Math.round(100 * d / n)}%`, 'info'));
+      docUploads.set(fid, p); p.catch(() => docUploads.delete(fid));
+    }
+    const meta = await docUploads.get(fid);
+    const chk = await fetch(blobUrl(myPeerId, fid, 'meta')).then(r => r.json()).catch(() => null);   // blobs expire after 2 h
+    if (!chk || !chk.done) { docUploads.delete(fid); return serveDocTo(conn); }
+    conn.send({ type: 'DOC_READY', fid, fp: fid, name, size: meta.size, chunks: meta.chunks, chunk: meta.chunk, ext: meta.ext });
+    setStatus(`Sent “${name}” to ${peerLabel(conn)}`, 'success');
+  } catch (e) {
+    netLog('doc upload failed: ' + (e.message || e));
+    try { conn.send({ type: 'DOC_ERROR', fp: fid, error: String(e.message || e) }); } catch (_) {}
+    notify('Could not send the document: ' + (e.message || e), 'error', 7000);
+  }
+}
+var pendingDoc = null;
+function onDocOffer(conn, d) {   // a Kindle host opened a book
+  if (isHost || conn.peer !== lastJoinCode || !d || !d.fp) return;
+  if (d.fp === cachedFp) { if (d.pct != null) { const pg = mapRemotePage(d); if (pg) { syncedPage = pg; if (!detached) { state.currentPage = pg; renderCurrentPage(); } } } return; }
+  if (pendingDoc && pendingDoc.fp === d.fp) return;
+  pendingDoc = { fp: d.fp, name: d.name, pct: d.pct, total: d.total, page: d.page };
+  notify(`Host opened “${d.name}” — requesting it…`, 'info', 4000);
+  try { conn.send({ type: 'DOC_REQUEST', fp: d.fp }); } catch (_) {}
+}
+async function onDocReady(conn, d) {
+  if (isHost || conn.peer !== lastJoinCode || !pendingDoc || pendingDoc.fp !== d.fp) return;
+  const want = pendingDoc; const room = lastJoinCode, chunks = Number(d.chunks), size = Number(d.size);
+  let asm = null;
+  try {
+    if (!(chunks > 0 && size > 0)) throw new Error('bad file description');
+    const info = await retry(async () => { const r = await fetch(blobUrl(room, d.fid, 'meta')); const j = await r.json(); if (!j.ok) throw new Error(j.error || 'HTTP ' + r.status); return j; });
+    const cs = Number(info.chunk) || DOC_CHUNK;   // legacy relays do not report it: 96 KiB
+    if (info.size !== size || info.chunks !== chunks || chunks !== Math.ceil(size / cs)) throw new Error('file description does not match the relay');
+    asm = new CoopStore.ChunkAssembler(await CoopStore.createSpool(size), { totalChunks: chunks, chunkSize: cs, totalSize: size });
+    let next = 0, done = 0;
+    const worker = async () => { while (next < chunks) { const i = next++; const u8 = await retry(async () => { const r = await fetch(blobUrl(room, d.fid, i)); if (!r.ok) throw new Error('chunk ' + i + ': HTTP ' + r.status); return new Uint8Array(await r.arrayBuffer()); }); if (asm.put(i, u8) === 'bad') throw new Error('chunk ' + i + ' has the wrong size'); done++; if (done % 8 === 0 || done === chunks) setStatus(`Downloading ${d.name}: ${Math.round(100 * done / chunks)}%`, 'info'); } };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    const blob = await asm.finish(); asm = null;
+    if (await CoopStore.fingerprintBlob(blob) !== d.fp) throw new Error('integrity check failed');
+    await processAndRenderFileLocally(blob, d.name, true);
+    const pg = mapRemotePage(want); if (pg) { syncedPage = pg; if (!detached) { state.currentPage = pg; renderCurrentPage(); } }
+    notify(`Opened “${d.name}” from the host`, 'success', 3500);
+  } catch (e) { if (asm) asm.abort().catch(() => {}); netLog('doc download failed: ' + (e.message || e)); notify('Could not download the document: ' + (e.message || e), 'error', 7000); }
+  finally { if (pendingDoc === want) pendingDoc = null; }
+}
+
 // ==================== INIT ====================
+CoopStore.cleanupSpools();
 updateDownloadButton();
 updateChatAvailability();
 updateVoiceUI();
 updateDetachUI();
 </script>
+<script src="js/coop-comments-ui.js"></script>
+<script src="js/vendor/qrcode.js"></script>
+<script src="js/coop-extras.js"></script>
+<script src="js/coop-live.js"></script>
+<script>window.__fitZoom = () => window.__fitZoomValue || 1;</script>
+<script>if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));</script>
 </body>
 </html>
