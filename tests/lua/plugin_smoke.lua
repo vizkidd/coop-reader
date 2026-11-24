@@ -37,6 +37,7 @@ local ST = CoopReader._ST
 local ui_fm = { menu = { registerToMainMenu = function() end }, handleEvent = function() end }
 local fm = CoopReader:new{ ui = ui_fm }
 check(ST.session ~= nil and ST.cfg.relay_base_url:find("workers.dev", 1, true), "plugin initialises in the file manager with defaults")
+check(Core.DEFAULT_RELAY == "https://coop-relay.vizkidd.workers.dev", "default relay address")
 ST.cfg.relay_base_url = base; ST.save_settings(); ST.ensure_core()
 
 local items = {}; fm:addToMainMenu(items)

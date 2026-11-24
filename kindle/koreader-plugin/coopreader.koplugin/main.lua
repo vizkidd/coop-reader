@@ -117,7 +117,9 @@ function ST.load_settings()
             end
         end
     end
-    if type(ST.cfg.relay_base_url) ~= "string" or ST.cfg.relay_base_url == "" then ST.cfg.relay_base_url = Core.DEFAULT_RELAY end
+    if type(ST.cfg.relay_base_url) ~= "string" or ST.cfg.relay_base_url == "" or ST.cfg.relay_base_url:find("coop-relay.coop-reader.workers.dev", 1, true) then
+        ST.cfg.relay_base_url = Core.DEFAULT_RELAY   -- empty, or the previous default: use the current one
+    end
     if not ST.cfg.name or ST.cfg.name == "" then
         local model = (Device and Device.model) or "Kindle"
         ST.cfg.name = tostring(model) .. " (KOReader)"

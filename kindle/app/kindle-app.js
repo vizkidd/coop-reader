@@ -11,7 +11,7 @@
   var savedRelay = '';
   try { savedRelay = localStorage.getItem('coop-relay') || ''; } catch (_) {}
   var CONFIG = {
-    defaultRelay: savedRelay || 'wss://coop-relay.coop-reader.workers.dev',
+    defaultRelay: (savedRelay && !/coop-relay\.coop-reader\.workers\.dev/i.test(savedRelay)) ? savedRelay : 'wss://coop-relay.vizkidd.workers.dev',
     daemonApi: 'http://127.0.0.1:8765',
     chunkSize: 49152,
     heartbeatInterval: 12000,

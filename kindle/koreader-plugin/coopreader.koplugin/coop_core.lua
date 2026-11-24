@@ -18,7 +18,7 @@ Core.VERSION = "2.1.0"
 Core.CHUNK = 98304                       -- must equal BLOB_CHUNK in relay-worker.js and DOC_CHUNK in index.html
 Core.MAX_DOC = nil                           -- no cap by default (the relay or the free storage on the device decides); set a number to limit transfers
 function Core.too_big(size) return Core.MAX_DOC ~= nil and (tonumber(size) or 0) > Core.MAX_DOC end
-Core.DEFAULT_RELAY = "https://coop-relay.coop-reader.workers.dev"
+Core.DEFAULT_RELAY = "https://coop-relay.vizkidd.workers.dev"
 Core.MAX_CHAT = 100
 
 -- ---------------------------------------------------------------- helpers

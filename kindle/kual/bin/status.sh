@@ -2,7 +2,7 @@
 # Writes a plain-text report to /mnt/us/coop-reader-status.txt and shows the key lines on screen.
 . "$(dirname "$0")/lib.sh"
 REPORT="$US_ROOT/coop-reader-status.txt"
-RELAY="${COOP_RELAY:-https://coop-relay.coop-reader.workers.dev}"
+RELAY="${COOP_RELAY:-https://coop-relay.vizkidd.workers.dev}"
 
 # use the relay configured inside the plugin, if any
 CFG="$KO_DIR/settings/coopreader.json"

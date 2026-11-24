@@ -33,5 +33,12 @@ try {
     await p.reload({ waitUntil: 'load' }); await sleep(500);
     assert.equal(await p.evaluate(() => document.querySelector('.cp-back') ? document.querySelector('.cp-back').hidden : true), true);
   });
+  await step('default relay is coop-relay.vizkidd.workers.dev; a saved copy of the previous default is migrated', async () => {
+    assert.equal(await p.evaluate(() => DEFAULT_RELAY), 'wss://coop-relay.vizkidd.workers.dev');
+    const r = await p.evaluate(() => { localStorage.setItem('coop-net', JSON.stringify({ relay: 'wss://coop-relay.coop-reader.workers.dev', mode: 'auto' })); return getStoredNet().relay; });
+    assert.equal(r, '');
+    const keep = await p.evaluate(() => { localStorage.setItem('coop-net', JSON.stringify({ relay: 'wss://my.relay.example', mode: 'auto' })); const v = getStoredNet().relay; localStorage.removeItem('coop-net'); return v; });
+    assert.equal(keep, 'wss://my.relay.example', 'a custom relay is never touched');
+  });
 } finally { await browser.close(); srv.close(); }
 console.log(failed ? failed + ' FAILED' : 'ALL PASSED'); process.exit(failed ? 1 : 0);
