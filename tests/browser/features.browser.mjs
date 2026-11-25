@@ -28,7 +28,7 @@ try {
   });
   await step('click-to-show: the pin is closed by default; clicking it opens the thread with avatar/name; replies sync both ways', async () => {
     await waitFor(host, () => document.querySelectorAll('.cm-pin').length === 1);
-    assert.equal(await host.evaluate(() => document.getElementById('cm-pop').hidden), true);
+    assert.deepEqual(await host.evaluate(() => { const p = document.getElementById('cm-pop'); return [p.hidden, getComputedStyle(p).display, p.offsetWidth]; }), [true, 'none', 0], 'a closed popover must not be visible');
     await host.click('.cm-pin'); await waitFor(host, () => !document.getElementById('cm-pop').hidden);
     assert.match(await host.evaluate(() => document.getElementById('cm-pop').innerText), /Ana[\s\S]*Why this wording/);
     await host.type('#cm-ta', 'Because of the style guide'); await host.click('#cm-pop [data-a="send"]');
@@ -90,8 +90,10 @@ try {
   await step('double tap toggles zoom', async () => {
     const cdp = await g2.createCDPSession(); const z0 = await g2.evaluate(() => currentZoom);
     await g2.evaluate(() => { window.__log = []; for (const ty of ['touchstart', 'touchend']) viewerContainer.addEventListener(ty, e => window.__log.push([ty, Math.round(e.timeStamp), e.changedTouches[0].clientX | 0, e.changedTouches[0].clientY | 0, e.target.id || e.target.className || e.target.tagName]), true); });
-    const tap = async () => { await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 1235, y: 700, id: 1 }] }); await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); };
-    await g2.evaluate(() => window.scrollTo(0, 0)); await tap(); await sleep(100); await tap(); await waitFor(g2, z => Math.round(currentZoom * 100) !== z, Math.round(z0 * 100), 30000).catch(async e => { console.log('    diag', JSON.stringify(await g2.evaluate(() => [currentZoom, window.__fitZoomValue, window.__log, scrollY, tool, state.fileType]))); throw e; }); await waitFor(g2, () => !pdfRendering, null, 8000);
+    const base = Date.now() / 1000;   // explicit event timestamps: the spacing of the two taps no longer depends on how busy the machine is
+    const tap = async (at) => { await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', timestamp: at, touchPoints: [{ x: 1235, y: 700, id: 1 }] }); await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', timestamp: at + 0.04, touchPoints: [] }); };
+    await g2.evaluate(() => window.scrollTo(0, 0)); await tap(base); await tap(base + 0.15);
+    await waitFor(g2, z => Math.round(currentZoom * 100) !== z, Math.round(z0 * 100), 30000); await waitFor(g2, () => !pdfRendering, null, 30000);
     const z1 = await g2.evaluate(() => currentZoom); assert.notEqual(Math.round(z1 * 100), Math.round(z0 * 100));
   });
   await step('Apple-Pencil style input: stylus touches are cancelled so the page never scrolls, strokes use every coalesced sample', async () => {

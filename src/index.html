@@ -122,7 +122,8 @@
     #viewer-toolbar button{min-height:38px}
     #annot-group{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
     #viewer-wrap{position:relative;margin:0 16px}
-    #annot-svg{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+    [hidden]{display:none!important}   /* an element's own display rule must never defeat the hidden attribute */
+#annot-svg{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
 #viewer-container{position:relative;margin:0;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-sm);min-height:55vh;display:flex;align-items:flex-start;overflow:auto;touch-action:pan-x pan-y;-webkit-overflow-scrolling:touch}
     .net-opt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;cursor:pointer}
     .net-opt small{display:block;opacity:.7;font-weight:400;margin-top:2px}.net-opt input{margin-top:4px;flex-shrink:0}

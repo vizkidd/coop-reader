@@ -9,6 +9,9 @@ try {
     const vis = await p.evaluate(() => { const m = document.querySelector('.cp-back'); return !!m && !m.hidden; }); assert.equal(vis, true);
     await p.type('#cp-name', 'Ana'); await p.click('#cp-go');
     await waitFor(p, () => document.querySelector('.cp-back').hidden === true);
+    const seen = await p.evaluate(() => { const m = document.querySelector('.cp-back'), c = getComputedStyle(m); const hit = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+      return { display: c.display, rect: m.getBoundingClientRect().width, covered: !!(hit && hit.closest('.cp-back')), scroll: document.body.style.overflow }; });
+    assert.deepEqual(seen, { display: 'none', rect: 0, covered: false, scroll: '' }, 'the dialog must really be gone (display, size, nothing on top of the page)');
     assert.equal(await p.evaluate(() => myDisplayName), 'Ana');
     assert.equal(await p.evaluate(() => localStorage.getItem('coop-name')), 'Ana');
   });

@@ -12,7 +12,7 @@
   var me = function () { return (myPeerId || '').replace(/[^\w-]/g, ''); };
   var isOwner = function (x) { return !lastJoinCode || isHost || x.by === me(); };
 
-  var CSS = '#cm-layer{position:absolute;inset:0;pointer-events:none;z-index:6}'
+  var CSS = '.cm-pop[hidden],#cm-selbtn[hidden]{display:none!important}#cm-layer{position:absolute;inset:0;pointer-events:none;z-index:6}'
     + '.cm-pin,.cm-cluster{position:absolute;transform:translate(-50%,-50%);pointer-events:auto;border-radius:50%;border:2px solid #fff;color:#1b1400;font:700 12px/1 system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.45);cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center;min-height:0}'
     + '.cm-pin{width:26px;height:26px;background:#ffd933}.cm-pin.rs{background:#cbd5e1;color:#475569}.cm-pin.open{outline:3px solid var(--primary,#2563eb)}'
     + '.cm-cluster{width:34px;height:34px;background:#ff9f1a;color:#fff;font-size:14px}.cm-cluster:after{content:"";position:absolute;inset:-5px;border-radius:50%;border:2px dashed rgba(255,159,26,.7)}'

@@ -23,7 +23,7 @@
     return c.toDataURL('image/jpeg', 0.8);
   }
 
-  var CSS = '.cp-back{position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.62);display:flex;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(3px)}'
+  var CSS = '.cp-back[hidden]{display:none!important}.cp-back{position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.62);display:flex;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(3px)}'
     + '.cp-card{width:min(420px,100%);background:var(--surface,#fff);color:var(--text,#111827);border:1px solid var(--border,#e5e7eb);border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.35);padding:24px;display:flex;flex-direction:column;gap:16px}'
     + '.cp-card h2{margin:0;font-size:1.25rem}.cp-card p{margin:0;color:var(--text-muted,#6b7280);font-size:.9rem;line-height:1.4}'
     + '.cp-av{align-self:center;position:relative;width:112px;height:112px;border-radius:50%;border:3px dashed var(--border,#cbd5e1);background:var(--surface-alt,#f1f5f9);display:flex;align-items:center;justify-content:center;font-size:2.6rem;font-weight:700;color:var(--text-muted,#64748b);cursor:pointer;overflow:hidden;padding:0}'
